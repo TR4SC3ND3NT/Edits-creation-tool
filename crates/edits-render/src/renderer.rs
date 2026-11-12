@@ -1,0 +1,1153 @@
+//! The renderer: device resources, the pass machinery and the per-frame loop.
+//!
+//! Working textures are RGBA16Float, linear light, premultiplied alpha. A
+//! frame is a pure function of (project, frame index): nothing is carried
+//! from one frame to the next except caches.
+
+use crate::assets;
+use crate::compose::{self, Input, Output, Recipe};
+use crate::fx::ColorOp;
+use crate::geometry::{self, FitUv};
+use crate::gpu::{AdapterInfo, AdapterPolicy, Gpu};
+use anyhow::{anyhow, bail, Context, Result};
+use bytemuck::{Pod, Zeroable};
+use edits_core::{Blend, Evaluator, Layer, LayerKind, Project, Slot};
+use image::RgbaImage;
+use std::collections::HashMap;
+use std::num::NonZeroU64;
+use std::path::Path;
+use std::sync::{Arc, OnceLock};
+
+pub(crate) const WORK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+const IMAGE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+const UNIFORM_SIZE: u64 = 512;
+const UNIFORM_SLOTS: u64 = 2048;
+const PLACEHOLDER_SIZE: u32 = 1024;
+
+/// How to create a [`Renderer`].
+#[derive(Clone, Debug)]
+pub struct RenderOptions {
+    /// `None` reads `EDITS_ADAPTER` (`auto`, `hardware`, `software`), defaulting to `auto`.
+    pub adapter: Option<AdapterPolicy>,
+    /// Samples per pixel for layer geometry edges: 1 (off) or 4.
+    pub msaa: u32,
+}
+
+impl Default for RenderOptions {
+    fn default() -> Self {
+        Self { adapter: None, msaa: 4 }
+    }
+}
+
+/// The uniform block every pass receives (see `shaders/common.wgsl`).
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub(crate) struct Uni {
+    mvp: [f32; 16],
+    res: [f32; 4],
+    time: [f32; 4],
+    p: [[f32; 4]; 26],
+}
+
+/// A texture with a stable id, used to cache bind groups.
+#[derive(Clone)]
+pub(crate) struct Tex {
+    pub id: u64,
+    texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
+    pub w: u32,
+    pub h: u32,
+    kind: TexKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum TexKind {
+    Work,
+    WorkMs,
+    Depth,
+    Image,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Samp {
+    /// Bilinear, clamped: working textures.
+    Linear,
+    /// Trilinear, clamped: pictures with mip levels.
+    Image,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum Pipe {
+    Copy,
+    /// Two weighted textures, written or added to the target.
+    Sum,
+    SumAdd,
+    Mip,
+    Blur,
+    Streak,
+    Bright,
+    RgbSplit,
+    Transform2d,
+}
+
+struct Pipes {
+    /// Layer quads with antialiased edges.
+    geo: wgpu::RenderPipeline,
+    /// Cube faces: depth tested, back faces culled.
+    geo_depth: wgpu::RenderPipeline,
+    /// A quad that covers the frame: no edges, so one sample per pixel.
+    geo_plain: wgpu::RenderPipeline,
+    /// Generated passes (see `compose.rs`), compiled on first use.
+    composed: HashMap<Recipe, wgpu::RenderPipeline>,
+    full: HashMap<Pipe, wgpu::RenderPipeline>,
+}
+
+#[derive(Clone)]
+struct Picture {
+    tex: Tex,
+    aspect: f64,
+}
+
+/// One textured quad of a layer.
+pub(crate) struct Quad {
+    mvp: [f32; 16],
+    tex: Tex,
+    fit: FitUv,
+    color: [f32; 4],
+    /// The quad covers every pixel of the frame.
+    covers: bool,
+}
+
+pub(crate) struct Scene {
+    pub project: Project,
+    slots: HashMap<String, Picture>,
+    /// Effect `source` -> key into `Renderer::custom`.
+    pub custom: HashMap<String, String>,
+}
+
+/// Values shared by every pass of one motion blur sample.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Ctx {
+    pub w: u32,
+    pub h: u32,
+    /// Seconds, beats, frame index, aspect.
+    pub time: [f32; 4],
+}
+
+/// What a generated pass reads.
+pub(crate) enum Source<'a> {
+    Tex(&'a Tex),
+    /// A picture, its blurred bright pass, and the glow's colour times its intensity.
+    Glow(&'a Tex, &'a Tex, [f32; 3]),
+    Quad(&'a Quad),
+}
+
+/// How a generated pass writes.
+pub(crate) enum Sink<'a> {
+    Plain,
+    /// Blended over `dst`, or over the flat colour `flat` when nothing has been drawn yet.
+    Over { dst: Option<&'a Tex>, flat: [f32; 4], mode: Blend, opacity: f32 },
+}
+
+struct Readback {
+    w: u32,
+    h: u32,
+    buffer: wgpu::Buffer,
+    row_bytes: u32,
+}
+
+/// Counters from the most recent frame, for profiling.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FrameStats {
+    /// Render passes recorded.
+    pub passes: u32,
+    /// Motion blur samples asked for.
+    pub samples: u32,
+    /// Samples actually rendered: instants at which nothing differs share one.
+    pub rendered_samples: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+pub struct Renderer {
+    gpu: Gpu,
+    msaa: u32,
+    tex_layout: wgpu::BindGroupLayout,
+    pipeline_layout: wgpu::PipelineLayout,
+    pipes: Pipes,
+    ubuf: wgpu::Buffer,
+    ubind: wgpu::BindGroup,
+    staging: Vec<u8>,
+    encoder: Option<wgpu::CommandEncoder>,
+    linear: wgpu::Sampler,
+    mirror: wgpu::Sampler,
+    image_sampler: wgpu::Sampler,
+    white: Tex,
+    next_id: u64,
+    pool: HashMap<(u32, u32, TexKind), Vec<Tex>>,
+    pool_size: (u32, u32),
+    binds: HashMap<(u64, u64, Samp), wgpu::BindGroup>,
+    /// Pictures by file (path, size, modification time) or placeholder name.
+    pictures: HashMap<String, Picture>,
+    /// Compiled custom effects by file (path, size, modification time).
+    pub(crate) custom: HashMap<String, wgpu::RenderPipeline>,
+    pub(crate) scene: Option<Arc<Scene>>,
+    readback: Option<Readback>,
+    samples_override: Option<u32>,
+    pub(crate) ctx: Ctx,
+    stats: FrameStats,
+}
+
+fn file_key(path: &Path) -> String {
+    let meta = std::fs::metadata(path).ok();
+    let stamp = meta
+        .as_ref()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{}|{}|{stamp}", path.display(), meta.map(|m| m.len()).unwrap_or(0))
+}
+
+fn mat(m: glam::DMat4) -> [f32; 16] {
+    m.as_mat4().to_cols_array()
+}
+
+impl Renderer {
+    /// Open a device. Fails with a readable message when no adapter matches
+    /// the policy; callers that can do without rendering should treat that as
+    /// "not available" rather than a crash.
+    pub fn new(options: RenderOptions) -> Result<Self> {
+        let policy = match options.adapter {
+            Some(p) => p,
+            None => crate::gpu::policy_from_env()?,
+        };
+        let gpu = Gpu::new(policy)?;
+        let msaa = if std::env::var("EDITS_MSAA").ok().as_deref() == Some("1") { 1 } else if options.msaa >= 4 { 4 } else { 1 };
+        let device = &gpu.device;
+
+        let uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("edits uniforms"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: NonZeroU64::new(UNIFORM_SIZE),
+                },
+                count: None,
+            }],
+        });
+        let texture_entry = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let sampler_entry = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        };
+        let tex_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("edits textures"),
+            entries: &[texture_entry(0), texture_entry(1), sampler_entry(2), sampler_entry(3)],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("edits"),
+            bind_group_layouts: &[Some(&uniform_layout), Some(&tex_layout)],
+            immediate_size: 0,
+        });
+
+        let source = concat!(include_str!("shaders/common.wgsl"), include_str!("shaders/passes.wgsl"));
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("edits passes"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let additive = wgpu::BlendState {
+            color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
+            alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
+        };
+        let mut full = HashMap::new();
+        for (pipe, entry, format, blend) in [
+            (Pipe::Copy, "fs_copy", WORK_FORMAT, None),
+            (Pipe::Sum, "fs_copy2", WORK_FORMAT, None),
+            (Pipe::SumAdd, "fs_copy2", WORK_FORMAT, Some(additive)),
+            (Pipe::Mip, "fs_copy", IMAGE_FORMAT, None),
+            (Pipe::Blur, "fs_blur", WORK_FORMAT, None),
+            (Pipe::Streak, "fs_streak", WORK_FORMAT, None),
+            (Pipe::Bright, "fs_bright", WORK_FORMAT, None),
+            (Pipe::RgbSplit, "fs_rgb_split", WORK_FORMAT, None),
+            (Pipe::Transform2d, "fs_transform2d", WORK_FORMAT, None),
+        ] {
+            full.insert(pipe, make_pipeline(device, &pipeline_layout, &module, "vs_full", entry, format, blend, 1, false));
+        }
+        let pipes = Pipes {
+            geo: make_pipeline(device, &pipeline_layout, &module, "vs_geo", "fs_geo", WORK_FORMAT, None, msaa, false),
+            geo_depth: make_pipeline(device, &pipeline_layout, &module, "vs_geo", "fs_geo", WORK_FORMAT, None, msaa, true),
+            geo_plain: make_pipeline(device, &pipeline_layout, &module, "vs_geo", "fs_geo", WORK_FORMAT, None, 1, false),
+            composed: HashMap::new(),
+            full,
+        };
+
+        let ubuf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("edits uniforms"),
+            size: UNIFORM_SIZE * UNIFORM_SLOTS,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let ubind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("edits uniforms"),
+            layout: &uniform_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &ubuf, offset: 0, size: NonZeroU64::new(UNIFORM_SIZE) }),
+            }],
+        });
+        let sampler = |address, mips: bool, aniso: u16| {
+            device.create_sampler(&wgpu::SamplerDescriptor {
+                label: None,
+                address_mode_u: address,
+                address_mode_v: address,
+                address_mode_w: address,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: if mips { wgpu::MipmapFilterMode::Linear } else { wgpu::MipmapFilterMode::Nearest },
+                anisotropy_clamp: aniso,
+                ..Default::default()
+            })
+        };
+        let linear = sampler(wgpu::AddressMode::ClampToEdge, false, 1);
+        let mirror = sampler(wgpu::AddressMode::MirrorRepeat, false, 1);
+        // Anisotropic filtering keeps tilted cube faces sharp; it is too slow to be worth it on a CPU rasteriser.
+        let image_sampler = sampler(wgpu::AddressMode::ClampToEdge, true, if gpu.info.software { 1 } else { 8 });
+
+        let mut r = Self {
+            white: dummy(device),
+            gpu,
+            msaa,
+            tex_layout,
+            pipeline_layout,
+            pipes,
+            ubuf,
+            ubind,
+            staging: Vec::new(),
+            encoder: None,
+            linear,
+            mirror,
+            image_sampler,
+            next_id: 1,
+            pool: HashMap::new(),
+            pool_size: (0, 0),
+            binds: HashMap::new(),
+            pictures: HashMap::new(),
+            custom: HashMap::new(),
+            scene: None,
+            readback: None,
+            samples_override: None,
+            ctx: Ctx::default(),
+            stats: FrameStats::default(),
+        };
+        r.white = r.upload_picture(&RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255])));
+        r.flush();
+        Ok(r)
+    }
+
+    /// The adapter in use.
+    pub fn info(&self) -> &AdapterInfo {
+        &self.gpu.info
+    }
+
+    /// Counters from the most recent frame.
+    pub fn stats(&self) -> FrameStats {
+        self.stats
+    }
+
+    /// Override `settings.motion_blur.samples` (`None` restores the project's value).
+    pub fn set_motion_blur_samples(&mut self, samples: Option<u32>) {
+        self.samples_override = samples.map(|s| s.clamp(1, 64));
+    }
+
+    /// The project given to [`Renderer::prepare`].
+    pub fn project(&self) -> Option<&Project> {
+        self.scene.as_deref().map(|s| &s.project)
+    }
+
+    /// Output size at `scale`, rounded to even numbers (what video encoders need).
+    pub fn output_size(&self, scale: f32) -> Result<(u32, u32)> {
+        let scene = self.scene.as_ref().ok_or_else(|| anyhow!("no project prepared"))?;
+        Ok(scaled_size(&scene.project, scale))
+    }
+
+    // ---- preparing a project -------------------------------------------------
+
+    /// Take a project: load the pictures of the slots it uses (empty slots get
+    /// a placeholder) and compile its custom effects. `base_dir` is the folder
+    /// relative paths resolve against, normally the project file's folder.
+    pub fn prepare(&mut self, project: &Project, base_dir: &Path) -> Result<()> {
+        let s = &project.settings;
+        let max = self.gpu.device.limits().max_texture_dimension_2d;
+        if s.width == 0 || s.height == 0 || s.width > max || s.height > max {
+            bail!("project size {}x{} is not renderable (this adapter supports 1..{max} pixels per side)", s.width, s.height);
+        }
+        if !(s.fps > 0.0) {
+            bail!("settings.fps must be positive");
+        }
+        let mut used: Vec<&str> = Vec::new();
+        for l in &project.layers {
+            match &l.kind {
+                LayerKind::Image { slot } => used.push(slot),
+                LayerKind::Cube { faces, .. } => used.extend(faces.iter().map(String::as_str)),
+                LayerKind::Solid { .. } | LayerKind::Adjustment => {}
+            }
+        }
+        let mut slots = HashMap::new();
+        for name in used {
+            if slots.contains_key(name) {
+                continue;
+            }
+            let path = project.slots.get(name).and_then(|s: &Slot| s.path.as_deref());
+            let picture = match path {
+                Some(p) => {
+                    let full = base_dir.join(p);
+                    let key = file_key(&full);
+                    match self.pictures.get(&key) {
+                        Some(pic) => pic.clone(),
+                        None => {
+                            let mut img = assets::load(&full, max).with_context(|| format!("slot \"{name}\""))?;
+                            assets::premultiply(&mut img);
+                            let pic = Picture { aspect: img.width() as f64 / img.height() as f64, tex: self.upload_picture(&img) };
+                            self.pictures.insert(key, pic.clone());
+                            pic
+                        }
+                    }
+                }
+                None => {
+                    let key = format!("placeholder|{name}");
+                    match self.pictures.get(&key) {
+                        Some(pic) => pic.clone(),
+                        None => {
+                            let pic = Picture { aspect: 1.0, tex: self.upload_picture(&assets::placeholder(name, PLACEHOLDER_SIZE)) };
+                            self.pictures.insert(key, pic.clone());
+                            pic
+                        }
+                    }
+                }
+            };
+            slots.insert(name.to_string(), picture);
+        }
+        self.flush();
+
+        let mut custom = HashMap::new();
+        for l in &project.layers {
+            for (i, e) in l.effects.iter().enumerate() {
+                if e.kind != "custom" {
+                    continue;
+                }
+                let place = format!("layer \"{}\", effect {i}", l.id);
+                let src = e.source.as_deref().ok_or_else(|| anyhow!("{place}: a custom effect needs \"source\" (a WGSL file)"))?;
+                if custom.contains_key(src) {
+                    continue;
+                }
+                let full = base_dir.join(src);
+                let text = std::fs::read_to_string(&full).map_err(|e| anyhow!("{place}: cannot read shader {}: {e}", full.display()))?;
+                let key = file_key(&full);
+                if !self.custom.contains_key(&key) {
+                    let pipeline = self.compile_custom(src, &text).with_context(|| place.clone())?;
+                    self.custom.insert(key.clone(), pipeline);
+                }
+                custom.insert(src.to_string(), key);
+            }
+        }
+        self.scene = Some(Arc::new(Scene { project: project.clone(), slots, custom }));
+        Ok(())
+    }
+
+    fn compile_custom(&mut self, name: &str, text: &str) -> Result<wgpu::RenderPipeline> {
+        let device = &self.gpu.device;
+        let source = format!("{text}\n{}", include_str!("shaders/custom.wgsl"));
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(name), source: wgpu::ShaderSource::Wgsl(source.into()) });
+        let pipeline = make_pipeline(device, &self.pipeline_layout, &module, "edits_vs", "edits_fs", WORK_FORMAT, None, 1, false);
+        if let Some(err) = pollster::block_on(scope.pop()) {
+            let message = err.to_string();
+            let message = message.trim();
+            bail!(
+                "custom effect shader \"{name}\" does not compile:\n{message}\n\
+                 (the file must define `fn effect(uv: vec2<f32>) -> vec4<f32>`; see docs/EFFECTS.md)"
+            );
+        }
+        Ok(pipeline)
+    }
+
+    // ---- textures ------------------------------------------------------------
+
+    fn new_id(&mut self) -> u64 {
+        self.next_id += 1;
+        self.next_id
+    }
+
+    /// Upload a premultiplied sRGB picture with a full mip chain.
+    fn upload_picture(&mut self, img: &RgbaImage) -> Tex {
+        let (w, h) = img.dimensions();
+        let mips = 32 - w.max(h).leading_zeros();
+        let texture = self.gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("edits picture"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: mips,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: IMAGE_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        self.gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            img.as_raw(),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        let level = |i: u32| texture.create_view(&wgpu::TextureViewDescriptor { base_mip_level: i, mip_level_count: Some(1), ..Default::default() });
+        for i in 1..mips {
+            let (src, dst) = (level(i - 1), level(i));
+            let bind = self.make_bind(&src, &self.white.view.clone(), Samp::Linear);
+            let mut uni = Uni::zeroed();
+            uni.p[0][0] = 1.0;
+            let offset = self.push_uniform(&uni);
+            let pipeline = self.pipes.full[&Pipe::Mip].clone();
+            self.raw_pass(&pipeline, &dst, None, None, Some(wgpu::Color::TRANSPARENT), &[(bind, offset, 3)]);
+        }
+        let id = self.new_id();
+        Tex { id, view: texture.create_view(&wgpu::TextureViewDescriptor::default()), texture, w, h, kind: TexKind::Image }
+    }
+
+    /// A working texture from the pool. Give it back with [`Self::release`].
+    pub(crate) fn acquire(&mut self, w: u32, h: u32) -> Tex {
+        self.acquire_kind(w, h, TexKind::Work)
+    }
+
+    fn acquire_kind(&mut self, w: u32, h: u32, kind: TexKind) -> Tex {
+        if let Some(t) = self.pool.get_mut(&(w, h, kind)).and_then(Vec::pop) {
+            return t;
+        }
+        let (format, samples, usage) = match kind {
+            TexKind::Work => (WORK_FORMAT, 1, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC),
+            TexKind::WorkMs => (WORK_FORMAT, self.msaa, wgpu::TextureUsages::RENDER_ATTACHMENT),
+            TexKind::Depth => (DEPTH_FORMAT, self.msaa, wgpu::TextureUsages::RENDER_ATTACHMENT),
+            TexKind::Image => unreachable!("pictures are not pooled"),
+        };
+        let texture = self.gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("edits work"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: samples,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage,
+            view_formats: &[],
+        });
+        let id = self.new_id();
+        Tex { id, view: texture.create_view(&wgpu::TextureViewDescriptor::default()), texture, w, h, kind }
+    }
+
+    pub(crate) fn release(&mut self, t: Tex) {
+        if t.kind != TexKind::Image {
+            self.pool.entry((t.w, t.h, t.kind)).or_default().push(t);
+        }
+    }
+
+    fn make_bind(&self, a: &wgpu::TextureView, b: &wgpu::TextureView, samp: Samp) -> wgpu::BindGroup {
+        self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.tex_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(a) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(b) },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(match samp {
+                        Samp::Linear => &self.linear,
+                        Samp::Image => &self.image_sampler,
+                    }),
+                },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.mirror) },
+            ],
+        })
+    }
+
+    fn bind(&mut self, a: &Tex, b: Option<&Tex>, samp: Samp) -> wgpu::BindGroup {
+        let b = b.unwrap_or(&self.white).clone();
+        let key = (a.id, b.id, samp);
+        if let Some(g) = self.binds.get(&key) {
+            return g.clone();
+        }
+        let g = self.make_bind(&a.view, &b.view, samp);
+        self.binds.insert(key, g.clone());
+        g
+    }
+
+    // ---- passes --------------------------------------------------------------
+
+    /// Make room for `n` uniform blocks in the current submission.
+    fn reserve_uniforms(&mut self, n: u64) {
+        if self.staging.len() as u64 + n * UNIFORM_SIZE > UNIFORM_SIZE * UNIFORM_SLOTS {
+            self.flush();
+        }
+    }
+
+    fn push_uniform(&mut self, uni: &Uni) -> u32 {
+        self.reserve_uniforms(1);
+        let offset = self.staging.len() as u32;
+        self.staging.extend_from_slice(bytemuck::bytes_of(uni));
+        offset
+    }
+
+    /// Send everything recorded so far to the GPU.
+    pub(crate) fn flush(&mut self) {
+        if !self.staging.is_empty() {
+            self.gpu.queue.write_buffer(&self.ubuf, 0, &self.staging);
+            self.staging.clear();
+        }
+        if let Some(encoder) = self.encoder.take() {
+            self.gpu.queue.submit([encoder.finish()]);
+        }
+    }
+
+    /// One render pass: `draws` are (textures, uniform offset, vertex count).
+    fn raw_pass(
+        &mut self,
+        pipeline: &wgpu::RenderPipeline,
+        target: &wgpu::TextureView,
+        resolve: Option<&wgpu::TextureView>,
+        depth: Option<&wgpu::TextureView>,
+        clear: Option<wgpu::Color>,
+        draws: &[(wgpu::BindGroup, u32, u32)],
+    ) {
+        self.stats.passes += 1;
+        let device = &self.gpu.device;
+        let encoder = self.encoder.get_or_insert_with(|| device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("edits frame") }));
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: resolve,
+                ops: wgpu::Operations {
+                    load: clear.map(wgpu::LoadOp::Clear).unwrap_or(wgpu::LoadOp::Load),
+                    store: if resolve.is_some() { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store },
+                },
+            })],
+            depth_stencil_attachment: depth.map(|view| wgpu::RenderPassDepthStencilAttachment {
+                view,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(pipeline);
+        for (bind, offset, vertices) in draws {
+            pass.set_bind_group(0, &self.ubind, &[*offset]);
+            pass.set_bind_group(1, bind, &[]);
+            pass.draw(0..*vertices, 0..1);
+        }
+    }
+
+    fn uniform(&self, target: &Tex, p: &[[f32; 4]]) -> Uni {
+        let mut uni = Uni::zeroed();
+        uni.res = [target.w as f32, target.h as f32, 1.0 / target.w as f32, 1.0 / target.h as f32];
+        uni.time = self.ctx.time;
+        uni.p[..p.len()].copy_from_slice(p);
+        uni
+    }
+
+    /// A full-target pass of a built-in pipeline reading `t0` (and `t1`).
+    pub(crate) fn pass(&mut self, pipe: Pipe, target: &Tex, load: bool, t0: &Tex, t1: Option<&Tex>, p: &[[f32; 4]]) {
+        let pipeline = self.pipes.full[&pipe].clone();
+        self.pass_with(&pipeline, target, load, t0, t1, p);
+    }
+
+    pub(crate) fn pass_with(&mut self, pipeline: &wgpu::RenderPipeline, target: &Tex, load: bool, t0: &Tex, t1: Option<&Tex>, p: &[[f32; 4]]) {
+        let bind = self.bind(t0, t1, Samp::Linear);
+        let uni = self.uniform(target, p);
+        let offset = self.push_uniform(&uni);
+        let clear = if load { None } else { Some(wgpu::Color::TRANSPARENT) };
+        self.raw_pass(pipeline, &target.view, None, None, clear, &[(bind, offset, 3)]);
+    }
+
+    /// The pipeline of a generated pass, compiled the first time it is needed.
+    fn composed(&mut self, recipe: &Recipe) -> wgpu::RenderPipeline {
+        if let Some(p) = self.pipes.composed.get(recipe) {
+            return p.clone();
+        }
+        let source = format!("{}{}", include_str!("shaders/common.wgsl"), recipe.fragment());
+        let device = &self.gpu.device;
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("edits composed"), source: wgpu::ShaderSource::Wgsl(source.into()) });
+        let pipeline = make_pipeline(device, &self.pipeline_layout, &module, recipe.vertex(), "fs_main", WORK_FORMAT, None, 1, false);
+        self.pipes.composed.insert(recipe.clone(), pipeline.clone());
+        pipeline
+    }
+
+    /// A generated pass into `target`: read `source`, apply the colour
+    /// operations `ops` (at most `compose::MAX_OPS`), write through `sink`.
+    pub(crate) fn compose(&mut self, target: &Tex, source: Source, ops: &[ColorOp], sink: Sink) {
+        debug_assert!(ops.len() <= compose::MAX_OPS);
+        let mut uni = self.uniform(target, &[]);
+        let (input, t0, mut t1, samp) = match source {
+            Source::Tex(t) => (Input::Tex, t, None, Samp::Linear),
+            Source::Glow(t, glow, color) => {
+                uni.p[1] = [color[0], color[1], color[2], 0.0];
+                (Input::Glow, t, Some(glow), Samp::Linear)
+            }
+            Source::Quad(q) => {
+                uni.mvp = q.mvp;
+                uni.p[0] = [q.fit.offset[0], q.fit.offset[1], q.fit.scale[0], q.fit.scale[1]];
+                uni.p[1] = q.color;
+                (Input::Quad { cut: q.fit.cut }, &q.tex, None, Samp::Image)
+            }
+        };
+        let output = match sink {
+            Sink::Plain => Output::Plain,
+            Sink::Over { dst, flat, mode, opacity } => {
+                uni.p[2] = [0.0, 0.0, opacity.min(1.0), 0.0];
+                uni.p[3] = flat;
+                if dst.is_some() {
+                    debug_assert!(t1.is_none(), "a glow cannot be blended in the same pass");
+                    t1 = dst;
+                }
+                Output::Blend { mode: compose::blend_code(mode), flat: dst.is_none() }
+            }
+        };
+        for (i, op) in ops.iter().enumerate() {
+            uni.p[compose::OPS_AT + 2 * i] = op[0];
+            uni.p[compose::OPS_AT + 2 * i + 1] = op[1];
+        }
+        let recipe = Recipe { input, ops: ops.iter().map(|op| op[0][0] as u8).collect(), output };
+        let pipeline = self.composed(&recipe);
+        let bind = self.bind(t0, t1, samp);
+        let offset = self.push_uniform(&uni);
+        self.raw_pass(&pipeline, &target.view, None, None, Some(wgpu::Color::TRANSPARENT), &[(bind, offset, recipe.vertices())]);
+    }
+
+    /// Draw a layer's quads into a fresh transparent texture. `smooth` turns
+    /// on multisampling for the quads' edges.
+    fn draw_quads(&mut self, quads: &[Quad], depth: bool, smooth: bool) -> Tex {
+        let (w, h) = (self.ctx.w, self.ctx.h);
+        let target = self.acquire(w, h);
+        self.reserve_uniforms(quads.len() as u64);
+        let mut draws = Vec::with_capacity(quads.len());
+        for q in quads {
+            let cut = if q.fit.cut { 1.0 } else { 0.0 };
+            let mut uni = self.uniform(&target, &[[q.fit.offset[0], q.fit.offset[1], q.fit.scale[0], q.fit.scale[1]], q.color, [cut, 0.0, 0.0, 0.0]]);
+            uni.mvp = q.mvp;
+            let bind = self.bind(&q.tex, None, Samp::Image);
+            draws.push((bind, self.push_uniform(&uni), 6));
+        }
+        let clear = Some(wgpu::Color::TRANSPARENT);
+        if !depth && (!smooth || self.msaa == 1) {
+            self.raw_pass(&self.pipes.geo_plain.clone(), &target.view, None, None, clear, &draws);
+            return target;
+        }
+        let pipeline = if depth { self.pipes.geo_depth.clone() } else { self.pipes.geo.clone() };
+        let depth_tex = depth.then(|| self.acquire_kind(w, h, TexKind::Depth));
+        let depth_view = depth_tex.as_ref().map(|t| &t.view);
+        if self.msaa > 1 {
+            let ms = self.acquire_kind(w, h, TexKind::WorkMs);
+            self.raw_pass(&pipeline, &ms.view, Some(&target.view), depth_view, clear, &draws);
+            self.release(ms);
+        } else {
+            self.raw_pass(&pipeline, &target.view, None, depth_view, clear, &draws);
+        }
+        if let Some(t) = depth_tex {
+            self.release(t);
+        }
+        target
+    }
+
+    /// Add `a` (and `b`) times their weights to the motion blur sum.
+    fn accumulate(&mut self, sum: &mut Option<Tex>, a: &Tex, b: Option<&Tex>, weights: [f32; 2]) {
+        let p = [[weights[0], weights[1], 0.0, 0.0]];
+        match sum {
+            Some(target) => {
+                let target = target.clone();
+                self.pass(Pipe::SumAdd, &target, true, a, b, &p);
+            }
+            None => {
+                let target = self.acquire(a.w, a.h);
+                self.pass(Pipe::Sum, &target, false, a, b, &p);
+                *sum = Some(target);
+            }
+        }
+    }
+
+    /// The image so far as a texture: the background when nothing has been drawn yet.
+    fn materialise(&mut self, acc: &mut Option<Tex>, background: wgpu::Color) -> Tex {
+        if let Some(t) = acc {
+            return t.clone();
+        }
+        let t = self.acquire(self.ctx.w, self.ctx.h);
+        self.raw_pass(&self.pipes.full[&Pipe::Copy].clone(), &t.view, None, None, Some(background), &[]);
+        *acc = Some(t.clone());
+        t
+    }
+
+    /// Blend `source` (after the colour operations `ops`) over the image so far.
+    fn blend_over(&mut self, acc: &mut Option<Tex>, flat: [f32; 4], source: Source, ops: &[ColorOp], mode: Blend, opacity: f32) {
+        let out = self.acquire(self.ctx.w, self.ctx.h);
+        self.compose(&out, source, ops, Sink::Over { dst: acc.as_ref(), flat, mode, opacity });
+        if let Some(old) = acc.replace(out) {
+            self.release(old);
+        }
+    }
+
+    // ---- frames --------------------------------------------------------------
+
+    /// Render output frame `frame_index` (0-based) at `scale` times the project
+    /// resolution. Returns straight sRGB RGBA8, top row first.
+    pub fn render_frame(&mut self, frame_index: u64, scale: f32) -> Result<RgbaImage> {
+        let t = self.scene.as_ref().ok_or_else(|| anyhow!("no project prepared: call prepare() first"))?.project.frame_time(frame_index);
+        self.render(t, frame_index, scale)
+    }
+
+    /// Render the frame that starts at project time `time` (in the project's
+    /// time base: beats or seconds).
+    pub fn render_at(&mut self, time: f64, scale: f32) -> Result<RgbaImage> {
+        let scene = self.scene.as_ref().ok_or_else(|| anyhow!("no project prepared: call prepare() first"))?;
+        let p = &scene.project;
+        let frame = (p.to_seconds(time) * p.settings.fps + 1e-6).floor().max(0.0) as u64;
+        self.render(time, frame, scale)
+    }
+
+    fn render(&mut self, time: f64, frame: u64, scale: f32) -> Result<RgbaImage> {
+        let scene = self.scene.clone().ok_or_else(|| anyhow!("no project prepared: call prepare() first"))?;
+        let project = &scene.project;
+        let s = &project.settings;
+        let (w, h) = scaled_size(project, scale);
+        if self.pool_size != (w, h) {
+            // A different output size: the pooled textures are of no use any more.
+            self.pool.clear();
+            self.binds.clear();
+            self.pool_size = (w, h);
+        }
+        let samples = self.samples_override.unwrap_or(s.motion_blur.samples).clamp(1, 64);
+        self.stats = FrameStats { passes: 0, samples, rendered_samples: samples, width: w, height: h };
+        let ev = Evaluator::new(project);
+        let aspect = s.width as f64 / s.height as f64;
+        let bg = s.background.map(|c| assets::srgb_to_linear(c.clamp(0.0, 1.0)) as f64);
+        let background = wgpu::Color { r: bg[0], g: bg[1], b: bg[2], a: 1.0 };
+        let flat = [bg[0] as f32, bg[1] as f32, bg[2] as f32, 1.0];
+        let shutter = s.motion_blur.shutter.clamp(0.0, 1.0) * project.frame_len();
+
+        // Sub-frame instants at which the project evaluates to exactly the
+        // same values give the same picture: render each distinct one once.
+        let mut instants: Vec<(f64, Vec<u64>, u32)> = Vec::new();
+        for i in 0..samples {
+            let t = time + shutter * i as f64 / samples as f64;
+            let state = signature(&ev, t);
+            match instants.iter_mut().find(|(_, s, _)| *s == state) {
+                Some(same) => same.2 += 1,
+                None => instants.push((t, state, 1)),
+            }
+        }
+        self.stats.rendered_samples = instants.len() as u32;
+
+        let mut sum: Option<Tex> = None;
+        let mut waiting: Option<(Tex, f32)> = None;
+        let single = instants.len() == 1;
+        for (t, _, count) in instants {
+            let seconds = project.to_seconds(t);
+            let beats = s.bpm.filter(|b| *b > 0.0).map(|bpm| (seconds - s.beat_offset) * bpm / 60.0).unwrap_or(0.0);
+            self.ctx = Ctx { w, h, time: [seconds as f32, beats as f32, frame as f32, aspect as f32] };
+
+            // `None` until something is drawn: the first layer blends over the
+            // flat background colour instead of over a cleared texture.
+            let mut acc: Option<Tex> = None;
+            let vp = geometry::view_projection(&ev.camera(t), aspect);
+            for layer in &project.layers {
+                if !ev.active(layer, t) {
+                    continue;
+                }
+                let rl = ev.layer(layer, t);
+                let opacity = rl.opacity as f32;
+                if opacity <= 0.0 {
+                    continue;
+                }
+                let effects: Vec<_> = layer.effects.iter().filter(|e| e.enabled).map(|e| ev.effect(e, t)).collect();
+                let steps = self.plan_effects(&layer.id, &effects, w as f32, h as f32)?;
+                if matches!(layer.kind, LayerKind::Adjustment) {
+                    if steps.is_empty() {
+                        continue;
+                    }
+                    let base = self.materialise(&mut acc, background);
+                    let Some(out) = self.run_effects(&base, &steps) else { continue };
+                    if opacity >= 1.0 && layer.blend == Blend::Normal {
+                        self.release(base);
+                        acc = Some(out);
+                    } else {
+                        self.blend_over(&mut acc, flat, Source::Tex(&out), &[], layer.blend, opacity);
+                        self.release(out);
+                    }
+                    continue;
+                }
+                let (quads, depth) = self.layer_quads(&scene, layer, vp * geometry::model(&rl), aspect);
+                // Colour effects at the end of the chain ride along with the blend.
+                let (head, tail) = crate::fx::split_tail(&steps);
+                // A flat layer that hides the whole frame has no visible edges; if
+                // nothing has to look at neighbouring pixels it is drawn, graded
+                // and blended in a single pass.
+                let covers = !depth && quads.len() == 1 && quads[0].covers;
+                if covers && head.is_empty() {
+                    self.blend_over(&mut acc, flat, Source::Quad(&quads[0]), &tail, layer.blend, opacity);
+                    continue;
+                }
+                let mut content = self.draw_quads(&quads, depth, !covers);
+                if let Some(out) = self.run_effects(&content, head) {
+                    self.release(std::mem::replace(&mut content, out));
+                }
+                self.blend_over(&mut acc, flat, Source::Tex(&content), &tail, layer.blend, opacity);
+                self.release(content);
+            }
+            let acc = self.materialise(&mut acc, background);
+
+            if single {
+                sum = Some(acc);
+                break;
+            }
+            // Average in linear light, two samples per pass.
+            let weight = count as f32 / samples as f32;
+            match waiting.take() {
+                None => waiting = Some((acc, weight)),
+                Some((first, first_weight)) => {
+                    self.accumulate(&mut sum, &first, Some(&acc), [first_weight, weight]);
+                    self.release(first);
+                    self.release(acc);
+                }
+            }
+            // One submission per sample keeps the driver's queue short.
+            self.flush();
+        }
+        if let Some((last, weight)) = waiting.take() {
+            self.accumulate(&mut sum, &last, None, [weight, 0.0]);
+            self.release(last);
+        }
+        let sum = sum.expect("at least one sample");
+        let image = self.read_back(&sum);
+        self.release(sum);
+        image
+    }
+
+    /// The quads of an image, solid or cube layer, and whether they need a depth buffer.
+    fn layer_quads(&self, scene: &Scene, layer: &Layer, mvp: glam::DMat4, aspect: f64) -> (Vec<Quad>, bool) {
+        let white = [1.0, 1.0, 1.0, 1.0];
+        let (w, h) = (self.ctx.w, self.ctx.h);
+        let slot_quad = |name: &str, m: glam::DMat4, box_aspect: f64| {
+            let covers = geometry::covers_frame(m, w, h);
+            let slot = scene.project.slots.get(name);
+            let (fit, focus) = slot.map(|s| (s.fit, s.focus)).unwrap_or((edits_core::Fit::Cover, [0.5, 0.5]));
+            match scene.slots.get(name) {
+                Some(pic) => Quad { mvp: mat(m), tex: pic.tex.clone(), fit: geometry::fit_uv(fit, focus, pic.aspect, box_aspect), color: white, covers },
+                // Not reachable after `prepare`, which gives every used slot a picture.
+                None => Quad { mvp: mat(m), tex: self.white.clone(), fit: geometry::fit_uv(edits_core::Fit::Stretch, focus, 1.0, 1.0), color: [1.0, 0.0, 1.0, 1.0], covers },
+            }
+        };
+        match &layer.kind {
+            LayerKind::Image { slot } => (vec![slot_quad(slot, mvp * geometry::flat(aspect, 1.0), aspect)], false),
+            LayerKind::Solid { color } => {
+                let a = color[3].clamp(0.0, 1.0);
+                let c = [0, 1, 2].map(|i| assets::srgb_to_linear(color[i].clamp(0.0, 1.0)) * a);
+                let fit = geometry::fit_uv(edits_core::Fit::Stretch, [0.5, 0.5], 1.0, 1.0);
+                let m = mvp * geometry::flat(aspect, 1.0);
+                (vec![Quad { mvp: mat(m), tex: self.white.clone(), fit, color: [c[0], c[1], c[2], a], covers: geometry::covers_frame(m, w, h) }], false)
+            }
+            LayerKind::Cube { faces, size } => {
+                let quads = geometry::cube_faces(*size)
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, (m, face_aspect))| {
+                        let name = faces.get(i).or(faces.last())?;
+                        Some(slot_quad(name, mvp * *m, *face_aspect))
+                    })
+                    .collect();
+                (quads, true)
+            }
+            LayerKind::Adjustment => (Vec::new(), false),
+        }
+    }
+
+    /// Copy a finished frame out and encode it: linear RGBA16Float in,
+    /// straight sRGB RGBA8 out. The background is opaque, so alpha is 255.
+    fn read_back(&mut self, src: &Tex) -> Result<RgbaImage> {
+        let (w, h) = (src.w, src.h);
+        if self.readback.as_ref().is_none_or(|r| (r.w, r.h) != (w, h)) {
+            let row_bytes = (8 * w).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+            let buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("edits readback"),
+                size: row_bytes as u64 * h as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            self.readback = Some(Readback { w, h, buffer, row_bytes });
+        }
+        let (buffer, row_bytes) = self.readback.as_ref().map(|r| (r.buffer.clone(), r.row_bytes)).expect("just created");
+        let device = &self.gpu.device;
+        let encoder = self.encoder.get_or_insert_with(|| device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("edits frame") }));
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo { texture: &src.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyBufferInfo { buffer: &buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(row_bytes), rows_per_image: Some(h) } },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.flush();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        buffer.map_async(wgpu::MapMode::Read, .., move |r| {
+            let _ = tx.send(r);
+        });
+        self.gpu.device.poll(wgpu::PollType::wait_indefinitely()).map_err(|e| anyhow!("the GPU stopped responding: {e}"))?;
+        rx.recv().map_err(|_| anyhow!("frame readback was cancelled"))?.map_err(|e| anyhow!("frame readback failed: {e}"))?;
+        let lut = srgb_lut();
+        let mut pixels = vec![255u8; (4 * w * h) as usize];
+        {
+            let data = buffer.get_mapped_range(..).map_err(|e| anyhow!("frame readback failed: {e}"))?;
+            for (row, out) in data.chunks(row_bytes as usize).zip(pixels.chunks_exact_mut((4 * w) as usize)) {
+                for (texel, px) in row.chunks_exact(8).zip(out.chunks_exact_mut(4)) {
+                    for c in 0..3 {
+                        px[c] = lut[u16::from_le_bytes([texel[2 * c], texel[2 * c + 1]]) as usize];
+                    }
+                }
+            }
+        }
+        buffer.unmap();
+        RgbaImage::from_raw(w, h, pixels).ok_or_else(|| anyhow!("frame readback returned the wrong size"))
+    }
+}
+
+/// Every half-float bit pattern -> its 8-bit sRGB value. Negative values and
+/// NaN become 0, values above 1 become 255.
+fn srgb_lut() -> &'static [u8] {
+    static LUT: OnceLock<Vec<u8>> = OnceLock::new();
+    LUT.get_or_init(|| {
+        (0..=u16::MAX)
+            .map(|bits| {
+                let (exponent, mantissa) = ((bits >> 10) & 0x1F, (bits & 0x3FF) as f32);
+                let value = match exponent {
+                    0 => mantissa * 2f32.powi(-24),
+                    31 => {
+                        if mantissa == 0.0 {
+                            f32::INFINITY
+                        } else {
+                            f32::NAN
+                        }
+                    }
+                    e => (1.0 + mantissa / 1024.0) * 2f32.powi(e as i32 - 15),
+                };
+                if bits & 0x8000 != 0 || value.is_nan() {
+                    0
+                } else {
+                    (assets::linear_to_srgb(value.min(1.0)) * 255.0).round() as u8
+                }
+            })
+            .collect()
+    })
+}
+
+/// Everything the picture at project time `t` depends on, as raw bits: two
+/// instants with equal signatures render identically.
+fn signature(ev: &Evaluator, t: f64) -> Vec<u64> {
+    let mut out = Vec::with_capacity(64);
+    let cam = ev.camera(t);
+    out.push(cam.fov.to_bits());
+    out.extend(cam.position.iter().chain(&cam.rotation).map(|v| v.to_bits()));
+    for (i, layer) in ev.project.layers.iter().enumerate() {
+        if !ev.active(layer, t) {
+            continue;
+        }
+        let l = ev.layer(layer, t);
+        out.push(u64::MAX - i as u64);
+        out.extend(l.position.iter().chain(&l.scale).chain(&l.rotation).chain(&l.anchor).map(|v| v.to_bits()));
+        out.push(l.opacity.to_bits());
+        for e in layer.effects.iter().filter(|e| e.enabled) {
+            if e.kind == "custom" {
+                // Custom shaders can read the time itself.
+                out.push(t.to_bits());
+            }
+            for values in ev.effect(e, t).params.values() {
+                out.push(values.len() as u64);
+                out.extend(values.iter().map(|v| v.to_bits()));
+            }
+        }
+    }
+    out
+}
+
+/// Project size at `scale`, each side rounded to an even number of pixels.
+pub(crate) fn scaled_size(project: &Project, scale: f32) -> (u32, u32) {
+    let scale = if scale.is_finite() && scale > 0.0 { scale as f64 } else { 1.0 };
+    let side = |v: u32| (((v as f64 * scale / 2.0).round() as u32) * 2).max(2);
+    (side(project.settings.width), side(project.settings.height))
+}
+
+/// A stand-in bound to texture slots a pass does not use (replaced by a white pixel once uploads work).
+fn dummy(device: &wgpu::Device) -> Tex {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: IMAGE_FORMAT,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    Tex { id: 0, view: texture.create_view(&wgpu::TextureViewDescriptor::default()), texture, w: 1, h: 1, kind: TexKind::Image }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+    vertex: &str,
+    fragment: &str,
+    format: wgpu::TextureFormat,
+    blend: Option<wgpu::BlendState>,
+    samples: u32,
+    depth: bool,
+) -> wgpu::RenderPipeline {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(fragment),
+        layout: Some(layout),
+        vertex: wgpu::VertexState { module, entry_point: Some(vertex), compilation_options: Default::default(), buffers: &[] },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            // Quads are wound top-left, top-right, bottom-right as seen from
+            // outside, which is clockwise on screen.
+            front_face: wgpu::FrontFace::Cw,
+            cull_mode: depth.then_some(wgpu::Face::Back),
+            ..Default::default()
+        },
+        depth_stencil: depth.then(|| wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Less),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState { count: samples, mask: !0, alpha_to_coverage_enabled: false },
+        fragment: Some(wgpu::FragmentState {
+            module,
+            entry_point: Some(fragment),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState { format, blend, write_mask: wgpu::ColorWrites::ALL })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
