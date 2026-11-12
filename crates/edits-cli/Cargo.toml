@@ -1,0 +1,19 @@
+[package]
+name = "edits-cli"
+description = "Command-line tool for the edits engine: render, frame, sheet, check, describe, demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "edits"
+path = "src/main.rs"
+
+[dependencies]
+edits-core = { path = "../edits-core" }
+edits-render = { path = "../edits-render" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap = { version = "4", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
