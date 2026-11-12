@@ -27,7 +27,7 @@ A Cargo workspace; every crate is under `crates/`.
 | `edits-gui` | `edits-gui` | A desktop window that previews a project while something else edits it (transport, timeline, live reload). It does not edit projects. |
 | `edits-calib` | | Round-trip calibration: random recipes with known parameters are rendered, analysed and scored against the truth. |
 
-Other folders: `docs/` (format, effects, CLI, rendering, analysis, agents),
+Other folders: `docs/` (format, effects, CLI, rendering, analysis, agents, window),
 `examples/` (`beat-loop.json`, example shaders), `.claude/skills/edits/` (the
 skill for agents using the engine), `.mcp.json` (registers the MCP server for
 Claude Code).
@@ -121,3 +121,4 @@ definitions; `docs/AGENTS.md` has the client setup.
 | `docs/RENDERING.md` | Colour, geometry and what the renderer does to be fast |
 | `docs/ANALYSIS.md` | `edits-analyze`: stages, the analysis file, draft, compare |
 | `docs/AGENTS.md` | Driving the engine from an agent: JSON, CLI, MCP tools, security, client setup |
+| `docs/GUI.md` | The preview window |

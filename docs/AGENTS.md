@@ -149,8 +149,8 @@ is compared is timing and effect curves. See [ANALYSIS.md](ANALYSIS.md).
   shows only what changed. The first edit through the server reformats a
   hand-written file once.
 - **Edits made by hand are respected.** The server reads the file fresh on
-  every call and keeps no copy, so a person (or the preview window) can edit
-  the same project between calls.
+  every call and keeps no copy, so a person can edit the same project between
+  calls, and the preview window ([GUI.md](GUI.md)) follows every change.
 
 `.edits/` folders carry their own `.gitignore`; nothing in them is committed.
 

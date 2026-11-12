@@ -36,7 +36,7 @@ needs is not there yet.
 
 | In progress | |
 | --- | --- |
-| `edits-gui` | A preview window with transport and timeline that follows a project while an agent edits it |
+| `edits-gui` | A read-only preview window with transport and timeline that follows a project file while an agent edits it ([docs/GUI.md](docs/GUI.md)) |
 | `edits-calib` | Measuring how accurate the analysis is, on generated edits with known parameters |
 
 | Not there | |
@@ -116,6 +116,7 @@ above), then ask for an edit. For Codex and for use outside the checkout, see
 | [docs/RENDERING.md](docs/RENDERING.md) | Colour, geometry, performance |
 | [docs/ANALYSIS.md](docs/ANALYSIS.md) | Reference analysis, drafting and comparison |
 | [docs/AGENTS.md](docs/AGENTS.md) | Driving the engine from an agent: JSON, CLI, MCP tools, security, client setup |
+| [docs/GUI.md](docs/GUI.md) | The preview window (in progress) |
 | [.claude/skills/edits/SKILL.md](.claude/skills/edits/SKILL.md) | Step-by-step workflows and starting values for this genre |
 | [CLAUDE.md](CLAUDE.md) | For work on this codebase: layout, build, conventions |
 | [examples/beat-loop.json](examples/beat-loop.json) | A complete project |
