@@ -305,6 +305,15 @@ pub fn describe(o: &CaseOutcome) -> String {
         }
         s += &format!("  true shot {:2} frames {:4}..{:4} {:8} {:12} {} | {}\n", i + 1, sh.f0, sh.f1, sh.kind.name(), sh.motion, sh.slot, parts.join(" "));
     }
+    if let (Some(tv), Some(ev)) = (&t.vignette, &o.analysis.layers.vignette) {
+        let n = ev.profile.len();
+        s += "vignette profile (r: measured / true gain):";
+        for (i, p) in ev.profile.iter().enumerate() {
+            let r = i as f64 / (n - 1) as f64;
+            s += &format!(" {r:.2}:{p:.2}/{:.2}", score::vignette_gain(tv, r));
+        }
+        s += "\n";
+    }
     s += "analysis:\n";
     s += &edits_analyze::pipeline::summary(&o.analysis);
     if std::env::var_os("EDITS_CALIB_FRAMES").is_some() {

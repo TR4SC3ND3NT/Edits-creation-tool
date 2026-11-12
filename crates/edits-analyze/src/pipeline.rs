@@ -260,7 +260,7 @@ pub fn measure_frame(frames: &Frames, ref_frame: usize, i: usize, sim: Option<&S
         let (lo, hi) = if searched { ((0.6 * blur.sigma_px).powi(2), (1.5 * blur.sigma_px + 0.0015 * fh as f64).powi(2)) } else { (0.0, f64::MAX) };
         if measurable && (searched || s2 > floor || exp.stops.abs() > 0.4) {
             s2 = s2.max(0.0);
-            for _ in 0..3 {
+            for _ in 0..4 {
                 let pb = pair.with_reference(pair.blurred_reference(s2.sqrt() as f32));
                 let t2 = tone::measure(&pb, false);
                 (tone.sat_ratio, tone.sat_confidence, tone.sat_cur, tone.sat_ref) = (t2.sat_ratio, t2.sat_confidence, t2.sat_cur, t2.sat_ref);
@@ -270,14 +270,11 @@ pub fn measure_frame(frames: &Frames, ref_frame: usize, i: usize, sim: Option<&S
                 }
                 let synth = blur::fill_masked(&crate::measure::flashed_luma(&pb.refw, fw, fh, 2f32.powf(exp.stops as f32)), &pair.ref_ok);
                 let (d2, b) = blur::measure_signed_at(&cur, &synth, s2.sqrt());
-                if std::env::var_os("EDITS_JOINT_DEBUG").is_some() {
-                    eprintln!("frame {i}: first {:.3}% searched {searched} s {:.3}% d2 {:+.4} stops {:.2} clipped {:.2}", 100.0 * first.sigma_px / fh as f64, 100.0 * s2.sqrt() / fh as f64, d2 / (fh * fh) as f64 * 1e4, exp.stops, exp.clipped);
-                }
                 let next = (s2 + d2).max(0.0).clamp(lo, hi);
                 let moved = (next.sqrt() - s2.sqrt()).abs();
                 s2 = next;
                 blur = BlurSample { sigma_px: s2.sqrt(), anisotropy: first.anisotropy, fit_rms: b.fit_rms };
-                if moved < 0.0005 * fh as f64 {
+                if moved < 0.0002 * fh as f64 {
                     break;
                 }
             }

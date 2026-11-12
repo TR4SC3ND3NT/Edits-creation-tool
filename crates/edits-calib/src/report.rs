@@ -39,7 +39,7 @@ pub const TOLERANCES: &[Tolerance] = &[
     t("invert.frames", "frames", 1.0, false, "length of a matched inversion hit"),
     t("threshold.frames", "frames", 1.0, false, "length of a matched threshold hit"),
     t("threshold.level", "0..1", 0.08, false, "threshold level"),
-    t("blur.radius", "relative", 0.2, true, "per-frame Gaussian radius where the truth is 0.3% or more"),
+    t("blur.radius", "relative", 0.2, true, "per-frame Gaussian radius where the truth is 0.3% or more (within 20% of the truth or 0.15% of height)"),
     t("blur.rest", "% of height", 0.1, false, "per-frame blur where the truth is 0"),
     t("blur.rest_flash", "% of height", 0.2, false, "per-frame blur under a flash where the truth is 0"),
     t("scale", "x", 0.01, false, "per-frame scale relative to the reference frame"),
@@ -130,6 +130,10 @@ fn round(v: f64, d: i32) -> f64 {
     (v * m).round() / m
 }
 
+/// Absolute error that always counts as within tolerance for a relative
+/// estimator: 0.15% of height for blur (1.6 px at 1080).
+pub const RELATIVE_FLOOR: f64 = 0.15;
+
 pub fn error_of(est: &str, truth: f64, got: f64) -> f64 {
     match tolerance(est) {
         Some(t) if t.relative => (got - truth) / truth.abs().max(1e-9),
@@ -137,7 +141,17 @@ pub fn error_of(est: &str, truth: f64, got: f64) -> f64 {
     }
 }
 
-fn row(est: &str, condition: &str, kind: &str, errs: &[f64]) -> Row {
+/// Is this sample within its estimator's tolerance?
+pub fn within(est: &str, truth: f64, got: f64) -> bool {
+    match tolerance(est) {
+        Some(t) if t.relative => ((got - truth) / truth.abs().max(1e-9)).abs() <= t.tol || (got - truth).abs() <= RELATIVE_FLOOR,
+        Some(t) => (got - truth).abs() <= t.tol,
+        None => true,
+    }
+}
+
+fn row(est: &str, condition: &str, kind: &str, samples: &[(f64, bool)]) -> Row {
+    let errs: Vec<f64> = samples.iter().map(|s| s.0).collect();
     let n = errs.len();
     let tol = tolerance(est);
     let mean = errs.iter().sum::<f64>() / n.max(1) as f64;
@@ -145,7 +159,6 @@ fn row(est: &str, condition: &str, kind: &str, errs: &[f64]) -> Row {
     let mut abs: Vec<f64> = errs.iter().map(|e| e.abs()).collect();
     abs.sort_by(|a, b| a.total_cmp(b));
     let p90 = if n == 0 { 0.0 } else { abs[((n - 1) as f64 * 0.9).round() as usize] };
-    let lim = tol.map(|t| t.tol).unwrap_or(f64::INFINITY);
     Row {
         est: est.into(),
         condition: condition.into(),
@@ -154,7 +167,7 @@ fn row(est: &str, condition: &str, kind: &str, errs: &[f64]) -> Row {
         bias: round(mean, 4),
         spread: round(var.sqrt(), 4),
         p90: round(p90, 4),
-        within: round(abs.iter().filter(|e| **e <= lim).count() as f64 / n.max(1) as f64, 3),
+        within: round(samples.iter().filter(|s| s.1).count() as f64 / n.max(1) as f64, 3),
         tol: tol.map(|t| t.tol).unwrap_or(0.0),
         unit: tol.map(|t| t.unit).unwrap_or("").into(),
         relative: tol.map(|t| t.relative).unwrap_or(false),
@@ -163,11 +176,11 @@ fn row(est: &str, condition: &str, kind: &str, errs: &[f64]) -> Row {
 
 /// Rows per (condition, estimator) and per kind, in the order of [`TOLERANCES`].
 pub fn aggregate(all: &[(String, Scores)]) -> (Vec<Row>, Vec<EventRow>) {
-    let mut errs: BTreeMap<(String, String, String), Vec<f64>> = BTreeMap::new();
+    let mut errs: BTreeMap<(String, String, String), Vec<(f64, bool)>> = BTreeMap::new();
     let mut counts: BTreeMap<(String, String, String), (usize, usize, usize)> = BTreeMap::new();
     for (cond, sc) in all {
         for s in &sc.samples {
-            let e = error_of(&s.est, s.truth, s.got);
+            let e = (error_of(&s.est, s.truth, s.got), within(&s.est, s.truth, s.got));
             errs.entry((cond.clone(), s.est.clone(), "all".into())).or_default().push(e);
             if s.kind != "-" {
                 errs.entry((cond.clone(), s.est.clone(), s.kind.clone())).or_default().push(e);
@@ -259,7 +272,7 @@ pub fn table(r: &Report) -> String {
                 row.spread,
                 row.p90,
                 100.0 * row.within,
-                if row.relative { format!("{:.0}% of truth", 100.0 * row.tol) } else { format!("{} {}", row.tol, row.unit) },
+                if row.relative { format!("{:.0}% or {RELATIVE_FLOOR}", 100.0 * row.tol) } else { format!("{} {}", row.tol, row.unit) },
                 kinds.join(", ")
             );
         }

@@ -153,9 +153,6 @@ pub fn blur_under_flash(pair: &Pair, inverted: bool, sat: f64, start_px: f64) ->
         }
         scored.sort_by(|a, b| a.0.total_cmp(&b.0));
     }
-    if std::env::var_os("EDITS_JOINT_DEBUG").is_some() {
-        eprintln!("joint: {}", scored.iter().map(|(s, m, e)| format!("{:.2}%:{:.4}/{:+.2}{}", 100.0 * s / h, m, e.stops, if e.bound { "b" } else { "" })).collect::<Vec<_>>().join(" "));
-    }
     let best = scored.iter().min_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
     Some(Joint { sigma_px: best.0, exposure: best.2, mismatch: best.1, mismatch_sharp: sharp })
 }
