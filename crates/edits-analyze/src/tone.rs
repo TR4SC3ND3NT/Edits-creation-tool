@@ -28,18 +28,54 @@ pub struct ToneSample {
     pub posterize: Option<u32>,
 }
 
-fn chroma_stats(rgb: &[u8], sel: impl Fn(usize) -> bool) -> (f64, f64) {
-    let (mut c, mut v) = (0.0f64, 0.0f64);
-    for (i, p) in rgb.chunks_exact(3).enumerate() {
-        if !sel(i) {
-            continue;
+/// Chroma and value sums of the frame and of the reference frame over
+/// blocks that a flash has not clipped. Block means are used so that noise
+/// (which reads as chroma in dark areas) does not pass for colour. Returns
+/// (chroma cur, value cur, chroma ref, value ref, share of blocks used).
+fn chroma_stats(pair: &Pair) -> (f64, f64, f64, f64, f64) {
+    let b = (pair.h / 90).max(3);
+    let (mut cc, mut cv, mut rc, mut rv) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    let (mut blocks, mut used) = (0usize, 0usize);
+    let mut y = 0;
+    while y + b <= pair.h {
+        let mut x = 0;
+        while x + b <= pair.w {
+            let (mut c, mut r, mut k) = ([0.0f64; 3], [0.0f64; 3], 0.0f64);
+            let mut clipped = false;
+            for yy in y..y + b {
+                for xx in x..x + b {
+                    let i = yy * pair.w + xx;
+                    if pair.mask[i] {
+                        // White is 255 only where there is no vignette.
+                        let white = pair.flat.map(|f| f.white[i]).unwrap_or(255) as f32;
+                        for ch in 0..3 {
+                            c[ch] += pair.cur[i * 3 + ch] as f64;
+                            r[ch] += pair.refw[i * 3 + ch] as f64;
+                            clipped |= pair.cur[i * 3 + ch] as f32 >= 0.96 * white;
+                        }
+                        k += 1.0;
+                    }
+                }
+            }
+            x += b;
+            if k < (b * b) as f64 * 0.5 {
+                continue;
+            }
+            blocks += 1;
+            let mx = |v: &[f64; 3]| v[0].max(v[1]).max(v[2]) / k;
+            let mn = |v: &[f64; 3]| v[0].min(v[1]).min(v[2]) / k;
+            if clipped || mx(&r) <= 24.0 {
+                continue;
+            }
+            used += 1;
+            cc += mx(&c) - mn(&c);
+            cv += mx(&c);
+            rc += mx(&r) - mn(&r);
+            rv += mx(&r);
         }
-        let mx = p[0].max(p[1]).max(p[2]);
-        let mn = p[0].min(p[1]).min(p[2]);
-        c += (mx - mn) as f64;
-        v += mx as f64;
+        y += b;
     }
-    (c, v)
+    (cc, cv, rc, rv, used as f64 / blocks.max(1) as f64)
 }
 
 /// Smallest number of 32-level-wide bins that hold 90% of the channel values.
@@ -115,30 +151,21 @@ pub fn lum_correlation(pair: &Pair) -> f64 {
 }
 
 pub fn measure(pair: &Pair, inverted: bool) -> ToneSample {
-    let n = pair.w * pair.h;
-    // Saturation over pixels that a flash has not clipped, same pixels in both frames.
-    let ok = |i: usize| {
-        let p = &pair.cur[i * 3..i * 3 + 3];
-        let q = &pair.refw[i * 3..i * 3 + 3];
-        pair.mask[i] && p[0].max(p[1]).max(p[2]) < 250 && q[0].max(q[1]).max(q[2]) > 24
-    };
-    let used = (0..n).filter(|i| ok(*i)).count();
-    let (cc, cv) = chroma_stats(pair.cur, ok);
-    let (rc, rv) = chroma_stats(&pair.refw, ok);
+    // Saturation over areas that a flash has not clipped, the same areas in both frames.
+    let (cc, cv, rc, rv, share) = chroma_stats(pair);
     let sat_cur = if cv > 0.0 { cc / cv } else { 0.0 };
     let sat_ref = if rv > 0.0 { rc / rv } else { 0.0 };
-    let masked = pair.mask.iter().filter(|m| **m).count().max(1);
     let (sat_ratio, sat_confidence) = if sat_ref < 0.04 || inverted {
         (1.0, 0.0)
     } else {
-        ((sat_cur / sat_ref).clamp(0.0, 4.0), ((used as f64 / masked as f64) / 0.3).min(1.0) * ((sat_ref - 0.04) / 0.1).clamp(0.2, 1.0))
+        ((sat_cur / sat_ref).clamp(0.0, 4.0), (share / 0.3).min(1.0) * ((sat_ref - 0.04) / 0.1).clamp(0.2, 1.0))
     };
 
     let lum_corr = lum_correlation(pair);
 
     // Tone-curve shape from matched quantiles of gamma-encoded luminance.
-    let hr = LumHist::new(&pair.refw, &pair.mask, false);
-    let hc = LumHist::new(pair.cur, &pair.mask, inverted);
+    let hr = LumHist::new(&pair.refw, &pair.mask, false, pair.flat);
+    let hc = LumHist::new(pair.cur, &pair.mask, inverted, pair.flat);
     let mut threshold = None;
     let mut posterize = None;
     if hr.count >= 200 {
@@ -157,7 +184,15 @@ pub fn measure(pair: &Pair, inverted: bool) -> ToneSample {
             let cross = |level: f64| x[y.iter().position(|t| *t >= level).unwrap_or(y.len() - 1)];
             let (x25, x50, x75) = (cross(0.25), cross(0.5), cross(0.75));
             if (x75 - x25) < 0.35 * x50.max(0.05) {
-                threshold = Some(x50);
+                // A strong flash also leaves only white and dark ink. The
+                // difference: a threshold crushes the darks to black, a flash
+                // lifts them. Without measurable darks, a small dark share
+                // is read as a flash.
+                let lifted: Vec<f64> = (0..y.len()).filter(|i| y[*i] < 0.3 && x[*i] > 0.08).map(|i| (y[i] / x[i]).powf(2.2)).collect();
+                let is_flash = if lifted.len() >= 3 { crate::img::median(&lifted) > 1.3 } else { (dark as f64) < 0.15 * y.len() as f64 };
+                if !is_flash {
+                    threshold = Some(x50);
+                }
             }
         }
         if threshold.is_none() {

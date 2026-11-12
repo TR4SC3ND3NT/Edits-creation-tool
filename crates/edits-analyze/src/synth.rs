@@ -202,7 +202,8 @@ impl Clip {
                     }
                     let r = ((x as f64 - cx).powi(2) + (y as f64 - cy).powi(2)).sqrt() / half_diag;
                     let vg = vignette_gain(self.vignette, 0.5, 0.5, r) as f32;
-                    let o = self.overlay_at(x, y);
+                    // A black frame (no picture) is a true black frame: nothing on top.
+                    let o = if spec.picture == 0 { 0.0 } else { self.overlay_at(x, y) };
                     for k in 0..3 {
                         let v = (c[k] * gain).clamp(0.0, 1.0) * vg;
                         let v = 1.0 - (1.0 - v) * (1.0 - o);

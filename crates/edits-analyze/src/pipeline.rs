@@ -8,7 +8,7 @@ use crate::exposure::{self, ExposureSample};
 use crate::img::{median, save_rgb, Frames, Sim};
 use crate::ingest;
 use crate::layers::{self, Plate};
-use crate::measure::{luma_image, make_pair};
+use crate::measure::{luma_image, make_pair, FlatField};
 use crate::media;
 use crate::schema::*;
 use crate::shots::{self, Cut};
@@ -32,11 +32,13 @@ pub struct AnalyzeOpts {
     pub samples: bool,
     /// Analyse the whole clip even if it loops.
     pub whole: bool,
+    /// Analyse exactly this frame range (`first..end`), overriding loop detection.
+    pub range: Option<(usize, usize)>,
 }
 
 impl Default for AnalyzeOpts {
     fn default() -> Self {
-        Self { height: 360, bpm: None, beat_offset: None, samples: false, whole: false }
+        Self { height: 360, bpm: None, beat_offset: None, samples: false, whole: false, range: None }
     }
 }
 
@@ -199,7 +201,7 @@ fn inset_panel(frames: &Frames, ref_frame: usize, usable: &[bool]) -> bool {
     ring.len() > 100 && sd(&ring) < 0.05 && crate::img::mean(&ring) < 0.12 && sd(&centre) > 0.12
 }
 
-fn process_shot(frames: &Frames, sigs: &[FrameSig], toggles: &[bool], usable: &[bool], f0: usize, f1: usize) -> ShotWork {
+fn process_shot(frames: &Frames, sigs: &[FrameSig], toggles: &[bool], usable: &[bool], flat: &FlatField, f0: usize, f1: usize) -> ShotWork {
     let n = f1 - f0;
     // Tone state from frame-to-frame sign flips; the majority state is "normal".
     let mut state = vec![false; n];
@@ -210,9 +212,7 @@ fn process_shot(frames: &Frames, sigs: &[FrameSig], toggles: &[bool], usable: &[
         state.iter_mut().for_each(|s| *s = !*s);
     }
     let mut inv_abs = vec![false; sigs.len()];
-    for i in 0..n {
-        inv_abs[f0 + i] = state[i];
-    }
+    inv_abs[f0..f0 + n].copy_from_slice(&state);
     let ref_frame = reference_frame(sigs, &inv_abs, f0, f1);
     let track = track::track_shot(frames, f0, f1, ref_frame, usable);
     let valid = track.iter().filter(|t| t.valid()).count();
@@ -224,6 +224,16 @@ fn process_shot(frames: &Frames, sigs: &[FrameSig], toggles: &[bool], usable: &[
             "registration to the reference frame held on only {valid} of {n} frames: non-similarity motion (3D turn, cube), content changing inside the shot, or too little texture"
         ));
     }
+    let tilted: Vec<&TrackSample> = track.iter().filter(|t| t.non_similarity()).collect();
+    if tracked && tilted.len() >= 2 && tilted.len() * 4 >= valid {
+        tracked = false;
+        let worst = tilted.iter().map(|t| t.affine.0).fold(0.0, f64::max);
+        reasons.push(format!(
+            "{} of {valid} registered frames fit an affine transform clearly better than a similarity (scale factors differ by up to {:.0}%): the picture tilts in 3D or is stretched; rotation about X/Y not measured",
+            tilted.len(),
+            100.0 * worst
+        ));
+    }
     if inset_panel(frames, ref_frame, usable) {
         tracked = false;
         reasons.push("small inset panel on a uniform dark background (cube face or picture-in-picture): layout and 3D pose not measured".into());
@@ -233,7 +243,7 @@ fn process_shot(frames: &Frames, sigs: &[FrameSig], toggles: &[bool], usable: &[
         .map(|i| {
             let ts = &track[i - f0];
             let sim: Option<&Sim> = if tracked { Some(&ts.sim) } else { None };
-            let pair = make_pair(frames, ref_frame, i, sim, usable);
+            let pair = make_pair(frames, ref_frame, i, sim, usable).with_flat(flat);
             let mut inverted = state[i - f0];
             if tracked && ts.valid() {
                 let c = tone::lum_correlation(&pair);
@@ -258,7 +268,7 @@ fn process_shot(frames: &Frames, sigs: &[FrameSig], toggles: &[bool], usable: &[
         // (the content turns or changes), so compare neighbours instead and
         // accumulate outwards from the reference frame.
         let step = |from: usize, to: usize| {
-            let pair = make_pair(frames, from, to, None, usable);
+            let pair = make_pair(frames, from, to, None, usable).with_flat(flat);
             exposure::measure_between(&pair, meas[to - f0].inverted != meas[from - f0].inverted)
         };
         let steps_fwd: Vec<ExposureSample> = (ref_frame + 1..f1).into_par_iter().map(|i| step(i - 1, i)).collect();
@@ -391,7 +401,9 @@ fn build_shot(id: usize, w: &ShotWork, sigs: &[FrameSig], dup: &[bool], t: &Timi
     // ---- exposure -------------------------------------------------------------
     let stops: Vec<f64> = w.meas.iter().map(|m| m.exp.stops).collect();
     let econf: Vec<f64> = w.meas.iter().map(|m| m.exp.confidence * if w.tracked { 1.0 } else { 0.6 }).collect();
-    let fl = exposure::flashes(&stops, &econf);
+    let lum_c: Vec<f64> = (f0..f1).map(|i| sigs[i].lum_center as f64).collect();
+    let lum_all: Vec<f64> = (f0..f1).map(|i| sigs[i].lum as f64).collect();
+    let fl = exposure::flashes(&stops, &econf, &lum_all);
     let mut ekeys: Vec<CurveKey> = Vec::new();
     for f in &fl {
         let clipped = w.meas[f.peak].exp.clipped;
@@ -399,7 +411,17 @@ fn build_shot(id: usize, w: &ShotWork, sigs: &[FrameSig], dup: &[bool], t: &Timi
         params.insert("peak".into(), Est::measured(f.peak_stops, "stops", f.confidence));
         params.insert("decay_rate".into(), Est::measured(f.rate, "fraction of the remainder per frame", f.rate_confidence));
         params.insert("peak_luminance".into(), Est::measured(sigs[f0 + f.peak].lum_center as f64, "0..255 (centre of frame)", 0.95));
-        let note = if clipped > 0.6 { Some("most of the frame is clipped at white: the peak is a lower bound".to_string()) } else { None };
+        // The same decay read directly off the luminance: share of the excess
+        // over the settled level that is left after each frame.
+        let settle = lum_c[f.end.min(n - 1)].min(lum_c[w.ref_frame - f0]);
+        let ratios: Vec<f64> = (f.peak..f.end.min(n - 1)).filter(|i| lum_c[*i] - settle > 12.0).map(|i| (lum_c[i + 1] - settle) / (lum_c[i] - settle)).collect();
+        if ratios.len() >= 2 {
+            params.insert("luminance_excess_kept".into(), Est::measured(median(&ratios), "fraction kept per frame", ((ratios.len() as f64 - 1.0) / 4.0).min(0.8)));
+        }
+        let mut note = if clipped > 0.6 { Some("most of the frame is clipped at white: the peak is a lower bound".to_string()) } else { None };
+        if f.end >= n && f.peak + 2 >= n && f.start < f.peak {
+            note = Some("rises into the cut: the attack of the next shot's flash".into());
+        }
         events.push(t.event("flash", f0 + f.start, f0 + f.end, f0 + f.peak, params, note));
         // Keys: (0 before) -> peak with a decay ease -> back to 0.
         let last_idx = ekeys.last().map(|k| k.frame - f0);
@@ -471,7 +493,22 @@ fn build_shot(id: usize, w: &ShotWork, sigs: &[FrameSig], dup: &[bool], t: &Timi
 
     // ---- tone hits ----------------------------------------------------------------
     let trust = if w.tracked { 1.0 } else { 0.6 };
-    let bw_frames: Vec<bool> = w.meas.iter().map(|m| m.tone.sat_confidence > 0.5 && m.tone.sat_ratio < 0.5).collect();
+    // A flash (glow, clipping) washes colour out by itself: under one, only a
+    // near-total loss of colour counts as a saturation hit.
+    let low = |m: &FrameMeasure| m.tone.sat_ratio < if m.exp.stops > 1.0 { 0.1 } else { 0.5 };
+    let mut bw_frames: Vec<bool> = w.meas.iter().map(|m| m.tone.sat_confidence > 0.5 && low(m)).collect();
+    // A confident run extends over neighbours that agree but are hard to read (the flash peak).
+    let weak = |m: &FrameMeasure| m.tone.sat_confidence > 0.1 && low(m);
+    for i in 1..n {
+        if bw_frames[i - 1] && !bw_frames[i] && weak(&w.meas[i]) {
+            bw_frames[i] = true;
+        }
+    }
+    for i in (0..n.saturating_sub(1)).rev() {
+        if bw_frames[i + 1] && !bw_frames[i] && weak(&w.meas[i]) {
+            bw_frames[i] = true;
+        }
+    }
     let sat_runs: Vec<(usize, usize, f64)> = tone::runs(&bw_frames)
         .into_iter()
         .map(|(a, b)| {
@@ -552,6 +589,8 @@ fn build_shot(id: usize, w: &ShotWork, sigs: &[FrameSig], dup: &[bool], t: &Timi
             y: w.track.iter().map(|s| round_to(s.sim.ty, 4)).collect(),
             confidence: w.track.iter().map(|s| round_to(s.confidence(), 2)).collect(),
             zncc: w.track.iter().map(|s| round_to(s.zncc, 2)).collect(),
+            anisotropy: w.track.iter().map(|s| round_to(s.affine.0, 3)).collect(),
+            affine_gain: w.track.iter().map(|s| round_to(s.affine.1, 3)).collect(),
             method: w
                 .track
                 .iter()
@@ -610,7 +649,7 @@ pub fn cluster_slots(frames: &Frames, refs: &[usize], usable: &[bool]) -> Vec<us
     let pairs: Vec<(usize, usize)> = (0..n).flat_map(|i| (i + 1..n).map(move |j| (i, j))).collect();
     let same: Vec<bool> = pairs
         .par_iter()
-        .map(|(i, j)| track::align_unknown(&tmpls[*i], &pyrs[*j], &masks).map(|r| r.zncc >= 0.45).unwrap_or(false))
+        .map(|(i, j)| track::align_unknown(&tmpls[*i], &pyrs[*j], &masks).map(|r| r.zncc >= 0.38).unwrap_or(false))
         .collect();
     let mut group: Vec<usize> = (0..n).collect();
     fn find(g: &mut [usize], i: usize) -> usize {
@@ -631,19 +670,44 @@ pub fn cluster_slots(frames: &Frames, refs: &[usize], usable: &[bool]) -> Vec<us
     (0..n).map(|i| find(&mut group, i)).collect()
 }
 
+/// Stage timings on stderr when `EDITS_ANALYZE_TIMING` is set.
+struct StageTimer {
+    on: bool,
+    last: std::time::Instant,
+}
+impl StageTimer {
+    fn new() -> Self {
+        Self { on: std::env::var_os("EDITS_ANALYZE_TIMING").is_some(), last: std::time::Instant::now() }
+    }
+    fn lap(&mut self, stage: &str) {
+        if self.on {
+            eprintln!("  {stage:<28} {:6.2} s", self.last.elapsed().as_secs_f64());
+        }
+        self.last = std::time::Instant::now();
+    }
+}
+
 /// Run every stage on decoded frames (and audio, if any).
 pub fn analyze_frames(frames: &Frames, audio: Option<(&[f32], u32)>, mut source: Source, opts: &AnalyzeOpts) -> Analyzed {
+    let mut timer = StageTimer::new();
     let fps = frames.fps;
     source.analysis_width = frames.w;
     source.analysis_height = frames.h;
     source.frames = frames.len();
     let sigs = signals::signatures(frames);
     let thumbs = signals::thumbnails(frames, shots::THUMB);
+    timer.lap("signatures, thumbnails");
     let mut ing = ingest::ingest(&thumbs, &sigs, fps);
+    timer.lap("ingest (loop, duplicates)");
     if opts.whole {
         ing.analysed_f0 = ing.content_f0;
         ing.analysed_f1 = ing.content_f1;
         ing.duplicates = ingest::duplicates(&sigs, ing.content_f0, ing.content_f1, fps);
+    }
+    if let Some((r0, r1)) = opts.range {
+        ing.analysed_f0 = r0.min(frames.len());
+        ing.analysed_f1 = r1.clamp(ing.analysed_f0, frames.len());
+        ing.duplicates = ingest::duplicates(&sigs, ing.analysed_f0, ing.analysed_f1, fps);
     }
     let (a0, a1) = (ing.analysed_f0, ing.analysed_f1);
     let mut notes: Vec<String> = Vec::new();
@@ -654,14 +718,20 @@ pub fn analyze_frames(frames: &Frames, audio: Option<(&[f32], u32)>, mut source:
     let cuts = if a1 > a0 { shots::detect_cuts(&prepared, &sims, &lum, a0, a1) } else { vec![] };
     let toggles = shots::invert_toggles(&sims);
     let cut_frames: Vec<usize> = cuts.iter().map(|c| c.frame).collect();
+    timer.lap("shots (cut detection)");
     let beats = beat_grid(audio, &sigs, fps, opts, a0, &cut_frames);
+    timer.lap("beats");
     if let Some(l) = &mut ing.loop_info {
         let b = l.period_frames.value / beats.frames_per_beat;
         let whole = (b - b.round()).abs() < 0.15;
         l.period_beats = Some(Est::measured(if whole { b.round() } else { b }, "beats", if whole { beats.bpm.confidence } else { 0.3 * beats.bpm.confidence }));
         notes.push(format!(
-            "the edit loops: {} frames ({:.2} beats) from frame {}, played {:.2} times; shots are analysed for the first period only",
-            l.period_frames.value, b, l.first_frame, l.repeats
+            "the edit loops: {} frames ({:.2} beats) from frame {}, played {:.2} times{}",
+            l.period_frames.value,
+            b,
+            l.first_frame,
+            l.repeats,
+            if opts.range.is_some() || opts.whole { "" } else { "; shots are analysed for the first period only" }
         ));
     }
     if let Some(s) = &ing.duplicates.spacing_frames {
@@ -690,13 +760,19 @@ pub fn analyze_frames(frames: &Frames, audio: Option<(&[f32], u32)>, mut source:
     let usable = if overlay.is_some() { layers::usable_mask(&plate) } else { vec![true; frames.w * frames.h] };
     let vignette = if a1 > a0 { layers::vignette(frames, &sigs, a0, a1) } else { None };
 
+    timer.lap("layers (overlay, vignette)");
     // Shots.
     let mut bounds = vec![a0];
     bounds.extend(cut_frames.iter().copied());
     bounds.push(a1);
     let ranges: Vec<(usize, usize)> = bounds.windows(2).map(|w| (w[0], w[1])).filter(|(a, b)| b > a).collect();
-    let work: Vec<ShotWork> = ranges.par_iter().map(|(f0, f1)| process_shot(frames, &sigs, &toggles, &usable, *f0, *f1)).collect();
+    let flat = match &vignette {
+        Some(v) => FlatField::from_profile(frames.w, frames.h, &v.profile),
+        None => FlatField::flat(frames.w, frames.h),
+    };
+    let work: Vec<ShotWork> = ranges.par_iter().map(|(f0, f1)| process_shot(frames, &sigs, &toggles, &usable, &flat, *f0, *f1)).collect();
 
+    timer.lap("track, exposure, tone, blur");
     let mut dup = vec![false; frames.len()];
     for d in &ing.duplicates.frames {
         dup[*d] = true;
@@ -709,6 +785,7 @@ pub fn analyze_frames(frames: &Frames, audio: Option<(&[f32], u32)>, mut source:
         .map(|(i, w)| build_shot(i + 1, w, &sigs, &dup, &timing, if i == 0 { None } else { cuts.get(i - 1) }, global_sat, frames.h, opts))
         .collect();
 
+    timer.lap("curves, events");
     // Slots.
     let refs: Vec<usize> = work.iter().map(|w| w.ref_frame).collect();
     let groups = cluster_slots(frames, &refs, &usable);
@@ -723,6 +800,7 @@ pub fn analyze_frames(frames: &Frames, audio: Option<(&[f32], u32)>, mut source:
         shots_out[i].slot = slots[si].id.clone();
     }
 
+    timer.lap("slots");
     // Signature curves.
     let mut sig = Signature { f0: a0, ..Default::default() };
     for w in &work {
@@ -757,9 +835,11 @@ pub fn analyze_frames(frames: &Frames, audio: Option<(&[f32], u32)>, mut source:
 /// Decode a video and analyse it. With `out_dir`, also writes
 /// `reference_analysis.json`, `overlay.png` and `proxies/<slot>.png` there.
 pub fn analyze_video(path: &Path, out_dir: Option<&Path>, opts: &AnalyzeOpts) -> Result<Analysis> {
+    let mut timer = StageTimer::new();
     let info = media::probe(path)?;
     let (frames, audio) = rayon::join(|| media::decode_frames(path, &info, opts.height), || media::decode_audio(path, &info, 22050));
     let frames = frames?;
+    timer.lap("decode (ffmpeg)");
     let audio = audio.unwrap_or(None);
     let abs = std::fs::canonicalize(path).unwrap_or(path.to_path_buf());
     let source = Source {
@@ -775,6 +855,7 @@ pub fn analyze_video(path: &Path, out_dir: Option<&Path>, opts: &AnalyzeOpts) ->
     };
     let done = analyze_frames(&frames, audio.as_deref().map(|a| (a, 22050)), source, opts);
     let mut analysis = done.analysis;
+    timer.lap("analysis total");
     if let Some(dir) = out_dir {
         std::fs::create_dir_all(dir.join("proxies")).with_context(|| format!("creating {}", dir.display()))?;
         // Full-resolution frames: one proxy still per slot, plus a sample for the overlay plate.
@@ -813,6 +894,7 @@ pub fn analyze_video(path: &Path, out_dir: Option<&Path>, opts: &AnalyzeOpts) ->
             }
         }
         std::fs::write(dir.join("reference_analysis.json"), crate::jsonfmt::to_string(&analysis)?)?;
+        timer.lap("proxies, overlay, json");
     }
     Ok(analysis)
 }

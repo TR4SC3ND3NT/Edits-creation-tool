@@ -159,6 +159,26 @@ fn fit_segment(y: &[Vec<f64>], w: &[f64], i: usize, j: usize, e: &[f64], hold: b
 /// ignore (not registered, duplicate frame). `tol` is the residual that does
 /// not matter, in the unit of the samples.
 pub fn fit(y: &[Vec<f64>], w: &[f64], tol: f64) -> Fitted {
+    // Unobserved samples at either end are not extrapolated: the fit covers
+    // the observed span and the value is held outside it.
+    let first = w.iter().position(|v| *v > 0.0).unwrap_or(0);
+    let last = w.iter().rposition(|v| *v > 0.0).unwrap_or(y.len().saturating_sub(1));
+    if first > 0 || last + 1 < y.len() {
+        let mut f = fit_span(&y[first..=last], &w[first..=last], tol);
+        for k in f.keys.iter_mut() {
+            k.idx += first;
+        }
+        if first > 0 && f.keys.len() > 1 {
+            let head = FitKey { idx: 0, v: f.keys[0].v.clone(), ease: named("hold"), rms: 0.0, runner_up: None };
+            f.keys.insert(0, head);
+        }
+        f.values = evaluate(&f.keys, y.len());
+        return f;
+    }
+    fit_span(y, w, tol)
+}
+
+fn fit_span(y: &[Vec<f64>], w: &[f64], tol: f64) -> Fitted {
     let n = y.len();
     let dims = y.first().map(|v| v.len()).unwrap_or(1);
     if n == 0 {
@@ -188,8 +208,12 @@ pub fn fit(y: &[Vec<f64>], w: &[f64], tol: f64) -> Fitted {
     let mut back: Vec<(usize, Ease)> = vec![(0, named("hold")); n];
     best[0] = 0.0;
     for j in 1..n {
+        // A key may only sit on an observed sample.
+        if w[j] <= 0.0 && j != n - 1 {
+            continue;
+        }
         for i in 0..j {
-            if best[i] == f64::MAX {
+            if best[i] == f64::MAX || (w[i] <= 0.0 && i != 0) {
                 continue;
             }
             let len = j - i;
@@ -463,14 +487,29 @@ mod tests {
     fn a_still_shot_is_one_key_and_a_jump_is_a_hold() {
         let mut seed = 3;
         let y: Vec<Vec<f64>> = (0..20).map(|_| vec![1.0 + 0.0005 * noise(&mut seed)]).collect();
-        let f = fit(&y, &vec![1.0; 20], 0.002);
+        let f = fit(&y, &[1.0; 20], 0.002);
         assert!(f.is_constant());
         let y: Vec<Vec<f64>> = (0..20).map(|t| vec![if t < 8 { 1.0 } else { 1.3 } + 0.0005 * noise(&mut seed)]).collect();
-        let f = fit(&y, &vec![1.0; 20], 0.002);
+        let f = fit(&y, &[1.0; 20], 0.002);
         assert_eq!(f.keys.len(), 3, "{:?}", f.keys);
         assert_eq!(family(&f.keys[0].ease), "hold");
         assert_eq!(f.keys[1].idx, 8);
         assert!((f.keys[1].v[0] - 1.3).abs() < 0.003);
+    }
+
+    #[test]
+    fn unobserved_ends_are_held_not_extrapolated() {
+        // A linear ramp whose first three samples were not registered.
+        let y: Vec<Vec<f64>> = (0..12).map(|t| vec![if t < 3 { 9.0 } else { 1.0 + 0.05 * t as f64 }]).collect();
+        let mut w = vec![1.0; 12];
+        w[0] = 0.0;
+        w[1] = 0.0;
+        w[2] = 0.0;
+        let f = fit(&y, &w, 0.002);
+        assert_eq!(f.keys[0].idx, 0);
+        assert_eq!(family(&f.keys[0].ease), "hold");
+        assert!((f.keys[0].v[0] - 1.15).abs() < 0.01, "{:?}", f.keys);
+        assert!((f.values[1][0] - 1.15).abs() < 0.01 && (f.values[11][0] - 1.55).abs() < 0.01);
     }
 
     #[test]
@@ -479,7 +518,7 @@ mod tests {
             let e = named(name);
             let mut seed = 11;
             let y: Vec<Vec<f64>> = (0..=14).map(|t| vec![0.1 * ease::apply(&e, t as f64 / 14.0, 14.0) + 0.0004 * noise(&mut seed), 0.0]).collect();
-            let f = fit(&y, &vec![1.0; 15], 0.001);
+            let f = fit(&y, &[1.0; 15], 0.001);
             assert_eq!(f.keys.len(), 2, "{name}: {:?}", f.keys);
             assert_eq!(family(&f.keys[0].ease), name, "{name}: {:?}", f.keys[0]);
         }

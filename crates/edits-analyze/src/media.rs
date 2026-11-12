@@ -48,7 +48,7 @@ pub fn probe(path: &Path) -> Result<VideoInfo> {
     let has_audio = streams.iter().any(|s| s["codec_type"] == "audio");
     let num = |val: &serde_json::Value| val.as_str().and_then(|s| s.parse::<f64>().ok()).or(val.as_f64());
     let mut fps = rational(video["avg_frame_rate"].as_str().unwrap_or("0/1"));
-    if !(fps > 0.0) {
+    if fps.is_nan() || fps <= 0.0 {
         fps = rational(video["r_frame_rate"].as_str().unwrap_or("0/1"));
     }
     let duration = num(&video["duration"]).or(num(&v["format"]["duration"])).unwrap_or(0.0);

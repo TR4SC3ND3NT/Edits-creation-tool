@@ -9,9 +9,14 @@
 //! [`draft::draft`], [`compare::compare`], [`signals::signatures`] (probe).
 //! Each stage is also a plain function in its own module.
 
+// Numeric kernels index several parallel buffers at once; iterator chains would hide the maths.
+#![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
+
 pub mod beats;
 pub mod blur;
+pub mod compare;
 pub mod curves;
+pub mod draft;
 pub mod exposure;
 pub mod img;
 pub mod ingest;

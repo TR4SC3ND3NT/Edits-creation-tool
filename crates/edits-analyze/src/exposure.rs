@@ -7,7 +7,7 @@
 //! why a flash can still be measured from the dark ink that survives it.
 
 use crate::img::srgb_lut;
-use crate::measure::Pair;
+use crate::measure::{FlatField, Pair};
 
 const BINS: usize = 1024;
 
@@ -22,7 +22,11 @@ fn decode(bin: f64) -> f64 {
 }
 
 impl LumHist {
-    pub fn new(rgb: &[u8], mask: &[bool], invert: bool) -> Self {
+    /// With `flat`, a pixel as bright as a white field is at its position
+    /// (under a vignette that is less than 255) counts as white, i.e. clipped.
+    /// Values are not divided by the vignette: the falloff measured on flash
+    /// frames can be stronger than the one on ordinary frames.
+    pub fn new(rgb: &[u8], mask: &[bool], invert: bool, flat: Option<&FlatField>) -> Self {
         let lut = srgb_lut();
         let mut hist = vec![0u32; BINS];
         let mut count = 0;
@@ -30,8 +34,12 @@ impl LumHist {
             if !mask[i] {
                 continue;
             }
-            let v = |c: u8| lut[if invert { 255 - c } else { c } as usize];
-            let y = 0.2126 * v(p[0]) + 0.7152 * v(p[1]) + 0.0722 * v(p[2]);
+            let white = flat.map(|f| f.white[i]).unwrap_or(255);
+            let v = |c: u8| lut[if invert { white.saturating_sub(c) } else { c } as usize];
+            let mut y = 0.2126 * v(p[0]) + 0.7152 * v(p[1]) + 0.0722 * v(p[2]);
+            if white < 250 && !invert && p[0].max(p[1]).max(p[2]) as f32 >= 0.96 * white as f32 {
+                y = 1.0;
+            }
             let b = ((y.powf(1.0 / 2.2) * BINS as f32) as usize).min(BINS - 1);
             hist[b] += 1;
             count += 1;
@@ -74,8 +82,8 @@ pub fn quantile_grid() -> Vec<f64> {
 
 /// Gain of the frame relative to the (warped) reference frame.
 pub fn measure(pair: &Pair, inverted: bool) -> ExposureSample {
-    let hr = LumHist::new(&pair.refw, &pair.mask, false);
-    let hc = LumHist::new(pair.cur, &pair.mask, inverted);
+    let hr = LumHist::new(&pair.refw, &pair.mask, false, pair.flat);
+    let hc = LumHist::new(pair.cur, &pair.mask, inverted, pair.flat);
     if hr.count < 200 {
         return ExposureSample::default();
     }
@@ -87,8 +95,8 @@ pub fn measure(pair: &Pair, inverted: bool) -> ExposureSample {
 /// Gain between two neighbouring frames (`pair.refw` is the other frame,
 /// unwarped). Both may be clipped, so only tones below white in both count.
 pub fn measure_between(pair: &Pair, invert_cur: bool) -> ExposureSample {
-    let hr = LumHist::new(&pair.refw, &pair.mask, false);
-    let hc = LumHist::new(pair.cur, &pair.mask, invert_cur);
+    let hr = LumHist::new(&pair.refw, &pair.mask, false, pair.flat);
+    let hc = LumHist::new(pair.cur, &pair.mask, invert_cur, pair.flat);
     if hr.count < 200 {
         return ExposureSample::default();
     }
@@ -164,18 +172,22 @@ pub struct Flash {
     pub confidence: f64,
 }
 
-/// Flash events in a shot's exposure curve (`stops[i]` relative to the reference frame).
-pub fn flashes(stops: &[f64], conf: &[f64]) -> Vec<Flash> {
+/// Flash events in a shot's exposure curve (`stops[i]` relative to the
+/// reference frame). `lum[i]` (any scale) settles which frame is the peak
+/// when several are within 15% of the maximum: under clipping the measured
+/// gain is only a lower bound, the brightest frame is the peak.
+pub fn flashes(stops: &[f64], conf: &[f64], lum: &[f64]) -> Vec<Flash> {
     const PEAK: f64 = 0.8;
     const FLOOR: f64 = 0.12;
     let n = stops.len();
     let mut out: Vec<Flash> = Vec::new();
-    let mut i = 0;
-    while i < n {
+    let mut next = 0;
+    while next < n {
+        let i = next;
         // A local maximum that stands out.
         let is_peak = stops[i] >= PEAK && (i == 0 || stops[i] > stops[i - 1]) && (i + 1 == n || stops[i] >= stops[i + 1]);
         if !is_peak {
-            i += 1;
+            next += 1;
             continue;
         }
         let mut start = i;
@@ -189,8 +201,12 @@ pub fn flashes(stops: &[f64], conf: &[f64]) -> Vec<Flash> {
         while end < n && stops[end] > FLOOR && stops[end] <= stops[end - 1] * 1.02 + 0.02 {
             end += 1;
         }
+        let top = stops[i];
+        let peak = (start..end).filter(|j| stops[*j] >= 0.85 * top).max_by(|a, b| lum[*a].partial_cmp(&lum[*b]).unwrap()).unwrap_or(i);
+        let scan_from = i;
+        let i = peak;
         // Decay: log-linear fit of the samples after the peak.
-        let pts: Vec<(f64, f64)> = (i..end).filter(|j| stops[*j] > 0.05).map(|j| ((j - i) as f64, stops[j].ln())).collect();
+        let pts: Vec<(f64, f64)> = (i.max(scan_from)..end).filter(|j| stops[*j] > 0.05).map(|j| ((j - i) as f64, stops[j].ln())).collect();
         let (mut rate, mut rate_conf) = (0.3, 0.1);
         if pts.len() >= 3 {
             let m = pts.len() as f64;
@@ -203,8 +219,10 @@ pub fn flashes(stops: &[f64], conf: &[f64]) -> Vec<Flash> {
             rate = (1.0 - (pts[1].1 - pts[0].1).exp()).clamp(0.02, 0.98);
             rate_conf = 0.25;
         }
-        out.push(Flash { start, peak: i, end, peak_stops: stops[i], rate, rate_confidence: rate_conf, confidence: conf[i].clamp(0.0, 1.0) });
-        i = end.max(i + 1);
+        out.push(Flash { start: start.min(i), peak: i, end, peak_stops: top, rate, rate_confidence: rate_conf, confidence: conf[i].clamp(0.0, 1.0) });
+        let i = end.max(scan_from + 1);
+        let _ = i;
+        next = i;
     }
     out
 }
@@ -245,7 +263,7 @@ mod tests {
             stops[18 + k] += 2.0 * 0.5f64.powi(k as i32);
         }
         let conf = vec![1.0; 30];
-        let fl = flashes(&stops, &conf);
+        let fl = flashes(&stops, &conf, &stops);
         assert_eq!(fl.len(), 2, "{fl:?}");
         assert_eq!((fl[0].peak, fl[1].peak), (3, 18));
         assert!((fl[0].peak_stops - 4.0).abs() < 1e-9);

@@ -4,7 +4,9 @@
 //! Overlay: the per-pixel temporal median over many frames keeps what does
 //! not move. The pictures underneath average into a smooth blur, so a white
 //! top-hat (median minus its morphological opening) isolates the thin bright
-//! overlay strokes; dividing by `1 - background` undoes a screen blend.
+//! overlay strokes; only the part common to the three channels is kept (the
+//! strokes are neutral, the residue of the pictures is coloured) and dividing
+//! by `1 - background` undoes a screen blend.
 //!
 //! Vignette: the brightest frames (exposure flashes) are close to a white
 //! field, so their radial brightness profile is the vignette. It is fitted
@@ -82,12 +84,19 @@ pub fn overlay_plate(frames: &Frames, idx: &[usize]) -> Plate {
     let r = ((h as f64 * 0.008).round() as usize).max(2);
     let opened = minmax_filter(&minmax_filter(&med, w, h, r, false), w, h, r, true);
     let mut rgb = vec![0u8; med.len()];
-    for i in 0..med.len() {
-        let hat = med[i].saturating_sub(opened[i]) as f32 / 255.0;
-        // Suppress the residue of the averaged pictures, then undo the screen blend.
-        let hat = (hat - 0.04).max(0.0);
-        let bg = (opened[i] as f32 / 255.0).min(0.8);
-        rgb[i] = ((hat / (1.0 - bg)).min(1.0) * 255.0).round() as u8;
+    for (i, px) in rgb.chunks_exact_mut(3).enumerate() {
+        // The strokes are neutral (white ink); what is left of the averaged
+        // pictures is coloured. Keep the part common to all three channels.
+        let mut hat = f32::MAX;
+        let mut bg = 0.0f32;
+        for c in 0..3 {
+            hat = hat.min(med[i * 3 + c].saturating_sub(opened[i * 3 + c]) as f32 / 255.0);
+            bg += opened[i * 3 + c] as f32 / 255.0 / 3.0;
+        }
+        // Drop the residue, then undo the screen blend against the local background.
+        let hat = (hat - 0.05).max(0.0);
+        let v = ((hat / (1.0 - bg.min(0.8))).min(1.0) * 255.0).round() as u8;
+        px.copy_from_slice(&[v, v, v]);
     }
     Plate { w, h, rgb }
 }

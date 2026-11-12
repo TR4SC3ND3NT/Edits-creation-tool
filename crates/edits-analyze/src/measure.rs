@@ -4,6 +4,42 @@
 
 use crate::img::{Frames, Gray, Sim};
 
+/// The vignette as a per-pixel map, so that "clipped at white" can be told
+/// where white is no longer 255 (a flash under a vignette is grey in the corners).
+pub struct FlatField {
+    /// Linear-light brightness of a white field at each pixel, relative to the centre (0..1).
+    pub gain: Vec<f32>,
+    /// The 8-bit code value a white field has at each pixel.
+    pub white: Vec<u8>,
+}
+
+impl FlatField {
+    /// No vignette.
+    pub fn flat(w: usize, h: usize) -> Self {
+        Self { gain: vec![1.0; w * h], white: vec![255; w * h] }
+    }
+    /// From a radial profile (`profile[i]` at radius `i / (n - 1)` of the half-diagonal).
+    pub fn from_profile(w: usize, h: usize, profile: &[f64]) -> Self {
+        if profile.len() < 2 {
+            return Self::flat(w, h);
+        }
+        let (cx, cy) = ((w as f64 - 1.0) / 2.0, (h as f64 - 1.0) / 2.0);
+        let half_diag = (cx * cx + cy * cy).sqrt();
+        let mut gain = Vec::with_capacity(w * h);
+        let mut white = Vec::with_capacity(w * h);
+        for y in 0..h {
+            for x in 0..w {
+                let r = ((x as f64 - cx).powi(2) + (y as f64 - cy).powi(2)).sqrt() / half_diag * (profile.len() - 1) as f64;
+                let i = (r as usize).min(profile.len() - 2);
+                let g = (profile[i] + (profile[i + 1] - profile[i]) * (r - i as f64)).clamp(0.05, 1.0) as f32;
+                gain.push(g);
+                white.push((crate::img::linear_to_srgb(g) * 255.0).round() as u8);
+            }
+        }
+        Self { gain, white }
+    }
+}
+
 pub struct Pair<'a> {
     pub w: usize,
     pub h: usize,
@@ -17,6 +53,15 @@ pub struct Pair<'a> {
     pub aligned: bool,
     /// Share of the central region covered by the warped reference.
     pub coverage: f64,
+    /// The vignette, if one was measured.
+    pub flat: Option<&'a FlatField>,
+}
+
+impl<'a> Pair<'a> {
+    pub fn with_flat(mut self, flat: &'a FlatField) -> Self {
+        self.flat = Some(flat);
+        self
+    }
 }
 
 const BORDER: f64 = 0.12;
@@ -71,7 +116,7 @@ pub fn make_pair<'a>(frames: &'a Frames, ref_frame: usize, cur_frame: usize, sim
             }
         }
     }
-    Pair { w, h, cur, refw, mask, aligned: sim.is_some(), coverage: covered as f64 / central.max(1) as f64 }
+    Pair { w, h, cur, refw, mask, aligned: sim.is_some(), coverage: covered as f64 / central.max(1) as f64, flat: None }
 }
 
 /// Luma (0..1, gamma encoded) of an RGB8 buffer.

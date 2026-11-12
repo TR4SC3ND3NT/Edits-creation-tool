@@ -13,6 +13,8 @@ use crate::img::{gaussian_blur, half, Frames, Gray, Sim};
 /// Zero-mean normalised correlation above which a registration is accepted.
 pub const ZNCC_OK: f64 = 0.3;
 const ZNCC_GOOD: f64 = 0.55;
+/// Below this, a registration started from the neighbour's solution is retried from scratch.
+const ZNCC_RETRY: f64 = 0.42;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Method {
@@ -29,6 +31,10 @@ pub struct TrackSample {
     /// Normalised correlation of the registration, 0..1.
     pub zncc: f64,
     pub method: Method,
+    /// How much better a free affine transform registers the frame than the
+    /// similarity does: (ratio of its two scale factors - 1, gain in correlation).
+    /// Large values mean the picture is stretched or tilted in 3D.
+    pub affine: (f64, f64),
 }
 
 impl TrackSample {
@@ -136,6 +142,8 @@ struct TmplLevel {
     y: Vec<f32>,
     t: Vec<f32>,
     sd: Vec<[f32; 4]>,
+    /// Template gradient, for the affine check.
+    g: Vec<[f32; 2]>,
 }
 
 /// A reference image prepared for inverse-compositional alignment.
@@ -156,9 +164,12 @@ impl Template {
                 let (w, h) = (f.w, f.h);
                 let (cx, cy) = ((w as f32 - 1.0) / 2.0, (h as f32 - 1.0) / 2.0);
                 let (mx, my) = (((w as f32 * BORDER) as usize).max(2), ((h as f32 * BORDER) as usize).max(2));
-                let mut l = TmplLevel { w, h, x: vec![], y: vec![], t: vec![], sd: vec![] };
-                for y in my..h - my {
-                    for x in mx..w - mx {
+                let mut l = TmplLevel { w, h, x: vec![], y: vec![], t: vec![], sd: vec![], g: vec![] };
+                // Large levels are sampled on a 2-pixel lattice: still tens of
+                // thousands of equations for four unknowns.
+                let stride = if w * h >= 80_000 { 2 } else { 1 };
+                for y in (my..h - my).step_by(stride) {
+                    for x in (mx..w - mx).step_by(stride) {
                         let i = y * w + x;
                         if !m[i] {
                             continue;
@@ -170,6 +181,7 @@ impl Template {
                         l.y.push(py);
                         l.t.push(f.d[i]);
                         l.sd.push([gx * px + gy * py, -gx * py + gy * px, gx, gy]);
+                        l.g.push([gx, gy]);
                     }
                 }
                 l
@@ -273,10 +285,16 @@ pub struct AlignResult {
 
 /// Align the current frame (`cur` pyramid, `masks`) to the template, starting at `init`.
 pub fn align(tmpl: &Template, cur: &Pyramid, masks: &[(usize, usize, Vec<bool>)], init: Sim) -> Option<AlignResult> {
+    align_from(tmpl, cur, masks, init, 0)
+}
+
+/// As [`align`], stopping at pyramid level `finest` (0 = full resolution).
+pub fn align_from(tmpl: &Template, cur: &Pyramid, masks: &[(usize, usize, Vec<bool>)], init: Sim, finest: usize) -> Option<AlignResult> {
     let mut sim = init;
     let mut buf = Vec::new();
     let mut score = None;
-    for li in (0..tmpl.levels.len()).rev() {
+    let finest = finest.min(tmpl.levels.len() - 1);
+    for li in (finest..tmpl.levels.len()).rev() {
         let l = &tmpl.levels[li];
         if l.x.len() < 64 {
             continue;
@@ -285,6 +303,7 @@ pub fn align(tmpl: &Template, cur: &Pyramid, masks: &[(usize, usize, Vec<bool>)]
         let hh = l.h as f64;
         let reach = 0.5 * (l.w.max(l.h) as f64);
         let iters = if li == 0 { 8 } else { 25 };
+        let li_last = li == finest;
         let mut last = None;
         for _ in 0..iters {
             let n = sample_level(l, f, m, &sim, &mut buf);
@@ -327,14 +346,12 @@ pub fn align(tmpl: &Template, cur: &Pyramid, masks: &[(usize, usize, Vec<bool>)]
                 break;
             }
         }
-        if li == 0 || score.is_none() {
-            // Score at the final parameters of this level.
-            let n = sample_level(l, f, m, &sim, &mut buf);
-            score = if n * 4 < l.x.len() { None } else { zncc(l, &buf).map(|z| z.0) }.or(last);
-        }
-        if li == 0 {
+        if li_last {
+            // Score at the final parameters.
             let n = sample_level(l, f, m, &sim, &mut buf);
             score = if n * 4 < l.x.len() { None } else { zncc(l, &buf).map(|z| z.0) };
+        } else if score.is_none() {
+            score = last;
         }
     }
     let z = score?;
@@ -342,6 +359,152 @@ pub fn align(tmpl: &Template, cur: &Pyramid, masks: &[(usize, usize, Vec<bool>)]
         return None;
     }
     Some(AlignResult { sim, zncc: z })
+}
+
+/// A general affine map in level pixels about the image centre: `p' = M p + t`.
+#[derive(Clone, Copy)]
+struct Aff {
+    m: [f64; 4],
+    t: [f64; 2],
+}
+
+fn solve_n(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
+    let n = b.len();
+    for i in 0..n {
+        let mut p = i;
+        for r in i + 1..n {
+            if a[r][i].abs() > a[p][i].abs() {
+                p = r;
+            }
+        }
+        if a[p][i].abs() < 1e-12 {
+            return None;
+        }
+        a.swap(i, p);
+        b.swap(i, p);
+        for r in i + 1..n {
+            let f = a[r][i] / a[i][i];
+            for c in i..n {
+                a[r][c] -= f * a[i][c];
+            }
+            b[r] -= f * b[i];
+        }
+    }
+    let mut x = vec![0.0; n];
+    for i in (0..n).rev() {
+        let mut s = b[i];
+        for c in i + 1..n {
+            s -= a[i][c] * x[c];
+        }
+        x[i] = s / a[i][i];
+    }
+    Some(x)
+}
+
+fn sample_affine(l: &TmplLevel, cur: &Gray, cur_mask: &[bool], a: &Aff, buf: &mut Vec<f32>) -> usize {
+    let (cx, cy) = ((l.w as f32 - 1.0) / 2.0, (l.h as f32 - 1.0) / 2.0);
+    let (m, t) = ([a.m[0] as f32, a.m[1] as f32, a.m[2] as f32, a.m[3] as f32], [a.t[0] as f32 + cx, a.t[1] as f32 + cy]);
+    buf.clear();
+    let mut n = 0;
+    for k in 0..l.x.len() {
+        let xw = m[0] * l.x[k] + m[1] * l.y[k] + t[0];
+        let yw = m[2] * l.x[k] + m[3] * l.y[k] + t[1];
+        let mut v = f32::NAN;
+        if let Some(s) = cur.sample(xw, yw) {
+            let mi = (yw + 0.5) as usize * cur.w + (xw + 0.5) as usize;
+            if cur_mask[mi.min(cur_mask.len() - 1)] {
+                v = s;
+                n += 1;
+            }
+        }
+        buf.push(v);
+    }
+    n
+}
+
+/// Starting from a similarity registration, let all six affine parameters go
+/// and report (ratio of the two scale factors - 1, correlation reached).
+/// Used only as a check: a clear gain with unequal scale factors means the
+/// motion is not a similarity (a 3D tilt, a stretch).
+pub fn affine_check(tmpl: &Template, cur: &Pyramid, masks: &[(usize, usize, Vec<bool>)], sim: &Sim) -> Option<(f64, f64)> {
+    let top = tmpl.levels.len().saturating_sub(1).min(2);
+    let mut aff: Option<Aff> = None;
+    let mut buf = Vec::new();
+    let mut score = None;
+    for li in (0..=top).rev() {
+        let l = &tmpl.levels[li];
+        if l.x.len() < 64 {
+            continue;
+        }
+        let hh = l.h as f64;
+        // Carry the transform between levels in height units.
+        let mut a = match aff {
+            None => Aff { m: [sim.a, -sim.b, sim.b, sim.a], t: [sim.tx * hh, sim.ty * hh] },
+            Some(p) => Aff { m: p.m, t: [p.t[0] * 2.0, p.t[1] * 2.0] },
+        };
+        let (f, m) = (&cur.levels[li], &masks[li].2);
+        let reach = 0.5 * l.w.max(l.h) as f64;
+        for _ in 0..(if li == 0 { 6 } else { 15 }) {
+            let n = sample_affine(l, f, m, &a, &mut buf);
+            if n * 4 < l.x.len() {
+                return None;
+            }
+            let (_, mt, st, mi, si) = zncc(l, &buf)?;
+            let mut hm = vec![vec![0.0f64; 6]; 6];
+            let mut g = vec![0.0f64; 6];
+            for k in 0..buf.len() {
+                let i = buf[k];
+                if i.is_nan() {
+                    continue;
+                }
+                let e = (i as f64 - mi) / si - (l.t[k] as f64 - mt) / st;
+                let (gx, gy, x, y) = (l.g[k][0] as f64 / st, l.g[k][1] as f64 / st, l.x[k] as f64, l.y[k] as f64);
+                let sd = [gx * x, gx * y, gy * x, gy * y, gx, gy];
+                for r in 0..6 {
+                    g[r] += sd[r] * e;
+                    for c in r..6 {
+                        hm[r][c] += sd[r] * sd[c];
+                    }
+                }
+            }
+            for r in 0..6 {
+                for c in 0..r {
+                    hm[r][c] = hm[c][r];
+                }
+                hm[r][r] *= 1.0 + 1e-4;
+            }
+            let dp = solve_n(hm, g)?;
+            // W <- W o dW^-1
+            let d = [1.0 + dp[0], dp[1], dp[2], 1.0 + dp[3]];
+            let det = d[0] * d[3] - d[1] * d[2];
+            if !(det.abs() > 0.2 && det.abs() < 5.0) {
+                return None;
+            }
+            let inv = [d[3] / det, -d[1] / det, -d[2] / det, d[0] / det];
+            let it = [-(inv[0] * dp[4] + inv[1] * dp[5]), -(inv[2] * dp[4] + inv[3] * dp[5])];
+            a = Aff {
+                m: [a.m[0] * inv[0] + a.m[1] * inv[2], a.m[0] * inv[1] + a.m[1] * inv[3], a.m[2] * inv[0] + a.m[3] * inv[2], a.m[2] * inv[1] + a.m[3] * inv[3]],
+                t: [a.m[0] * it[0] + a.m[1] * it[1] + a.t[0], a.m[2] * it[0] + a.m[3] * it[1] + a.t[1]],
+            };
+            if (dp[0].abs() + dp[1].abs() + dp[2].abs() + dp[3].abs()) * reach + dp[4].abs() + dp[5].abs() < 0.02 {
+                break;
+            }
+        }
+        if li == 0 {
+            let n = sample_affine(l, f, m, &a, &mut buf);
+            if n * 4 >= l.x.len() {
+                score = zncc(l, &buf).map(|z| z.0);
+            }
+        }
+        aff = Some(a);
+    }
+    let a = aff?;
+    // Singular values of M.
+    let (p, q, r, s2) = (a.m[0], a.m[1], a.m[2], a.m[3]);
+    let e = (p * p + q * q + r * r + s2 * s2) / 2.0;
+    let d = ((p * p + q * q - r * r - s2 * s2).powi(2) / 4.0 + (p * r + q * s2).powi(2)).sqrt();
+    let (s_hi, s_lo) = ((e + d).sqrt(), (e - d).max(1e-12).sqrt());
+    Some((s_hi / s_lo - 1.0, score?))
 }
 
 /// Exhaustive search over scale and shift at the coarsest level; a starting
@@ -357,23 +520,36 @@ pub fn coarse_search(tmpl: &Template, cur: &Pyramid, masks: &[(usize, usize, Vec
     let range = (0.3 * hh) as i32;
     let mut buf = Vec::new();
     let mut best: Option<(f64, Sim)> = None;
+    let mut try_at = |s: f64, dx: i32, dy: i32, best: &mut Option<(f64, Sim)>| {
+        let sim = Sim { a: s, b: 0.0, tx: dx as f64 / hh, ty: dy as f64 / hh };
+        let n = sample_level(l, f, m, &sim, &mut buf);
+        if n * 2 >= l.x.len() {
+            if let Some((rho, ..)) = zncc(l, &buf) {
+                if best.map(|b| rho > b.0).unwrap_or(true) {
+                    *best = Some((rho, sim));
+                }
+            }
+        }
+    };
+    // Two-pixel grid over shift for each scale; the refinement that follows
+    // (Gauss-Newton from the best cell) takes care of the rest.
     for s in [0.55, 0.65, 0.75, 0.85, 0.93, 1.0, 1.08, 1.18, 1.33, 1.55, 1.8] {
         let mut dy = -range;
         while dy <= range {
             let mut dx = -range;
             while dx <= range {
-                let sim = Sim { a: s, b: 0.0, tx: dx as f64 / hh, ty: dy as f64 / hh };
-                let n = sample_level(l, f, m, &sim, &mut buf);
-                if n * 2 >= l.x.len() {
-                    if let Some((rho, ..)) = zncc(l, &buf) {
-                        if best.map(|b| rho > b.0).unwrap_or(true) {
-                            best = Some((rho, sim));
-                        }
-                    }
-                }
-                dx += 1;
+                try_at(s, dx, dy, &mut best);
+                dx += 2;
             }
-            dy += 1;
+            dy += 2;
+        }
+    }
+    if let Some((_, c)) = best {
+        let (cx, cy) = ((c.tx * hh).round() as i32, (c.ty * hh).round() as i32);
+        for dy in cy - 1..=cy + 1 {
+            for dx in cx - 1..=cx + 1 {
+                try_at(c.a, dx, dy, &mut best);
+            }
         }
     }
     best.map(|b| b.1)
@@ -381,8 +557,10 @@ pub fn coarse_search(tmpl: &Template, cur: &Pyramid, masks: &[(usize, usize, Vec
 
 /// Align two arbitrary frames with no prior: coarse search, then refinement.
 pub fn align_unknown(tmpl: &Template, cur: &Pyramid, masks: &[(usize, usize, Vec<bool>)]) -> Option<AlignResult> {
-    let a = align(tmpl, cur, masks, Sim::IDENTITY);
-    let b = coarse_search(tmpl, cur, masks).and_then(|s| align(tmpl, cur, masks, s));
+    // Half resolution is plenty to decide whether two frames show the same picture.
+    let finest = if tmpl.levels.len() >= 3 { 1 } else { 0 };
+    let a = align_from(tmpl, cur, masks, Sim::IDENTITY, finest);
+    let b = coarse_search(tmpl, cur, masks).and_then(|s| align_from(tmpl, cur, masks, s, finest));
     match (a, b) {
         (Some(a), Some(b)) => Some(if a.zncc >= b.zncc { a } else { b }),
         (a, b) => a.or(b),
@@ -404,11 +582,11 @@ fn lerp_sim(a: &Sim, b: &Sim, u: f64) -> Sim {
 /// not part of a static overlay (`true` = may be used).
 pub fn track_shot(frames: &Frames, f0: usize, f1: usize, ref_frame: usize, usable: &[bool]) -> Vec<TrackSample> {
     let n = f1 - f0;
-    let mut out = vec![TrackSample { sim: Sim::IDENTITY, zncc: 0.0, method: Method::Bridged }; n];
+    let mut out = vec![TrackSample { sim: Sim::IDENTITY, zncc: 0.0, method: Method::Bridged, affine: (0.0, 0.0) }; n];
     let ref_pyr = pyramid(&frames.gray(ref_frame));
     let masks = mask_pyramid(usable, frames.w, frames.h, ref_pyr.levels.len());
     let tmpl = Template::new(&ref_pyr, &masks);
-    out[ref_frame - f0] = TrackSample { sim: Sim::IDENTITY, zncc: 1.0, method: Method::Reference };
+    out[ref_frame - f0] = TrackSample { sim: Sim::IDENTITY, zncc: 1.0, method: Method::Reference, affine: (0.0, 0.0) };
     let forward: Vec<usize> = (ref_frame + 1..f1).collect();
     let backward: Vec<usize> = (f0..ref_frame).rev().collect();
     for order in [forward, backward] {
@@ -418,16 +596,19 @@ pub fn track_shot(frames: &Frames, f0: usize, f1: usize, ref_frame: usize, usabl
         for (step, &i) in order.iter().enumerate() {
             let pyr = pyramid(&frames.gray(i));
             let mut best = align(&tmpl, &pyr, &masks, last_good);
-            if best.map(|b| b.zncc < ZNCC_GOOD).unwrap_or(true) {
+            if best.map(|b| b.zncc < ZNCC_RETRY).unwrap_or(true) {
                 for alt in [align(&tmpl, &pyr, &masks, Sim::IDENTITY), coarse_search(&tmpl, &pyr, &masks).and_then(|s| align(&tmpl, &pyr, &masks, s))].into_iter().flatten() {
                     if best.map(|b| alt.zncc > b.zncc).unwrap_or(true) {
                         best = Some(alt);
                     }
                 }
             }
-            let mut sample = TrackSample { sim: last_good, zncc: best.map(|b| b.zncc).unwrap_or(0.0), method: Method::Bridged };
+            let mut sample = TrackSample { sim: last_good, zncc: best.map(|b| b.zncc).unwrap_or(0.0), method: Method::Bridged, affine: (0.0, 0.0) };
             match best {
-                Some(b) if b.zncc >= ZNCC_OK => sample = TrackSample { sim: b.sim, zncc: b.zncc, method: Method::Direct },
+                Some(b) if b.zncc >= ZNCC_OK => {
+                    let affine = affine_check(&tmpl, &pyr, &masks, &b.sim).map(|(an, z)| (an, z - b.zncc)).unwrap_or((0.0, 0.0));
+                    sample = TrackSample { sim: b.sim, zncc: b.zncc, method: Method::Direct, affine }
+                }
                 _ => {
                     // Chain through the neighbour: frame-to-frame motion is small
                     // and the two frames share blur and exposure.
@@ -437,7 +618,7 @@ pub fn track_shot(frames: &Frames, f0: usize, f1: usize, ref_frame: usize, usabl
                             let nt = Template::new(npyr, &masks);
                             if let Some(st) = align(&nt, &pyr, &masks, Sim::IDENTITY) {
                                 if st.zncc >= ZNCC_GOOD {
-                                    sample = TrackSample { sim: st.sim.compose(&ns.sim), zncc: st.zncc.min(ns.zncc.max(ZNCC_OK)), method: Method::Chained };
+                                    sample = TrackSample { sim: st.sim.compose(&ns.sim), zncc: st.zncc.min(ns.zncc.max(ZNCC_OK)), method: Method::Chained, affine: (0.0, 0.0) };
                                 }
                             }
                         }
@@ -474,6 +655,14 @@ pub fn bridge(track: &mut [TrackSample]) {
             (None, Some(b)) => track[b].sim,
             (None, None) => Sim::IDENTITY,
         };
+    }
+}
+
+impl TrackSample {
+    /// The frame registers clearly better with unequal scale factors than
+    /// with a similarity: a 3D tilt or a stretch.
+    pub fn non_similarity(&self) -> bool {
+        self.method == Method::Direct && self.affine.0 > 0.08 && self.affine.1 > 0.05
     }
 }
 
@@ -524,6 +713,26 @@ mod tests {
             assert!((t.sim.tx - want.tx).abs() < 0.004 && (t.sim.ty - want.ty).abs() < 0.004, "frame {f}: t {} {} vs {} {}", t.sim.tx, t.sim.ty, want.tx, want.ty);
         }
         assert!(valid >= n - 2, "only {valid} of {n} frames registered: {:?}", track.iter().map(|t| (t.zncc * 100.0).round()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_stretch_is_flagged_as_non_similarity() {
+        // Frame 1 is the picture squeezed vertically (as a card tilting back would look).
+        let clip = synth::Clip::new(160, 160, 3);
+        let mut frames = clip.render();
+        let src = frames.rgb(0).to_vec();
+        let (w, h) = (frames.w, frames.h);
+        let squeezed: Vec<u8> = (0..h)
+            .flat_map(|y| {
+                let sy = ((y as f64 - 79.5) / 0.75 + 79.5).round().clamp(0.0, 159.0) as usize;
+                src[sy * w * 3..(sy + 1) * w * 3].to_vec()
+            })
+            .collect();
+        frames.data[w * h * 3..2 * w * h * 3].copy_from_slice(&squeezed);
+        let track = track_shot(&frames, 0, 3, 0, &all_usable(&frames));
+        assert!(track[1].non_similarity(), "squeezed frame: {:?}", track[1]);
+        assert!((track[1].affine.0 - 0.333).abs() < 0.08, "anisotropy {:?}", track[1].affine);
+        assert!(!track[2].non_similarity(), "identical frame: {:?}", track[2]);
     }
 
     #[test]

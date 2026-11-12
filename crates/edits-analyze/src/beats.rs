@@ -228,6 +228,21 @@ pub fn tempo(onset: &Onset, opts: &TempoOpts) -> Option<Tempo> {
     Some(Tempo { bpm, bpm_raw, phase, confidence, candidates })
 }
 
+/// Beat-comb response for a range of tempi: (bpm, mean envelope on the comb,
+/// phase in seconds). For inspection and for choosing between candidates.
+pub fn comb_scan(onset: &Onset, bpm_lo: f64, bpm_hi: f64, step: f64) -> Vec<(f64, f64, f64)> {
+    let n = onset.env.len();
+    let smooth: Vec<f32> = (0..n).map(|i| 0.25 * onset.env[i.saturating_sub(1)] + 0.5 * onset.env[i] + 0.25 * onset.env[(i + 1).min(n - 1)]).collect();
+    let mut out = Vec::new();
+    let mut bpm = bpm_lo;
+    while bpm <= bpm_hi + 1e-9 {
+        let (v, ph) = comb(&smooth, onset.rate * 60.0 / bpm, 0.25);
+        out.push((bpm, v, (onset.t0 + ph / onset.rate).rem_euclid(60.0 / bpm)));
+        bpm += step;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,19 +309,4 @@ mod tests {
         }
         assert!(d.abs() < 0.015, "phase {d}");
     }
-}
-
-/// Beat-comb response for a range of tempi: (bpm, mean envelope on the comb,
-/// phase in seconds). For inspection and for choosing between candidates.
-pub fn comb_scan(onset: &Onset, bpm_lo: f64, bpm_hi: f64, step: f64) -> Vec<(f64, f64, f64)> {
-    let n = onset.env.len();
-    let smooth: Vec<f32> = (0..n).map(|i| 0.25 * onset.env[i.saturating_sub(1)] + 0.5 * onset.env[i] + 0.25 * onset.env[(i + 1).min(n - 1)]).collect();
-    let mut out = Vec::new();
-    let mut bpm = bpm_lo;
-    while bpm <= bpm_hi + 1e-9 {
-        let (v, ph) = comb(&smooth, onset.rate * 60.0 / bpm, 0.25);
-        out.push((bpm, v, (onset.t0 + ph / onset.rate).rem_euclid(60.0 / bpm)));
-        bpm += step;
-    }
-    out
 }

@@ -90,7 +90,7 @@ pub fn similarity(a: &Gray, b: &Gray) -> PairSim {
     let mut best = PairSim { sim: f32::NAN, signed: 0.0 };
     let consider = |v: Option<f32>, best: &mut PairSim| {
         if let Some(v) = v {
-            if !(best.sim >= v.abs()) {
+            if best.sim.is_nan() || best.sim < v.abs() {
                 *best = PairSim { sim: v.abs(), signed: v };
             }
         }

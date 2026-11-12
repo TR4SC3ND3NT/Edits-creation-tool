@@ -268,6 +268,10 @@ pub struct Samples {
     pub confidence: Vec<f64>,
     /// Normalised correlation of the registration (best attempt for bridged frames).
     pub zncc: Vec<f64>,
+    /// Scale-factor ratio - 1 of a free affine registration, and its gain in
+    /// correlation over the similarity (both large = 3D tilt or stretch).
+    pub anisotropy: Vec<f64>,
+    pub affine_gain: Vec<f64>,
     /// `d` direct, `c` chained, `b` bridged, `r` reference frame.
     pub method: String,
 }
