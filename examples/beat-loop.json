@@ -1,0 +1,59 @@
+{
+  "format": "edits.project/1",
+  "settings": {
+    "width": 1080, "height": 1080, "fps": 25, "duration": 8,
+    "time_base": "beats", "bpm": 123, "beat_offset": 0.0,
+    "background": [0.01, 0.01, 0.012],
+    "motion_blur": { "samples": 6, "shutter": 0.5 }
+  },
+  "slots": {
+    "a": { "fit": "cover", "note": "opening full-frame picture" },
+    "b": { "fit": "cover", "note": "cube front" },
+    "c": { "fit": "cover", "note": "cube side" },
+    "d": { "fit": "cover", "note": "third picture" },
+    "tex": { "fit": "cover", "note": "overlay texture, blended with screen" }
+  },
+  "camera": {
+    "position": { "base": [0, 0, 0], "modifiers": [
+      { "kind": "shake", "frequency": 14, "seed": 7,
+        "amplitude": { "keys": [ { "t": 4, "v": 0.012, "ease": "out" }, { "t": 5, "v": 0 } ] } } ] }
+  },
+  "layers": [
+    { "id": "a", "kind": "image", "slot": "a", "in": 0, "out": 2,
+      "transform": {
+        "scale": { "keys": [ { "t": 0, "v": 1.21, "ease": { "name": "decay", "rate": 0.5 } }, { "t": 1, "v": 1.0 } ] } },
+      "effects": [
+        { "kind": "gaussian_blur", "params": { "radius": { "keys": [ { "t": 0, "v": 1.2, "ease": "out" }, { "t": 0.45, "v": 0 } ] } } },
+        { "kind": "exposure", "params": { "stops": { "keys": [ { "t": 0, "v": 4, "ease": { "name": "decay", "rate": 0.25 } }, { "t": 1, "v": 0 } ] } } } ] },
+
+    { "id": "cube", "kind": "cube", "faces": ["b", "c", "b", "c", "b", "c"], "size": [0.62, 0.62, 0.62], "in": 2, "out": 4,
+      "transform": {
+        "position": [0, 0, 0.6],
+        "rotation": { "keys": [ { "t": 2, "v": [0, 0, 0], "ease": "in_out" }, { "t": 3, "v": [0, -90, 0], "ease": "in_out" }, { "t": 4, "v": [-90, -90, 0] } ] },
+        "scale": { "keys": [ { "t": 2, "v": 1.5, "ease": "expo_out" }, { "t": 2.6, "v": 1.0 } ] } },
+      "effects": [
+        { "kind": "glow", "params": { "threshold": 0.6, "radius": 2.5, "intensity": 0.8, "color": [1.0, 0.25, 0.2] } },
+        { "kind": "threshold", "params": { "level": 0.45, "amount": { "keys": [ { "t": 3, "v": 1, "ease": "hold" }, { "t": 3.25, "v": 0 } ] } } } ] },
+
+    { "id": "d", "kind": "image", "slot": "d", "in": 4, "out": 8,
+      "transform": {
+        "scale": { "keys": [ { "t": 4, "v": 1.35, "ease": { "name": "decay", "rate": 0.39 } }, { "t": 5, "v": 1.05, "ease": "linear" }, { "t": 8, "v": 1.12 } ] },
+        "rotation": { "keys": [ { "t": 6, "v": [0, 0, 0], "ease": "back_out" }, { "t": 6.5, "v": [0, 0, -12] } ] } },
+      "effects": [
+        { "kind": "zoom_blur", "params": { "strength": { "keys": [ { "t": 4, "v": 0.25, "ease": "out" }, { "t": 4.5, "v": 0 } ] } } },
+        { "kind": "saturation", "params": { "amount": { "keys": [ { "t": 6, "v": 0, "ease": "hold" }, { "t": 6.25, "v": 1 } ] } } },
+        { "kind": "invert", "params": { "amount": { "keys": [ { "t": 7, "v": 1, "ease": "hold" }, { "t": 7.25, "v": 0 } ] } } } ] },
+
+    { "id": "tex", "kind": "image", "slot": "tex", "blend": "screen",
+      "transform": { "opacity": 0.6 } },
+
+    { "id": "finish", "kind": "adjustment",
+      "effects": [
+        { "kind": "exposure", "params": { "stops": { "keys": [
+            { "t": 2, "v": 3.5, "ease": { "name": "decay", "rate": 0.25 } }, { "t": 3, "v": 0, "ease": "hold" },
+            { "t": 4, "v": 4, "ease": { "name": "decay", "rate": 0.25 } }, { "t": 5, "v": 0, "ease": "hold" },
+            { "t": 6, "v": 3, "ease": { "name": "decay", "rate": 0.3 } }, { "t": 7, "v": 0 } ] } } },
+        { "kind": "glow", "params": { "threshold": 0.8, "radius": 4, "intensity": 0.35 } },
+        { "kind": "vignette", "params": { "amount": 0.6, "radius": 0.55, "softness": 0.6 } } ] }
+  ]
+}

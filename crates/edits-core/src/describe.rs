@@ -1,0 +1,117 @@
+//! A compact text view of a project, meant to be read by an agent before it
+//! edits anything: a few hundred tokens instead of the whole JSON.
+
+use crate::model::*;
+use std::fmt::Write;
+
+pub fn describe(p: &Project) -> String {
+    let s = &p.settings;
+    let unit = match s.time_base {
+        TimeBase::Beats => "beats",
+        TimeBase::Seconds => "s",
+    };
+    let mut o = String::new();
+    let _ = writeln!(
+        o,
+        "project {}x{} @ {} fps, {} {unit} ({:.2} s, {} frames){}",
+        s.width,
+        s.height,
+        s.fps,
+        s.duration,
+        p.duration_seconds(),
+        p.frame_count(),
+        s.bpm.map(|b| format!(", {b} BPM, beat 0 at {:.3} s", s.beat_offset)).unwrap_or_default()
+    );
+    if s.motion_blur.samples > 1 {
+        let _ = writeln!(o, "motion blur: {} samples, shutter {}", s.motion_blur.samples, s.motion_blur.shutter);
+    }
+    if let Some(a) = &p.audio {
+        let _ = writeln!(o, "audio: {} (offset {} s)", a.path, a.offset);
+    }
+    let _ = writeln!(o, "slots:");
+    for (name, slot) in &p.slots {
+        let _ = writeln!(o, "  {name}: {} [{:?}]", slot.path.as_deref().unwrap_or("(empty)"), slot.fit);
+    }
+    let cam = [("fov", &p.camera.fov), ("position", &p.camera.position), ("rotation", &p.camera.rotation)];
+    let animated: Vec<String> = cam.iter().filter_map(|(n, pr)| prop_summary(pr).map(|s| format!("{n} {s}"))).collect();
+    if !animated.is_empty() {
+        let _ = writeln!(o, "camera: {}", animated.join("; "));
+    }
+    let _ = writeln!(o, "layers (bottom to top):");
+    for l in &p.layers {
+        let end = l.end.unwrap_or(s.duration);
+        let what = match &l.kind {
+            LayerKind::Image { slot } => format!("image {slot}"),
+            LayerKind::Solid { color } => format!("solid {color:?}"),
+            LayerKind::Cube { faces, size } => format!("cube {size:?} faces {}", faces.join(",")),
+            LayerKind::Adjustment => "adjustment".to_string(),
+        };
+        let _ = writeln!(
+            o,
+            "  {:<14} {:>7.2}..{:<7.2} {what}{}{}",
+            l.id,
+            l.start,
+            end,
+            if l.blend != Blend::Normal { format!(" blend={:?}", l.blend).to_lowercase() } else { String::new() },
+            if l.enabled { "" } else { " (disabled)" }
+        );
+        let t = &l.transform;
+        for (n, pr) in [("position", &t.position), ("scale", &t.scale), ("rotation", &t.rotation), ("anchor", &t.anchor), ("opacity", &t.opacity)] {
+            if let Some(sum) = prop_summary(pr) {
+                let _ = writeln!(o, "      {n}: {sum}");
+            }
+        }
+        for e in &l.effects {
+            let params: Vec<String> = e
+                .params
+                .iter()
+                .map(|(k, v)| match prop_summary(v) {
+                    Some(sum) => format!("{k} {sum}"),
+                    None => format!("{k}={}", const_text(v)),
+                })
+                .collect();
+            let _ = writeln!(o, "      fx {}{} {}", e.kind, if e.enabled { "" } else { " (off)" }, params.join("; "));
+        }
+    }
+    for m in &p.markers {
+        let _ = writeln!(o, "marker {:.2}: {}", m.t, m.label);
+    }
+    o
+}
+
+fn const_text(p: &Prop) -> String {
+    match p {
+        Prop::Const(Value::Num(n)) => format!("{n}"),
+        Prop::Const(Value::Vec(v)) => format!("{v:?}"),
+        Prop::Anim(_) => "animated".into(),
+    }
+}
+
+/// `None` for constants; otherwise a one-line summary of keys and modifiers.
+fn prop_summary(p: &Prop) -> Option<String> {
+    let Prop::Anim(a) = p else { return None };
+    let mut parts: Vec<String> = a
+        .keys
+        .iter()
+        .map(|k| {
+            let v = match &k.v {
+                Value::Num(n) => format!("{n}"),
+                Value::Vec(v) => format!("{v:?}"),
+            };
+            let e = match &k.ease {
+                Ease::Name(n) if n == "linear" => String::new(),
+                Ease::Name(n) => format!(" {n}"),
+                Ease::Bezier(b) => format!(" bezier{b:?}"),
+                Ease::Params { name, args } => format!(" {name}{args:?}"),
+            };
+            format!("{}→{v}{e}", k.t)
+        })
+        .collect();
+    for m in &a.modifiers {
+        parts.push(match m {
+            Modifier::Shake { frequency, amplitude, .. } => format!("+shake {} @ {frequency} Hz", const_text(amplitude)),
+            Modifier::Loop { from, period } => format!("+loop from {from} every {period}"),
+        });
+    }
+    Some(parts.join(", "))
+}
