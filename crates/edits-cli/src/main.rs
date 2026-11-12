@@ -38,10 +38,14 @@ enum Command {
     /// Time the renderer on a project without writing anything
     Bench(BenchArgs),
     /// Print a compact text summary of a project
-    Describe { project: PathBuf },
+    Describe {
+        /// Project file (.json)
+        project: PathBuf,
+    },
     /// Validate a project; exits 1 when it has errors
     Check {
-        project: PathBuf,
+        /// Project file (.json)
+    project: PathBuf,
         /// Print the findings as JSON
         #[arg(long)]
         json: bool,
@@ -57,11 +61,15 @@ enum Command {
         json: bool,
     },
     /// Write a self-contained demo project with generated pictures and audio
-    Demo { dir: PathBuf },
+    Demo {
+        /// Folder to write into (created if missing)
+        dir: PathBuf,
+    },
 }
 
 #[derive(Args)]
 struct RenderArgs {
+    /// Project file (.json)
     project: PathBuf,
     /// Output file (.mp4)
     #[arg(short, long)]
@@ -91,6 +99,7 @@ struct RenderArgs {
 
 #[derive(Args)]
 struct BenchArgs {
+    /// Project file (.json)
     project: PathBuf,
     /// Start of the range, in project time (beats or seconds)
     #[arg(long, value_name = "T")]
@@ -106,10 +115,14 @@ struct BenchArgs {
     /// Motion blur samples (overrides the project)
     #[arg(long, value_name = "N")]
     samples: Option<u32>,
+    /// Also time every kind of render pass (slower: waits for the GPU after each pass)
+    #[arg(long)]
+    passes: bool,
 }
 
 #[derive(Args)]
 struct FrameArgs {
+    /// Project file (.json)
     project: PathBuf,
     /// Project time (beats or seconds); the frame containing it is rendered
     #[arg(long, value_name = "T", conflicts_with = "frame")]
@@ -129,6 +142,7 @@ struct FrameArgs {
 
 #[derive(Args)]
 struct SheetArgs {
+    /// Project file (.json)
     project: PathBuf,
     /// Start of the range, in project time (beats or seconds)
     #[arg(long, value_name = "T")]
@@ -532,6 +546,7 @@ fn bench(a: BenchArgs, adapter: Option<AdapterPolicy>) -> Result<ExitCode> {
         None => (first..end).collect(),
     };
     let (mut renderer, startup_ms) = open(&project, &dir, adapter, a.samples)?;
+    renderer.set_profiling(a.passes);
     let started = Instant::now();
     let mut times = Vec::with_capacity(frames.len());
     let (mut passes, mut rendered_samples) = (0u64, 0u64);
@@ -550,7 +565,18 @@ fn bench(a: BenchArgs, adapter: Option<AdapterPolicy>) -> Result<ExitCode> {
     let steady = if times.len() > 1 { &times[1..] } else { &times[..] };
     let mut sorted = steady.to_vec();
     sorted.sort_by(|a, b| a.total_cmp(b));
+    // Per kind of pass: how many, and where the time went.
+    let mut kinds: Vec<(String, u64, f64)> = Vec::new();
+    for t in renderer.take_profile() {
+        match kinds.iter_mut().find(|k| k.0 == t.label) {
+            Some(k) => (k.1, k.2) = (k.1 + 1, k.2 + t.ms),
+            None => kinds.push((t.label, 1, t.ms)),
+        }
+    }
+    kinds.sort_by(|a, b| b.2.total_cmp(&a.2));
+    let kinds: Vec<_> = kinds.iter().map(|(label, count, ms)| json!({ "pass": label, "count": count, "ms_total": round(*ms, 1), "ms_each": round(ms / *count as f64, 2) })).collect();
     print_json(&json!({
+        "passes": if a.passes { json!(kinds) } else { json!(null) },
         "frames": frames.len(),
         "width": stats.width,
         "height": stats.height,

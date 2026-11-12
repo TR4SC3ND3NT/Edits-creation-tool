@@ -100,7 +100,8 @@ fn every_blend_mode_matches_hand_computed_values() {
     gpu!(r);
     let (base, top) = ([0.6, 0.3, 0.2], [0.3, 0.7, 0.4]);
     let (b, s) = (base.map(to_linear), top.map(to_linear));
-    let modes: [(&str, fn(f64, f64) -> f64); 8] = [
+    type Mode = (&'static str, fn(f64, f64) -> f64);
+    let modes: [Mode; 8] = [
         ("normal", |_, s| s),
         ("add", |b, s| b + s),
         ("screen", |b, s| b + s - b * s),
@@ -213,6 +214,40 @@ fn pictures_are_upright_and_transforms_follow_the_conventions() {
     let img = render(r, &layer(r#""position":[0,0,1.5]"#), 0);
     assert_px(&img, 4, 4, black, 0);
     assert_px(&img, 28, 28, red, 1);
+}
+
+#[test]
+fn layer_edges_are_antialiased_by_coverage() {
+    gpu!(r);
+    // A white half-size square turned 30 degrees: its light must equal its
+    // area (a quarter of the frame) and its slanted edges must have in-between pixels.
+    for rotation in ["[0,0,30]", "[0,0,-17]", "[0,0,45]"] {
+        let p = project("", &format!(r#""layers":[{{"id":"s","kind":"solid","color":[1,1,1,1],"transform":{{"scale":0.5,"rotation":{rotation}}}}}]"#));
+        let img = render(r, &p, 0);
+        let light = energy(&img) / 3.0;
+        assert!((light - 1024.0).abs() < 6.0, "rotation {rotation}: light {light}, expected 1024");
+        let partial = img.pixels().filter(|p| p.0[0] > 8 && p.0[0] < 248).count();
+        assert!(partial > 60, "rotation {rotation}: only {partial} edge pixels are partly covered");
+        assert_px(&img, 32, 32, [255; 3], 0);
+        assert_px(&img, 2, 2, [0; 3], 0);
+    }
+    // Edges that fall between pixels are covered in proportion: a box from
+    // x = 16.5 to 48.5 lights its edge columns by half.
+    let p = project("", r#""layers":[{"id":"s","kind":"solid","color":[1,1,1,1],"transform":{"scale":0.5,"position":[0.0078125,0,0]}}]"#);
+    let img = render(r, &p, 0);
+    assert_px(&img, 16, 32, [byte(0.5); 3], 2);
+    assert_px(&img, 48, 32, [byte(0.5); 3], 2);
+    assert_px(&img, 17, 32, [255; 3], 0);
+    assert_px(&img, 15, 32, [0; 3], 0);
+    // A cube's faces meet without a seam and its outline is smoothed too.
+    let white = flat("white.png", 8, 8, [255; 4]);
+    let p = project("", &format!(r#""slots":{{"w":{{"path":"{white}"}}}},"layers":[{{"id":"c","kind":"cube","faces":["w"],"size":[0.4,0.4,0.4],"transform":{{"rotation":[20,35,10]}}}}]"#));
+    let img = render(r, &p, 0);
+    let partial = img.pixels().filter(|p| p.0[0] > 8 && p.0[0] < 248).count();
+    assert!(partial > 40, "only {partial} partly covered pixels on the cube's outline");
+    for (x, y) in [(32, 32), (30, 30), (34, 30), (30, 34), (34, 34), (32, 28), (32, 36), (28, 32), (36, 32)] {
+        assert_px(&img, x, y, [255; 3], 0);
+    }
 }
 
 #[test]

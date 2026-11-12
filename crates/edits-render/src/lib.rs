@@ -28,4 +28,4 @@ pub mod font;
 
 pub use assets::placeholder;
 pub use gpu::{policy_from_env, AdapterInfo, AdapterPolicy};
-pub use renderer::{FrameStats, RenderOptions, Renderer};
+pub use renderer::{FrameStats, PassTiming, RenderOptions, Renderer};

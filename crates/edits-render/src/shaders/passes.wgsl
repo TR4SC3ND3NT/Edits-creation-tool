@@ -4,21 +4,26 @@
 // ---- geometry: one textured quad (an image, a solid or a cube face) --------
 // p[0] = uv offset.xy, uv scale.xy   p[1] = premultiplied linear colour
 // p[2].x = 1 to cut the picture off outside 0..1 (fit: contain)
-
-fn geo_color(in: VOut) -> vec4<f32> {
-    let uv = u.p[0].xy + in.uv * u.p[0].zw;
-    var c = textureSample(t0, samp, uv);
-    if u.p[2].x > 0.5 {
-        let w = max(fwidth(uv), vec2<f32>(1e-6, 1e-6));
-        let m = clamp((vec2<f32>(0.5, 0.5) - abs(uv - vec2<f32>(0.5, 0.5))) / w + vec2<f32>(0.5, 0.5), vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
-        c = c * (m.x * m.y);
-    }
-    return c * u.p[1];
-}
+// p[2].y = 1 to fade the quad's own edges by pixel coverage (flat layers;
+//          cube faces rely on multisampling, which keeps shared edges closed)
 
 @fragment
 fn fs_geo(in: VOut) -> @location(0) vec4<f32> {
-    return geo_color(in);
+    let one = vec2<f32>(1.0, 1.0);
+    let half = vec2<f32>(0.5, 0.5);
+    let uv = u.p[0].xy + clamp(in.uv, vec2<f32>(0.0, 0.0), one) * u.p[0].zw;
+    var c = textureSample(t0, samp, uv);
+    if u.p[2].x > 0.5 {
+        let w = max(fwidth(uv), vec2<f32>(1e-6, 1e-6));
+        let m = clamp((half - abs(uv - half)) / w + half, vec2<f32>(0.0, 0.0), one);
+        c = c * (m.x * m.y);
+    }
+    if u.p[2].y > 0.5 {
+        let w = max(fwidth(in.uv), vec2<f32>(1e-6, 1e-6));
+        let e = clamp(min(in.uv, one - in.uv) / w + half, vec2<f32>(0.0, 0.0), one);
+        c = c * (e.x * e.y);
+    }
+    return c * u.p[1];
 }
 
 // ---- copy / scale ----------------------------------------------------------
@@ -64,34 +69,23 @@ fn fs_blur(in: VOut) -> @location(0) vec4<f32> {
 }
 
 // ---- streak blurs: directional, zoom, spin ---------------------------------
-// p[0] = (mode, taps, span, aspect)   p[1].xy = centre (uv)
-// p[2].xy = full streak vector (uv) for mode 0; p[2].x = strength (mode 1) or
-// radians (mode 2). `span` shrinks the streak so that repeated passes combine
-// into one evenly sampled streak.
+// p[0] = (taps, aspect)   p[1].xy = centre (uv)
+// Tap i reads the picture at  centre + M_i (uv - centre) + o_i  with the 2x2
+// matrix M_i = p[2 + i] (applied in square pixels) and the offset o_i =
+// p[10 + i].xy: an offset along the line for a directional blur, a scale for a
+// zoom, a rotation for a spin. Repeated passes with ever shorter streaks add
+// up to one evenly sampled streak.
 
 @fragment
 fn fs_streak(in: VOut) -> @location(0) vec4<f32> {
-    let mode = i32(u.p[0].x);
-    let n = i32(u.p[0].y);
-    let span = u.p[0].z;
-    let asp = vec2<f32>(u.p[0].w, 1.0);
+    let n = i32(u.p[0].x);
+    let asp = vec2<f32>(u.p[0].y, 1.0);
     let centre = u.p[1].xy;
+    let v = (in.uv - centre) * asp;
     var acc = vec4<f32>(0.0);
     for (var i = 0; i < n; i++) {
-        let t = ((f32(i) + 0.5) / f32(n) - 0.5) * span;
-        var uv: vec2<f32>;
-        if mode == 0 {
-            uv = in.uv + u.p[2].xy * t;
-        } else if mode == 1 {
-            uv = centre + (in.uv - centre) * exp(u.p[2].x * t);
-        } else {
-            let a = u.p[2].x * t;
-            let cs = cos(a);
-            let sn = sin(a);
-            let v = (in.uv - centre) * asp;
-            uv = centre + vec2<f32>(v.x * cs - v.y * sn, v.x * sn + v.y * cs) / asp;
-        }
-        acc += src0(uv);
+        let m = u.p[2 + i];
+        acc += src0(centre + vec2<f32>(m.x * v.x + m.y * v.y, m.z * v.x + m.w * v.y) / asp + u.p[10 + i].xy);
     }
     return acc / f32(n);
 }

@@ -10,10 +10,12 @@
 
 use edits_core::Blend;
 
-/// Colour operations a single pass can carry.
-pub(crate) const MAX_OPS: usize = 11;
+/// Colour operations a single pass can carry. (The last two uniform vectors
+/// stay free: `p[25]` is the quad margin read by the vertex shader.)
+pub(crate) const MAX_OPS: usize = 10;
 /// Index of the first operation's two vectors in the uniform array `p`.
 pub(crate) const OPS_AT: usize = 4;
+const _: () = assert!(OPS_AT + 2 * MAX_OPS <= 24, "the uniform array must hold a full recipe");
 
 // Operation codes, also the first component of each operation's uniforms.
 pub(crate) const EXPOSURE: u8 = 1;
@@ -156,6 +158,21 @@ impl Recipe {
         }
     }
 
+    /// A short name for profiles, e.g. `Quad+2ops+blend0`.
+    pub fn label(&self) -> String {
+        let input = match self.input {
+            Input::Tex => "Tex",
+            Input::Glow => "Glow",
+            Input::Quad { .. } => "Quad",
+        };
+        let ops = if self.ops.is_empty() { String::new() } else { format!("+{}ops", self.ops.len()) };
+        let output = match self.output {
+            Output::Plain => String::new(),
+            Output::Blend { mode, flat } => format!("+blend{mode}{}", if flat { "bg" } else { "" }),
+        };
+        format!("{input}{ops}{output}")
+    }
+
     /// The fragment shader `fs_main` for this recipe (appended to `common.wgsl`).
     pub fn fragment(&self) -> String {
         let mut f = String::from("\n@fragment\nfn fs_main(in: VOut) -> @location(0) vec4<f32> {\n");
@@ -243,14 +260,9 @@ mod tests {
         let flat = Recipe { input: Input::Quad { cut: true }, ops: vec![], output: Output::Blend { mode: 0, flat: true } }.fragment();
         assert!(flat.contains("let d = u.p[3];") && flat.contains("fwidth") && !flat.contains("t1"));
         // No operation's text mentions the placeholders after substitution.
-        let all: Vec<u8> = (EXPOSURE..=GRAIN).collect();
+        let all: Vec<u8> = (EXPOSURE..=GRAIN).take(MAX_OPS).collect();
         let every = Recipe { input: Input::Glow, ops: all, output: Output::Plain }.fragment();
         assert!(!every.contains("K.") && !every.contains("Q."), "{every}");
         assert!(every.contains(&format!("u.p[{}]", OPS_AT + 2 * (MAX_OPS - 1))));
-    }
-
-    #[test]
-    fn the_uniform_array_holds_a_full_recipe() {
-        assert!(OPS_AT + 2 * MAX_OPS <= 26);
     }
 }

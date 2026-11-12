@@ -12,8 +12,10 @@ use edits_core::ResolvedEffect;
 
 /// Blur at reduced resolution until sigma is at most this many texels.
 const MAX_SIGMA: f32 = 2.5;
-/// Taps per streak pass; passes multiply, so two passes sample 64 points.
-const STREAK_TAPS: f32 = 8.0;
+/// Taps per streak pass; passes multiply, so three passes sample 64 points.
+const STREAK_TAPS: f32 = 4.0;
+/// Add streak passes until the samples are at most this many pixels apart.
+const STREAK_SPACING: f32 = 2.0;
 
 /// A colour operation's uniforms: (code, a, b, c) and a second vector.
 pub(crate) type ColorOp = [[f32; 4]; 2];
@@ -245,21 +247,44 @@ impl Renderer {
     }
 
     /// Directional (mode 0), zoom (1) or spin (2) blur. `length` is the
-    /// longest streak in pixels and decides how many passes are needed.
+    /// longest streak in pixels and decides how many passes are needed: each
+    /// pass takes `STREAK_TAPS` samples over a streak that is `STREAK_TAPS`
+    /// times shorter than the one before, so `n` passes sample
+    /// `STREAK_TAPS^n` evenly spaced points.
     fn streak(&mut self, src: &Tex, mode: f32, centre: [f32; 2], amount: [f32; 2], length: f32) -> Tex {
-        let passes = if length <= STREAK_TAPS { 1 } else if length <= 160.0 { 2 } else { 3 };
-        let taps = if passes == 1 { (length.ceil() + 1.0).clamp(2.0, STREAK_TAPS) } else { STREAK_TAPS };
+        let taps = STREAK_TAPS as usize;
+        let mut passes = 1;
+        while (taps as f32).powi(passes) < length / STREAK_SPACING && passes < 5 {
+            passes += 1;
+        }
         let aspect = src.w as f32 / src.h as f32;
         let mut cur = src.clone();
         let mut span = 1.0;
         for _ in 0..passes {
+            let mut p = [[0.0f32; 4]; 18];
+            p[0] = [STREAK_TAPS, aspect, 0.0, 0.0];
+            p[1] = [centre[0], centre[1], 0.0, 0.0];
+            for i in 0..taps {
+                let t = ((i as f32 + 0.5) / STREAK_TAPS - 0.5) * span;
+                (p[2 + i], p[10 + i]) = match mode as u32 {
+                    0 => ([1.0, 0.0, 0.0, 1.0], [amount[0] * t, amount[1] * t, 0.0, 0.0]),
+                    1 => {
+                        let k = (amount[0] * t).exp();
+                        ([k, 0.0, 0.0, k], [0.0; 4])
+                    }
+                    _ => {
+                        let (sin, cos) = (amount[0] * t).sin_cos();
+                        ([cos, -sin, sin, cos], [0.0; 4])
+                    }
+                };
+            }
             let out = self.acquire(src.w, src.h);
-            self.pass(Pipe::Streak, &out, false, &cur, None, &[[mode, taps, span, aspect], [centre[0], centre[1], 0.0, 0.0], [amount[0], amount[1], 0.0, 0.0]]);
+            self.pass(Pipe::Streak, &out, false, &cur, None, &p);
             if cur.id != src.id {
                 self.release(cur);
             }
             cur = out;
-            span /= taps;
+            span /= STREAK_TAPS;
         }
         cur
     }

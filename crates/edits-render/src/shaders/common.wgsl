@@ -76,7 +76,9 @@ fn vs_geo(@builtin(vertex_index) i: u32) -> VOut {
     var corners = array<vec2<f32>, 6>(
         vec2<f32>(-0.5, -0.5), vec2<f32>(0.5, -0.5), vec2<f32>(0.5, 0.5),
         vec2<f32>(-0.5, -0.5), vec2<f32>(0.5, 0.5), vec2<f32>(-0.5, 0.5));
-    let c = corners[i];
+    // p[25].xy widens the quad a little so that pixels its edges only partly
+    // cover are shaded too; `uv` then runs slightly past 0..1.
+    let c = corners[i] * (vec2<f32>(1.0, 1.0) + 2.0 * u.p[25].xy);
     var out: VOut;
     out.pos = u.mvp * vec4<f32>(c, 0.0, 1.0);
     out.uv = c + vec2<f32>(0.5, 0.5);

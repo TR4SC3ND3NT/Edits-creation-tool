@@ -24,13 +24,16 @@ const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const UNIFORM_SIZE: u64 = 512;
 const UNIFORM_SLOTS: u64 = 2048;
 const PLACEHOLDER_SIZE: u32 = 1024;
+/// Largest frame: each working texture takes 8 bytes per pixel.
+const MAX_PIXELS: u64 = 40_000_000;
 
 /// How to create a [`Renderer`].
 #[derive(Clone, Debug)]
 pub struct RenderOptions {
     /// `None` reads `EDITS_ADAPTER` (`auto`, `hardware`, `software`), defaulting to `auto`.
     pub adapter: Option<AdapterPolicy>,
-    /// Samples per pixel for layer geometry edges: 1 (off) or 4.
+    /// Samples per pixel for the edges of cubes: 1 (off) or 4. Flat layers
+    /// do not need it: their edges are faded by pixel coverage in the shader.
     pub msaa: u32,
 }
 
@@ -77,7 +80,7 @@ pub(crate) enum Samp {
     Image,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Pipe {
     Copy,
     /// Two weighted textures, written or added to the target.
@@ -92,12 +95,10 @@ pub(crate) enum Pipe {
 }
 
 struct Pipes {
-    /// Layer quads with antialiased edges.
+    /// Flat layers: one sample per pixel, edges faded by coverage in the shader.
     geo: wgpu::RenderPipeline,
-    /// Cube faces: depth tested, back faces culled.
+    /// Cube faces: depth tested, back faces culled, multisampled.
     geo_depth: wgpu::RenderPipeline,
-    /// A quad that covers the frame: no edges, so one sample per pixel.
-    geo_plain: wgpu::RenderPipeline,
     /// Generated passes (see `compose.rs`), compiled on first use.
     composed: HashMap<Recipe, wgpu::RenderPipeline>,
     full: HashMap<Pipe, wgpu::RenderPipeline>,
@@ -117,6 +118,9 @@ pub(crate) struct Quad {
     color: [f32; 4],
     /// The quad covers every pixel of the frame.
     covers: bool,
+    /// Widening (fractions of the quad's size) that lets its edges be faded
+    /// by pixel coverage; zero for cube faces and for quads that cover the frame.
+    margin: [f32; 2],
 }
 
 pub(crate) struct Scene {
@@ -155,6 +159,14 @@ struct Readback {
     h: u32,
     buffer: wgpu::Buffer,
     row_bytes: u32,
+}
+
+/// How long one render pass took, measured with [`Renderer::set_profiling`].
+#[derive(Clone, Debug)]
+pub struct PassTiming {
+    /// What the pass does, e.g. `Blur`, `quads` or `Quad+2ops+blend0`.
+    pub label: String,
+    pub ms: f64,
 }
 
 /// Counters from the most recent frame, for profiling.
@@ -197,6 +209,9 @@ pub struct Renderer {
     samples_override: Option<u32>,
     pub(crate) ctx: Ctx,
     stats: FrameStats,
+    /// Name of the pass being recorded, for profiling.
+    label: String,
+    profile: Option<Vec<PassTiming>>,
 }
 
 fn file_key(path: &Path) -> String {
@@ -224,7 +239,7 @@ impl Renderer {
             None => crate::gpu::policy_from_env()?,
         };
         let gpu = Gpu::new(policy)?;
-        let msaa = if std::env::var("EDITS_MSAA").ok().as_deref() == Some("1") { 1 } else if options.msaa >= 4 { 4 } else { 1 };
+        let msaa = if options.msaa >= 4 { 4 } else { 1 };
         let device = &gpu.device;
 
         let uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -290,9 +305,8 @@ impl Renderer {
             full.insert(pipe, make_pipeline(device, &pipeline_layout, &module, "vs_full", entry, format, blend, 1, false));
         }
         let pipes = Pipes {
-            geo: make_pipeline(device, &pipeline_layout, &module, "vs_geo", "fs_geo", WORK_FORMAT, None, msaa, false),
+            geo: make_pipeline(device, &pipeline_layout, &module, "vs_geo", "fs_geo", WORK_FORMAT, None, 1, false),
             geo_depth: make_pipeline(device, &pipeline_layout, &module, "vs_geo", "fs_geo", WORK_FORMAT, None, msaa, true),
-            geo_plain: make_pipeline(device, &pipeline_layout, &module, "vs_geo", "fs_geo", WORK_FORMAT, None, 1, false),
             composed: HashMap::new(),
             full,
         };
@@ -354,6 +368,8 @@ impl Renderer {
             samples_override: None,
             ctx: Ctx::default(),
             stats: FrameStats::default(),
+            label: String::new(),
+            profile: None,
         };
         r.white = r.upload_picture(&RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255])));
         r.flush();
@@ -368,6 +384,17 @@ impl Renderer {
     /// Counters from the most recent frame.
     pub fn stats(&self) -> FrameStats {
         self.stats
+    }
+
+    /// Time every render pass on its own. This waits for the GPU after each
+    /// pass, so frames take longer than usual while it is on.
+    pub fn set_profiling(&mut self, on: bool) {
+        self.profile = on.then(Vec::new);
+    }
+
+    /// The pass timings collected since the last call.
+    pub fn take_profile(&mut self) -> Vec<PassTiming> {
+        self.profile.as_mut().map(std::mem::take).unwrap_or_default()
     }
 
     /// Override `settings.motion_blur.samples` (`None` restores the project's value).
@@ -397,7 +424,7 @@ impl Renderer {
         if s.width == 0 || s.height == 0 || s.width > max || s.height > max {
             bail!("project size {}x{} is not renderable (this adapter supports 1..{max} pixels per side)", s.width, s.height);
         }
-        if !(s.fps > 0.0) {
+        if s.fps.is_nan() || s.fps <= 0.0 {
             bail!("settings.fps must be positive");
         }
         let mut used: Vec<&str> = Vec::new();
@@ -409,6 +436,7 @@ impl Renderer {
             }
         }
         let mut slots = HashMap::new();
+        let mut kept: Vec<String> = Vec::new();
         for name in used {
             if slots.contains_key(name) {
                 continue;
@@ -418,6 +446,7 @@ impl Renderer {
                 Some(p) => {
                     let full = base_dir.join(p);
                     let key = file_key(&full);
+                    kept.push(key.clone());
                     match self.pictures.get(&key) {
                         Some(pic) => pic.clone(),
                         None => {
@@ -431,6 +460,7 @@ impl Renderer {
                 }
                 None => {
                     let key = format!("placeholder|{name}");
+                    kept.push(key.clone());
                     match self.pictures.get(&key) {
                         Some(pic) => pic.clone(),
                         None => {
@@ -466,6 +496,10 @@ impl Renderer {
                 custom.insert(src.to_string(), key);
             }
         }
+        // Keep what this project uses; pictures and shaders of earlier projects go.
+        self.pictures.retain(|key, _| kept.contains(key));
+        self.custom.retain(|key, _| custom.values().any(|k| k == key));
+        self.binds.clear();
         self.scene = Some(Arc::new(Scene { project: project.clone(), slots, custom }));
         Ok(())
     }
@@ -522,6 +556,7 @@ impl Renderer {
             uni.p[0][0] = 1.0;
             let offset = self.push_uniform(&uni);
             let pipeline = self.pipes.full[&Pipe::Mip].clone();
+            self.name(|| "Mip".into());
             self.raw_pass(&pipeline, &dst, None, None, Some(wgpu::Color::TRANSPARENT), &[(bind, offset, 3)]);
         }
         let id = self.new_id();
@@ -659,6 +694,20 @@ impl Renderer {
             pass.set_bind_group(1, bind, &[]);
             pass.draw(0..*vertices, 0..1);
         }
+        drop(pass);
+        if self.profile.is_some() {
+            let started = std::time::Instant::now();
+            self.flush();
+            let _ = self.gpu.device.poll(wgpu::PollType::wait_indefinitely());
+            let timing = PassTiming { label: std::mem::take(&mut self.label), ms: started.elapsed().as_secs_f64() * 1000.0 };
+            self.profile.as_mut().expect("checked above").push(timing);
+        }
+    }
+
+    fn name(&mut self, label: impl FnOnce() -> String) {
+        if self.profile.is_some() {
+            self.label = label();
+        }
     }
 
     fn uniform(&self, target: &Tex, p: &[[f32; 4]]) -> Uni {
@@ -672,6 +721,7 @@ impl Renderer {
     /// A full-target pass of a built-in pipeline reading `t0` (and `t1`).
     pub(crate) fn pass(&mut self, pipe: Pipe, target: &Tex, load: bool, t0: &Tex, t1: Option<&Tex>, p: &[[f32; 4]]) {
         let pipeline = self.pipes.full[&pipe].clone();
+        self.name(|| format!("{pipe:?}"));
         self.pass_with(&pipeline, target, load, t0, t1, p);
     }
 
@@ -680,6 +730,9 @@ impl Renderer {
         let uni = self.uniform(target, p);
         let offset = self.push_uniform(&uni);
         let clear = if load { None } else { Some(wgpu::Color::TRANSPARENT) };
+        if self.label.is_empty() {
+            self.name(|| "custom".into());
+        }
         self.raw_pass(pipeline, &target.view, None, None, clear, &[(bind, offset, 3)]);
     }
 
@@ -734,41 +787,42 @@ impl Renderer {
         let pipeline = self.composed(&recipe);
         let bind = self.bind(t0, t1, samp);
         let offset = self.push_uniform(&uni);
+        self.name(|| recipe.label());
         self.raw_pass(&pipeline, &target.view, None, None, Some(wgpu::Color::TRANSPARENT), &[(bind, offset, recipe.vertices())]);
     }
 
-    /// Draw a layer's quads into a fresh transparent texture. `smooth` turns
-    /// on multisampling for the quads' edges.
-    fn draw_quads(&mut self, quads: &[Quad], depth: bool, smooth: bool) -> Tex {
+    /// Draw a layer's quads into a fresh transparent texture. Flat layers
+    /// fade their own edges; a cube (`depth`) is multisampled instead.
+    fn draw_quads(&mut self, quads: &[Quad], depth: bool) -> Tex {
         let (w, h) = (self.ctx.w, self.ctx.h);
         let target = self.acquire(w, h);
         self.reserve_uniforms(quads.len() as u64);
         let mut draws = Vec::with_capacity(quads.len());
         for q in quads {
             let cut = if q.fit.cut { 1.0 } else { 0.0 };
-            let mut uni = self.uniform(&target, &[[q.fit.offset[0], q.fit.offset[1], q.fit.scale[0], q.fit.scale[1]], q.color, [cut, 0.0, 0.0, 0.0]]);
+            let fade = if q.margin != [0.0, 0.0] { 1.0 } else { 0.0 };
+            let mut uni = self.uniform(&target, &[[q.fit.offset[0], q.fit.offset[1], q.fit.scale[0], q.fit.scale[1]], q.color, [cut, fade, 0.0, 0.0]]);
             uni.mvp = q.mvp;
+            uni.p[25] = [q.margin[0], q.margin[1], 0.0, 0.0];
             let bind = self.bind(&q.tex, None, Samp::Image);
             draws.push((bind, self.push_uniform(&uni), 6));
         }
         let clear = Some(wgpu::Color::TRANSPARENT);
-        if !depth && (!smooth || self.msaa == 1) {
-            self.raw_pass(&self.pipes.geo_plain.clone(), &target.view, None, None, clear, &draws);
+        self.name(|| if depth { "cube".into() } else { "quads".into() });
+        if !depth {
+            self.raw_pass(&self.pipes.geo.clone(), &target.view, None, None, clear, &draws);
             return target;
         }
-        let pipeline = if depth { self.pipes.geo_depth.clone() } else { self.pipes.geo.clone() };
-        let depth_tex = depth.then(|| self.acquire_kind(w, h, TexKind::Depth));
-        let depth_view = depth_tex.as_ref().map(|t| &t.view);
+        let pipeline = self.pipes.geo_depth.clone();
+        let depth_tex = self.acquire_kind(w, h, TexKind::Depth);
         if self.msaa > 1 {
             let ms = self.acquire_kind(w, h, TexKind::WorkMs);
-            self.raw_pass(&pipeline, &ms.view, Some(&target.view), depth_view, clear, &draws);
+            self.raw_pass(&pipeline, &ms.view, Some(&target.view), Some(&depth_tex.view), clear, &draws);
             self.release(ms);
         } else {
-            self.raw_pass(&pipeline, &target.view, None, depth_view, clear, &draws);
+            self.raw_pass(&pipeline, &target.view, None, Some(&depth_tex.view), clear, &draws);
         }
-        if let Some(t) = depth_tex {
-            self.release(t);
-        }
+        self.release(depth_tex);
         target
     }
 
@@ -794,6 +848,7 @@ impl Renderer {
             return t.clone();
         }
         let t = self.acquire(self.ctx.w, self.ctx.h);
+        self.name(|| "clear".into());
         self.raw_pass(&self.pipes.full[&Pipe::Copy].clone(), &t.view, None, None, Some(background), &[]);
         *acc = Some(t.clone());
         t
@@ -831,6 +886,10 @@ impl Renderer {
         let project = &scene.project;
         let s = &project.settings;
         let (w, h) = scaled_size(project, scale);
+        let max = self.gpu.device.limits().max_texture_dimension_2d;
+        if w > max || h > max || w as u64 * h as u64 > MAX_PIXELS {
+            bail!("a {w}x{h} frame is too large to render (scale {scale}); the limit is {max} pixels per side and {} megapixels", MAX_PIXELS / 1_000_000);
+        }
         if self.pool_size != (w, h) {
             // A different output size: the pooled textures are of no use any more.
             self.pool.clear();
@@ -908,7 +967,7 @@ impl Renderer {
                     self.blend_over(&mut acc, flat, Source::Quad(&quads[0]), &tail, layer.blend, opacity);
                     continue;
                 }
-                let mut content = self.draw_quads(&quads, depth, !covers);
+                let mut content = self.draw_quads(&quads, depth);
                 if let Some(out) = self.run_effects(&content, head) {
                     self.release(std::mem::replace(&mut content, out));
                 }
@@ -948,14 +1007,20 @@ impl Renderer {
     fn layer_quads(&self, scene: &Scene, layer: &Layer, mvp: glam::DMat4, aspect: f64) -> (Vec<Quad>, bool) {
         let white = [1.0, 1.0, 1.0, 1.0];
         let (w, h) = (self.ctx.w, self.ctx.h);
-        let slot_quad = |name: &str, m: glam::DMat4, box_aspect: f64| {
+        let flat = !matches!(layer.kind, LayerKind::Cube { .. });
+        // Flat layers fade their edges unless the edges are out of sight.
+        let edges = |m: glam::DMat4| {
             let covers = geometry::covers_frame(m, w, h);
+            (covers, if covers || !flat { [0.0, 0.0] } else { geometry::edge_margin(m, w, h) })
+        };
+        let slot_quad = |name: &str, m: glam::DMat4, box_aspect: f64| {
+            let (covers, margin) = edges(m);
             let slot = scene.project.slots.get(name);
             let (fit, focus) = slot.map(|s| (s.fit, s.focus)).unwrap_or((edits_core::Fit::Cover, [0.5, 0.5]));
             match scene.slots.get(name) {
-                Some(pic) => Quad { mvp: mat(m), tex: pic.tex.clone(), fit: geometry::fit_uv(fit, focus, pic.aspect, box_aspect), color: white, covers },
+                Some(pic) => Quad { mvp: mat(m), tex: pic.tex.clone(), fit: geometry::fit_uv(fit, focus, pic.aspect, box_aspect), color: white, covers, margin },
                 // Not reachable after `prepare`, which gives every used slot a picture.
-                None => Quad { mvp: mat(m), tex: self.white.clone(), fit: geometry::fit_uv(edits_core::Fit::Stretch, focus, 1.0, 1.0), color: [1.0, 0.0, 1.0, 1.0], covers },
+                None => Quad { mvp: mat(m), tex: self.white.clone(), fit: geometry::fit_uv(edits_core::Fit::Stretch, focus, 1.0, 1.0), color: [1.0, 0.0, 1.0, 1.0], covers, margin },
             }
         };
         match &layer.kind {
@@ -965,7 +1030,8 @@ impl Renderer {
                 let c = [0, 1, 2].map(|i| assets::srgb_to_linear(color[i].clamp(0.0, 1.0)) * a);
                 let fit = geometry::fit_uv(edits_core::Fit::Stretch, [0.5, 0.5], 1.0, 1.0);
                 let m = mvp * geometry::flat(aspect, 1.0);
-                (vec![Quad { mvp: mat(m), tex: self.white.clone(), fit, color: [c[0], c[1], c[2], a], covers: geometry::covers_frame(m, w, h) }], false)
+                let (covers, margin) = edges(m);
+                (vec![Quad { mvp: mat(m), tex: self.white.clone(), fit, color: [c[0], c[1], c[2], a], covers, margin }], false)
             }
             LayerKind::Cube { faces, size } => {
                 let quads = geometry::cube_faces(*size)

@@ -480,7 +480,8 @@ pub fn write(dir: &Path) -> Result<Vec<String>> {
     std::fs::create_dir_all(dir.join("audio")).with_context(|| format!("cannot create {}", dir.join("audio").display()))?;
     let mut files = vec!["project.json".to_string()];
     std::fs::write(dir.join("project.json"), &text).with_context(|| format!("cannot write {}", dir.join("project.json").display()))?;
-    let pictures: [(&str, fn() -> RgbaImage); 5] = [("a", panel_a), ("b", panel_b), ("c", panel_c), ("d", panel_d), ("tex", texture)];
+    type Picture = (&'static str, fn() -> RgbaImage);
+    let pictures: [Picture; 5] = [("a", panel_a), ("b", panel_b), ("c", panel_c), ("d", panel_d), ("tex", texture)];
     for (slot, draw) in pictures {
         let name = format!("img/{slot}.png");
         draw().save(dir.join(&name)).with_context(|| format!("cannot write {}", dir.join(&name).display()))?;

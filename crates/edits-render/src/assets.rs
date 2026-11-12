@@ -83,7 +83,7 @@ pub fn placeholder(name: &str, size: u32) -> RgbaImage {
         let diagonal = x.abs_diff(y) < border / 2 + 1 || x.abs_diff(size - 1 - y) < border / 2 + 1;
         let c = if edge || diagonal {
             ink
-        } else if (x / cell + y / cell) % 2 == 0 {
+        } else if (x / cell + y / cell).is_multiple_of(2) {
             dark
         } else {
             light

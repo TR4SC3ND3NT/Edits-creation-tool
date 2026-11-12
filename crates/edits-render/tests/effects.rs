@@ -359,7 +359,7 @@ fn grain_is_deterministic_per_frame() {
     let coarse = render(r, &solid([0.5, 0.5, 0.5], r#"{"kind":"grain","params":{"amount":0.2,"size":67.5}}"#), 0);
     assert_eq!(coarse.get_pixel(0, 0), coarse.get_pixel(3, 3));
     assert_eq!(coarse.get_pixel(8, 4), coarse.get_pixel(11, 7));
-    assert!((0..16).any(|i| coarse.get_pixel(i * 4, 0) != coarse.get_pixel(i * 4 + 4 % 64, 0)));
+    assert!((0..16).any(|i| coarse.get_pixel(i * 4, 0) != coarse.get_pixel((i * 4 + 4) % 64, 0)));
 }
 
 #[test]
@@ -495,4 +495,78 @@ fn effect_sizes_scale_with_the_output() {
         }
     }
     assert!(worst < 0.08, "the two sizes differ by up to {worst}");
+}
+
+#[test]
+fn extreme_values_render_without_errors() {
+    gpu!(r);
+    let q = quadrants("quad.png", 64, 64);
+    let effects = [
+        r#"{"kind":"gaussian_blur","params":{"radius":300}}"#,
+        r#"{"kind":"gaussian_blur","params":{"radius":-5}}"#,
+        r#"{"kind":"directional_blur","params":{"length":500,"angle":1e6}}"#,
+        r#"{"kind":"zoom_blur","params":{"strength":5,"center":[9,9]}}"#,
+        r#"{"kind":"zoom_blur","params":{"strength":-2}}"#,
+        r#"{"kind":"spin_blur","params":{"angle":720}}"#,
+        r#"{"kind":"glow","params":{"radius":0,"threshold":-1,"intensity":50}}"#,
+        r#"{"kind":"glow","params":{"radius":200}}"#,
+        r#"{"kind":"vignette","params":{"amount":5,"radius":-1,"softness":0}}"#,
+        r#"{"kind":"rgb_split","params":{"amount":200}}"#,
+        r#"{"kind":"transform2d","params":{"scale":0}}"#,
+        r#"{"kind":"transform2d","params":{"scale":-1,"rotation":1e7,"offset":[50,-50]}}"#,
+        r#"{"kind":"transform2d","params":{"scale":1e6,"mirror":0}}"#,
+        r#"{"kind":"grain","params":{"amount":9,"size":0}}"#,
+        r#"{"kind":"posterize","params":{"levels":1}}"#,
+        r#"{"kind":"posterize","params":{"levels":100000}}"#,
+        r#"{"kind":"brightness_contrast","params":{"brightness":-9,"contrast":5}}"#,
+        r#"{"kind":"fade","params":{"amount":7,"color":[-1,2,300]}}"#,
+        r#"{"kind":"exposure","params":{"stops":200}}"#,
+        r#"{"kind":"exposure","params":{"stops":-200}}"#,
+        r#"{"kind":"threshold","params":{"level":-3,"softness":-1}}"#,
+        r#"{"kind":"saturation","params":{"amount":-4}}"#,
+        r#"{"kind":"invert","params":{"amount":40}}"#,
+    ];
+    for fx in effects {
+        for kind in [r#""kind":"image","slot":"a","transform":{"scale":0.7}"#, r#""kind":"adjustment""#] {
+            let p = project("", &format!(r#""slots":{{"a":{{"path":"{q}"}}}},"layers":[{{"id":"base","kind":"image","slot":"a"}},{{"id":"x",{kind},"effects":[{fx}]}}]"#));
+            r.prepare(&p, &dir()).unwrap();
+            let img = r.render_frame(0, 1.0).unwrap_or_else(|e| panic!("{fx}: {e:#}"));
+            assert_eq!(img.dimensions(), (64, 64), "{fx}");
+            assert!(img.pixels().all(|p| p.0[3] == 255), "{fx}");
+        }
+    }
+    let transforms = [
+        r#""scale":0"#,
+        r#""scale":[1e6,1e-6]"#,
+        r#""rotation":[1e6,-1e6,12345.6]"#,
+        r#""rotation":[0,90,0]"#,
+        r#""position":[0,0,-1.4]"#,
+        r#""position":[0,0,-50]"#,
+        r#""position":[1e6,1e6,1e6]"#,
+        r#""opacity":3"#,
+        r#""opacity":-1"#,
+        r#""anchor":[100,100]"#,
+    ];
+    for tr in transforms {
+        for camera in [r#"{}"#, r#"{"fov":1}"#, r#"{"fov":170,"rotation":[80,170,33],"position":[0.2,0.1,1.0]}"#] {
+            let p = project(
+                "",
+                &format!(
+                    r#""slots":{{"a":{{"path":"{q}"}}}},"camera":{camera},
+                       "layers":[{{"id":"i","kind":"image","slot":"a","transform":{{{tr}}}}},
+                                 {{"id":"c","kind":"cube","faces":["a"],"size":[0.5,2,0.01],"transform":{{{tr}}}}},
+                                 {{"id":"s","kind":"solid","color":[1,0,0,0.5],"blend":"overlay","transform":{{{tr}}}}}]"#
+                ),
+            );
+            r.prepare(&p, &dir()).unwrap();
+            let img = r.render_frame(0, 1.0).unwrap_or_else(|e| panic!("{tr} with camera {camera}: {e:#}"));
+            assert_eq!(img.dimensions(), (64, 64));
+        }
+    }
+    // A frame too large for the adapter is an error, not a crash.
+    let p = solid([1.0, 1.0, 1.0], "");
+    r.prepare(&p, &dir()).unwrap();
+    let err = r.render_frame(0, 2000.0).unwrap_err().to_string();
+    assert!(err.contains("too large"), "{err}");
+    assert_eq!(r.render_frame(0, 1.0).unwrap().dimensions(), (64, 64));
 }

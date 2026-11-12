@@ -90,6 +90,24 @@ pub fn covers_frame(mvp: DMat4, w: u32, h: u32) -> bool {
     })
 }
 
+/// How much wider and taller (as fractions of its size) the unit quad drawn
+/// with `mvp` must be made so that every pixel its edges touch is shaded: about
+/// a pixel and a half on each side of a `w` x `h` frame.
+pub fn edge_margin(mvp: DMat4, w: u32, h: u32) -> [f32; 2] {
+    let mut px = [[0.0f64; 2]; 4];
+    for (i, (x, y)) in [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)].into_iter().enumerate() {
+        let c = mvp * DVec3::new(x, y, 0.0).extend(1.0);
+        if c.w <= 1e-6 {
+            // Partly behind the camera: what is visible is very close and very large.
+            return [0.01, 0.01];
+        }
+        px[i] = [c.x / c.w * 0.5 * w as f64, c.y / c.w * 0.5 * h as f64];
+    }
+    let len = |a: usize, b: usize| (px[a][0] - px[b][0]).hypot(px[a][1] - px[b][1]).max(1e-6);
+    let (across, down) = (len(0, 1).min(len(3, 2)), len(0, 3).min(len(1, 2)));
+    [(1.5 / across).min(0.5) as f32, (1.5 / down).min(0.5) as f32]
+}
+
 /// How box coordinates (0..1) map into picture coordinates: `offset + uv * scale`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FitUv {
@@ -183,6 +201,18 @@ mod tests {
         assert!(!covers_frame(l(1.0, [0.0; 3], [0.01, 0.0, 0.0]), 1080, 1080));
         assert!(!covers_frame(l(1.0, [0.0; 3], [0.0, 0.0, 0.1]), 1080, 1080));
         assert!(!covers_frame(l(1.0, [0.0; 3], [0.0, 0.0, -5.0]), 1080, 1080)); // behind the camera
+    }
+
+    #[test]
+    fn edge_margin_is_about_a_pixel_and_a_half() {
+        let cam = ResolvedCamera { fov: 39.6, position: [0.0; 3], rotation: [0.0; 3] };
+        let vp = view_projection(&cam, 1.0);
+        let l = ResolvedLayer { position: [0.0; 3], scale: [0.5, 0.25, 1.0], rotation: [0.0, 0.0, 30.0], anchor: [0.0; 2], opacity: 1.0 };
+        // 500 x 250 pixels on a 1000 pixel frame, whatever its rotation.
+        let m = edge_margin(vp * model(&l) * flat(1.0, 1.0), 1000, 1000);
+        assert!((m[0] - 0.003).abs() < 1e-5 && (m[1] - 0.006).abs() < 1e-5, "{m:?}");
+        let tiny = ResolvedLayer { scale: [1e-5; 3], ..l };
+        assert_eq!(edge_margin(vp * model(&tiny) * flat(1.0, 1.0), 1000, 1000), [0.5, 0.5]);
     }
 
     #[test]
