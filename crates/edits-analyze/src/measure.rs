@@ -64,6 +64,41 @@ impl<'a> Pair<'a> {
         self.flat = Some(flat);
         self
     }
+    /// The same pair with another picture standing in for the warped reference frame.
+    pub fn with_reference(&self, refw: Vec<u8>) -> Pair<'a> {
+        Pair { w: self.w, h: self.h, cur: self.cur, refw, mask: self.mask.clone(), ref_ok: self.ref_ok.clone(), aligned: self.aligned, coverage: self.coverage, flat: self.flat }
+    }
+    /// The warped reference frame under a Gaussian blur of `sigma` pixels, as
+    /// the renderer blurs: each channel in linear light, edges repeated.
+    /// Overlay strokes of the reference frame are filled in first (the
+    /// overlay sits on top of the blurred picture, it is not blurred itself).
+    pub fn blurred_reference(&self, sigma: f32) -> Vec<u8> {
+        if sigma < 0.25 {
+            return self.refw.clone();
+        }
+        let lut = crate::img::srgb_lut();
+        let mut out = vec![0u8; self.refw.len()];
+        for c in 0..3 {
+            let g = Gray { w: self.w, h: self.h, d: self.refw.chunks_exact(3).map(|p| lut[p[c] as usize]).collect() };
+            let b = crate::img::gaussian_blur(&crate::blur::fill_masked(&g, &self.ref_ok), sigma);
+            for (i, v) in b.d.iter().enumerate() {
+                out[i * 3 + c] = (crate::img::linear_to_srgb(*v) * 255.0).round() as u8;
+            }
+        }
+        out
+    }
+}
+
+/// Linear-light luminance of an RGB8 picture after a gain of `gain` and
+/// clipping at white, per channel: what an exposure flash leaves of it.
+pub fn flashed_luma(rgb: &[u8], w: usize, h: usize, gain: f32) -> Gray {
+    let lut = crate::img::srgb_lut();
+    let mut d = Vec::with_capacity(w * h);
+    for p in rgb.chunks_exact(3) {
+        let v = |c: u8| (lut[c as usize] * gain).min(1.0);
+        d.push(0.2126 * v(p[0]) + 0.7152 * v(p[1]) + 0.0722 * v(p[2]));
+    }
+    Gray { w, h, d }
 }
 
 const BORDER: f64 = 0.12;

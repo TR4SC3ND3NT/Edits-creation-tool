@@ -251,23 +251,53 @@ fn process_shot(frames: &Frames, sigs: &[FrameSig], toggles: &[bool], usable: &[
                     inverted = c < 0.0;
                 }
             }
-            let tone = tone::measure(&pair, inverted);
-            let sat = if tone.sat_confidence > 0.3 { tone.sat_ratio.min(1.0) } else { 1.0 };
-            let mut exp = exposure::measure(&pair, inverted, sat);
-            if tone.threshold.is_some() {
-                exp = ExposureSample::default();
-            }
-            let blur = if i == ref_frame {
-                BlurSample::default()
-            } else {
+            let sat_of = |t: &ToneSample| if t.sat_confidence > 0.3 { t.sat_ratio.min(1.0) } else { 1.0 };
+            let mut tone = tone::measure(&pair, inverted);
+            let mut exp = exposure::measure(&pair, inverted, sat_of(&tone));
+            let mut blur = BlurSample::default();
+            if i != ref_frame {
                 // Linear light, with overlay strokes filled in. The reference
                 // frame is used in this frame's geometry when the warp covers
                 // the analysis window (a zoom changes the spectrum by itself).
-                let (cur, _) = blur::fill_masked(&linear_luma_image(frames.rgb(i), frames.w, frames.h), usable);
-                let (warped, share) = blur::fill_masked(&linear_luma_image(&pair.refw, pair.w, pair.h), &pair.ref_ok);
-                let reference = if pair.aligned && share > 0.9 { warped } else { blur::fill_masked(&linear_luma_image(frames.rgb(ref_frame), frames.w, frames.h), usable).0 };
-                blur::measure(&cur, &reference)
-            };
+                let (fw, fh) = (frames.w, frames.h);
+                let cur = blur::fill_masked(&linear_luma_image(frames.rgb(i), fw, fh), usable);
+                let warped = pair.aligned && blur::window_share(&pair.ref_ok, fw, fh) > 0.9;
+                let reference = if warped { blur::fill_masked(&linear_luma_image(&pair.refw, fw, fh), &pair.ref_ok) } else { blur::fill_masked(&linear_luma_image(frames.rgb(ref_frame), fw, fh), usable) };
+                let (mut s2, first) = blur::measure_signed(&cur, &reference);
+                blur = first;
+                // Blur, exposure and saturation disturb each other's
+                // measurement: a blurred picture has other tones (ink mixes
+                // with paper), and a flash that clips re-sharpens blurred
+                // edges. So when a frame is blurred or flashed, the reference
+                // frame is put through the renderer's chain (blur in linear
+                // light, then gain, then clipping) with the current estimates
+                // and the estimates are refined against that.
+                let floor = (0.0012 * fh as f64).powi(2);
+                if warped && !inverted && tone.threshold.is_none() && (s2 > floor || exp.clipped > 0.05 || exp.stops.abs() > 0.4) {
+                    s2 = s2.max(0.0);
+                    for _ in 0..3 {
+                        let pb = pair.with_reference(pair.blurred_reference(s2.sqrt() as f32));
+                        let t2 = tone::measure(&pb, false);
+                        (tone.sat_ratio, tone.sat_confidence, tone.sat_cur, tone.sat_ref) = (t2.sat_ratio, t2.sat_confidence, t2.sat_cur, t2.sat_ref);
+                        exp = exposure::measure(&pb, false, sat_of(&tone));
+                        if exp.bound {
+                            break;
+                        }
+                        let synth = blur::fill_masked(&crate::measure::flashed_luma(&pb.refw, fw, fh, 2f32.powf(exp.stops as f32)), &pair.ref_ok);
+                        let (d2, b) = blur::measure_signed(&cur, &synth);
+                        let next = (s2 + d2).max(0.0);
+                        let moved = (next.sqrt() - s2.sqrt()).abs();
+                        s2 = next;
+                        blur = BlurSample { sigma_px: s2.sqrt(), anisotropy: first.anisotropy, fit_rms: b.fit_rms };
+                        if moved < 0.0005 * fh as f64 {
+                            break;
+                        }
+                    }
+                }
+            }
+            if tone.threshold.is_some() {
+                exp = ExposureSample::default();
+            }
             FrameMeasure { exp, tone, blur, inverted }
         })
         .collect();

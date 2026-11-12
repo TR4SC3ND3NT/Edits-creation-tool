@@ -27,21 +27,16 @@ pub fn window(w: usize, h: usize) -> usize {
 /// warped reference frame does not cover) by the mean of their nearest valid
 /// neighbours. A sharp overlay stroke on top of a blurred picture keeps its
 /// high frequencies; left in, it hides the blur (the spectrum ratio stays
-/// near 1 where the stroke's power dominates). Returns the filled image and
-/// the share of the analysis window that was valid.
-pub fn fill_masked(img: &Gray, ok: &[bool]) -> (Gray, f64) {
+/// near 1 where the stroke's power dominates).
+pub fn fill_masked(img: &Gray, ok: &[bool]) -> Gray {
     let (w, h) = (img.w, img.h);
-    let n = window(w, h);
-    let (x0, y0) = ((w - n) / 2, (h - n) / 2);
     let mut out = img.clone();
-    let mut valid = 0usize;
-    for y in y0..y0 + n {
-        for x in x0..x0 + n {
+    for y in 0..h {
+        for x in 0..w {
             if ok[y * w + x] {
-                valid += 1;
                 continue;
             }
-            for r in [2usize, 4, 8, 16] {
+            for r in [2usize, 4, 8] {
                 let (mut acc, mut k) = (0.0f32, 0.0f32);
                 for yy in y.saturating_sub(r)..(y + r + 1).min(h) {
                     for xx in x.saturating_sub(r)..(x + r + 1).min(w) {
@@ -58,7 +53,18 @@ pub fn fill_masked(img: &Gray, ok: &[bool]) -> (Gray, f64) {
             }
         }
     }
-    (out, valid as f64 / (n * n) as f64)
+    out
+}
+
+/// Share of the analysis window in which `ok` holds.
+pub fn window_share(ok: &[bool], w: usize, h: usize) -> f64 {
+    let n = window(w, h);
+    let (x0, y0) = ((w - n) / 2, (h - n) / 2);
+    let mut valid = 0usize;
+    for y in y0..y0 + n {
+        valid += ok[y * w + x0..y * w + x0 + n].iter().filter(|v| **v).count();
+    }
+    valid as f64 / (n * n) as f64
 }
 
 /// Weighted least squares of `y = c - k x` with `x = f^2`; returns (k, rms).
@@ -96,6 +102,14 @@ fn fit(pc: &[f64], pr: &[f64], n: usize, f_hi: f64) -> Option<(f64, f64)> {
 
 /// Blur of `cur` relative to `reference` (luminance images of the same size and geometry).
 pub fn measure(cur: &Gray, reference: &Gray) -> BlurSample {
+    measure_signed(cur, reference).1
+}
+
+/// As [`measure`], and the signed difference of squared sigmas in pixels
+/// (negative when `cur` is the sharper of the two). Gaussian blurs add in
+/// sigma squared, which makes this the step of a fixed-point search: blur
+/// the reference by the current estimate, measure what is left, add it.
+pub fn measure_signed(cur: &Gray, reference: &Gray) -> (f64, BlurSample) {
     let n = window(cur.w, cur.h);
     let sectors = 4;
     let pc = radial_power(cur, n, sectors);
@@ -109,7 +123,7 @@ pub fn measure(cur: &Gray, reference: &Gray) -> BlurSample {
     for _ in 0..6 {
         match fit(&pc[0], &pr[0], n, f_hi) {
             Some(r) => res = r,
-            None => return BlurSample::default(),
+            None => return (0.0, BlurSample::default()),
         }
         let s = sigma_of(res.0);
         let next = if s > 0.05 { (1.0 / (std::f64::consts::PI * s)).clamp(0.05, 0.4) } else { 0.4 };
@@ -125,7 +139,7 @@ pub fn measure(cur: &Gray, reference: &Gray) -> BlurSample {
             anisotropy = (hi - lo) / (hi + lo + 1e-9);
         }
     }
-    BlurSample { sigma_px: sigma, anisotropy, fit_rms: res.1 }
+    (res.0 / (std::f64::consts::TAU * std::f64::consts::TAU), BlurSample { sigma_px: sigma, anisotropy, fit_rms: res.1 })
 }
 
 #[cfg(test)]
