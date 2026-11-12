@@ -20,6 +20,7 @@ pub mod draft;
 pub mod exposure;
 pub mod img;
 pub mod ingest;
+pub mod joint;
 pub mod jsonfmt;
 pub mod layers;
 pub mod measure;

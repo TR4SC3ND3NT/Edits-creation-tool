@@ -50,14 +50,6 @@ pub struct Analyzed {
     pub sigs: Vec<FrameSig>,
 }
 
-#[derive(Clone, Copy)]
-struct FrameMeasure {
-    exp: ExposureSample,
-    tone: ToneSample,
-    blur: BlurSample,
-    inverted: bool,
-}
-
 struct ShotWork {
     f0: usize,
     f1: usize,
@@ -201,6 +193,100 @@ fn inset_panel(frames: &Frames, ref_frame: usize, usable: &[bool]) -> bool {
     ring.len() > 100 && sd(&ring) < 0.05 && crate::img::mean(&ring) < 0.12 && sd(&centre) > 0.12
 }
 
+/// Everything measured on one frame against its shot's reference frame.
+#[derive(Clone, Copy, Debug)]
+pub struct FrameMeasure {
+    pub exp: ExposureSample,
+    pub tone: ToneSample,
+    pub blur: BlurSample,
+    /// False where blur cannot be seen at all: a frame flashed to white, a threshold or inversion hit.
+    pub blur_ok: bool,
+    pub inverted: bool,
+}
+
+/// Measure frame `i` against `ref_frame`. `sim` is the frame's track sample
+/// (`None` for a shot that could not be tracked), `registered` says whether
+/// that sample is a real registration (not interpolated), `inverted` is the
+/// tone state suggested by frame-to-frame sign flips.
+pub fn measure_frame(frames: &Frames, ref_frame: usize, i: usize, sim: Option<&Sim>, registered: bool, inverted: bool, usable: &[bool], flat: &FlatField) -> FrameMeasure {
+    let pair = make_pair(frames, ref_frame, i, sim, usable).with_flat(flat);
+    let mut inverted = inverted;
+    if sim.is_some() && registered {
+        let c = tone::lum_correlation(&pair);
+        if c.abs() > 0.4 {
+            inverted = c < 0.0;
+        }
+    }
+    let sat_of = |t: &ToneSample| if t.sat_confidence > 0.3 { t.sat_ratio.min(1.0) } else { 1.0 };
+    let mut tone = tone::measure(&pair, inverted);
+    let mut exp = exposure::measure(&pair, inverted, sat_of(&tone));
+    let mut blur = BlurSample::default();
+    if i != ref_frame {
+        // Linear light, with overlay strokes filled in. The reference
+        // frame is used in this frame's geometry when the warp covers
+        // the analysis window (a zoom changes the spectrum by itself).
+        let (fw, fh) = (frames.w, frames.h);
+        let cur = blur::fill_masked(&linear_luma_image(frames.rgb(i), fw, fh), usable);
+        let warped = pair.aligned && blur::window_share(&pair.ref_ok, fw, fh) > 0.9;
+        let reference = if warped { blur::fill_masked(&linear_luma_image(&pair.refw, fw, fh), &pair.ref_ok) } else { blur::fill_masked(&linear_luma_image(frames.rgb(ref_frame), fw, fh), usable) };
+        let (mut s2, first) = blur::measure_signed(&cur, &reference);
+        blur = first;
+        // Blur, exposure and saturation disturb each other's
+        // measurement: a blurred picture has other tones (ink mixes
+        // with paper), and a flash that clips re-sharpens blurred
+        // edges. So when a frame is blurred or flashed, the reference
+        // frame is put through the renderer's chain (blur in linear
+        // light, then gain, then clipping) with the current estimates
+        // and the estimates are refined against that.
+        let floor = (0.0012 * fh as f64).powi(2);
+        let measurable = warped && !inverted && tone.threshold.is_none();
+        let mut searched = false;
+        if measurable && (exp.clipped > 0.03 || exp.bound) {
+            // The flash clips: search the blur whose tones explain the frame (see `joint`).
+            if let Some(j) = crate::joint::blur_under_flash(&pair, false, sat_of(&tone), s2.max(0.0).sqrt()) {
+                if j.mismatch < j.mismatch_sharp - 0.003 {
+                    searched = true;
+                    s2 = j.sigma_px * j.sigma_px;
+                    blur = BlurSample { sigma_px: j.sigma_px, anisotropy: first.anisotropy, fit_rms: first.fit_rms };
+                    let pb = pair.with_reference(pair.blurred_reference(j.sigma_px as f32));
+                    let t2 = tone::measure(&pb, false);
+                    (tone.sat_ratio, tone.sat_confidence, tone.sat_cur, tone.sat_ref) = (t2.sat_ratio, t2.sat_confidence, t2.sat_cur, t2.sat_ref);
+                    exp = exposure::measure(&pb, false, sat_of(&tone));
+                }
+            }
+        }
+        if measurable && !searched && (s2 > floor || exp.stops.abs() > 0.4) {
+            s2 = s2.max(0.0);
+            for _ in 0..3 {
+                let pb = pair.with_reference(pair.blurred_reference(s2.sqrt() as f32));
+                let t2 = tone::measure(&pb, false);
+                (tone.sat_ratio, tone.sat_confidence, tone.sat_cur, tone.sat_ref) = (t2.sat_ratio, t2.sat_confidence, t2.sat_cur, t2.sat_ref);
+                exp = exposure::measure(&pb, false, sat_of(&tone));
+                if exp.bound {
+                    break;
+                }
+                let synth = blur::fill_masked(&crate::measure::flashed_luma(&pb.refw, fw, fh, 2f32.powf(exp.stops as f32)), &pair.ref_ok);
+                let (d2, b) = blur::measure_signed(&cur, &synth);
+                let next = (s2 + d2).max(0.0);
+                let moved = (next.sqrt() - s2.sqrt()).abs();
+                s2 = next;
+                blur = BlurSample { sigma_px: s2.sqrt(), anisotropy: first.anisotropy, fit_rms: b.fit_rms };
+                if moved < 0.0005 * fh as f64 {
+                    break;
+                }
+            }
+        }
+    }
+    if tone.threshold.is_some() {
+        exp = ExposureSample::default();
+    }
+    let blur_ok = !exp.bound && tone.threshold.is_none();
+    if !blur_ok {
+        blur = BlurSample::default();
+    }
+    FrameMeasure { exp, tone, blur, blur_ok, inverted }
+}
+
 fn process_shot(frames: &Frames, sigs: &[FrameSig], toggles: &[bool], usable: &[bool], flat: &FlatField, f0: usize, f1: usize) -> ShotWork {
     let n = f1 - f0;
     // Tone state from frame-to-frame sign flips; the majority state is "normal".
@@ -242,63 +328,7 @@ fn process_shot(frames: &Frames, sigs: &[FrameSig], toggles: &[bool], usable: &[
         .into_par_iter()
         .map(|i| {
             let ts = &track[i - f0];
-            let sim: Option<&Sim> = if tracked { Some(&ts.sim) } else { None };
-            let pair = make_pair(frames, ref_frame, i, sim, usable).with_flat(flat);
-            let mut inverted = state[i - f0];
-            if tracked && ts.valid() {
-                let c = tone::lum_correlation(&pair);
-                if c.abs() > 0.4 {
-                    inverted = c < 0.0;
-                }
-            }
-            let sat_of = |t: &ToneSample| if t.sat_confidence > 0.3 { t.sat_ratio.min(1.0) } else { 1.0 };
-            let mut tone = tone::measure(&pair, inverted);
-            let mut exp = exposure::measure(&pair, inverted, sat_of(&tone));
-            let mut blur = BlurSample::default();
-            if i != ref_frame {
-                // Linear light, with overlay strokes filled in. The reference
-                // frame is used in this frame's geometry when the warp covers
-                // the analysis window (a zoom changes the spectrum by itself).
-                let (fw, fh) = (frames.w, frames.h);
-                let cur = blur::fill_masked(&linear_luma_image(frames.rgb(i), fw, fh), usable);
-                let warped = pair.aligned && blur::window_share(&pair.ref_ok, fw, fh) > 0.9;
-                let reference = if warped { blur::fill_masked(&linear_luma_image(&pair.refw, fw, fh), &pair.ref_ok) } else { blur::fill_masked(&linear_luma_image(frames.rgb(ref_frame), fw, fh), usable) };
-                let (mut s2, first) = blur::measure_signed(&cur, &reference);
-                blur = first;
-                // Blur, exposure and saturation disturb each other's
-                // measurement: a blurred picture has other tones (ink mixes
-                // with paper), and a flash that clips re-sharpens blurred
-                // edges. So when a frame is blurred or flashed, the reference
-                // frame is put through the renderer's chain (blur in linear
-                // light, then gain, then clipping) with the current estimates
-                // and the estimates are refined against that.
-                let floor = (0.0012 * fh as f64).powi(2);
-                if warped && !inverted && tone.threshold.is_none() && (s2 > floor || exp.clipped > 0.05 || exp.stops.abs() > 0.4) {
-                    s2 = s2.max(0.0);
-                    for _ in 0..3 {
-                        let pb = pair.with_reference(pair.blurred_reference(s2.sqrt() as f32));
-                        let t2 = tone::measure(&pb, false);
-                        (tone.sat_ratio, tone.sat_confidence, tone.sat_cur, tone.sat_ref) = (t2.sat_ratio, t2.sat_confidence, t2.sat_cur, t2.sat_ref);
-                        exp = exposure::measure(&pb, false, sat_of(&tone));
-                        if exp.bound {
-                            break;
-                        }
-                        let synth = blur::fill_masked(&crate::measure::flashed_luma(&pb.refw, fw, fh, 2f32.powf(exp.stops as f32)), &pair.ref_ok);
-                        let (d2, b) = blur::measure_signed(&cur, &synth);
-                        let next = (s2 + d2).max(0.0);
-                        let moved = (next.sqrt() - s2.sqrt()).abs();
-                        s2 = next;
-                        blur = BlurSample { sigma_px: s2.sqrt(), anisotropy: first.anisotropy, fit_rms: b.fit_rms };
-                        if moved < 0.0005 * fh as f64 {
-                            break;
-                        }
-                    }
-                }
-            }
-            if tone.threshold.is_some() {
-                exp = ExposureSample::default();
-            }
-            FrameMeasure { exp, tone, blur, inverted }
+            measure_frame(frames, ref_frame, i, if tracked { Some(&ts.sim) } else { None }, ts.valid(), state[i - f0], usable, flat)
         })
         .collect();
     let mut meas = meas;
@@ -531,7 +561,7 @@ fn build_shot(id: usize, w: &ShotWork, sigs: &[FrameSig], dup: &[bool], t: &Timi
 
     // ---- blur -------------------------------------------------------------------
     let blur_pct: Vec<Vec<f64>> = w.meas.iter().map(|m| vec![100.0 * m.blur.sigma_px / frame_h as f64]).collect();
-    let bw: Vec<f64> = (0..n).map(|i| if dup[f0 + i] { 0.0 } else { 1.0 }).collect();
+    let bw: Vec<f64> = (0..n).map(|i| if dup[f0 + i] || !w.meas[i].blur_ok { 0.0 } else { 1.0 }).collect();
     let fb = curves::fit(&blur_pct, &bw, 0.08);
     let peak_blur = fb.keys.iter().map(|k| k.v[0]).fold(0.0, f64::max);
     if peak_blur >= 0.15 {

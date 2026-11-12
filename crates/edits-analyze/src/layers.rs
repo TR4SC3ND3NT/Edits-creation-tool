@@ -1,9 +1,10 @@
 //! Static layers that sit on top of every shot: an overlay plate (ornaments,
 //! dust, handwriting) and a vignette.
 //!
-//! Overlay: the per-pixel temporal median over many frames keeps what does
-//! not move. The pictures underneath average into a smooth blur, so a white
-//! top-hat (median minus its morphological opening) isolates the thin bright
+//! Overlay: a low per-pixel temporal percentile over many frames keeps what
+//! is always there. The pictures underneath drop out wherever one of them is
+//! dark, so a white top-hat (the percentile image minus its morphological
+//! opening) isolates the thin bright
 //! overlay strokes; only the part common to the three channels is kept (the
 //! strokes are neutral, the residue of the pictures is coloured) and dividing
 //! by `1 - background` undoes a screen blend.
@@ -79,7 +80,14 @@ fn minmax_filter(src: &[u8], w: usize, h: usize, r: usize, take_max: bool) -> Ve
 /// The overlay plate from the frames listed in `idx` (at the frames' resolution).
 pub fn overlay_plate(frames: &Frames, idx: &[usize]) -> Plate {
     let (w, h) = (frames.w, frames.h);
-    let med = temporal_percentile(frames, idx, 0.5);
+    // A screen-blended overlay adds light: a pixel is never darker than the
+    // plate there. The darkest tenth of the frames therefore shows the plate
+    // almost bare, wherever any of the pictures is dark at some time; the
+    // median (used before) keeps a stroke only where most frames are dark,
+    // and keeps thin bright detail of a picture that is on screen for half
+    // of the clip (`edits calib`: a plate was "found" in 16 of 19 clips
+    // without one, and dust over bright pictures was missed).
+    let med = temporal_percentile(frames, idx, 0.1);
     // Structuring element a little wider than a pen stroke.
     let r = ((h as f64 * 0.008).round() as usize).max(2);
     let opened = minmax_filter(&minmax_filter(&med, w, h, r, false), w, h, r, true);

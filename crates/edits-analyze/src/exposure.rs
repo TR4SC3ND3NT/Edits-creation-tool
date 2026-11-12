@@ -83,6 +83,24 @@ impl LumHist {
         }
         LumHist { hist, count }
     }
+    /// As [`LumHist::value`], from linear-light channel planes.
+    pub fn from_linear(r: &[f32], g: &[f32], b: &[f32], mask: &[bool], sat: f32) -> Self {
+        let mut hist = vec![0u32; BINS];
+        let mut count = 0;
+        for i in 0..r.len() {
+            if !mask[i] {
+                continue;
+            }
+            let mut y = r[i].max(g[i]).max(b[i]);
+            if sat != 1.0 {
+                let l = 0.2126 * r[i] + 0.7152 * g[i] + 0.0722 * b[i];
+                y = (l + sat * (y - l)).max(0.0);
+            }
+            hist[((y.clamp(0.0, 1.0).powf(1.0 / 2.2) * BINS as f32) as usize).min(BINS - 1)] += 1;
+            count += 1;
+        }
+        LumHist { hist, count }
+    }
     /// Linear luminance at each of the given cumulative fractions (ascending).
     pub fn quantiles(&self, ps: &[f64]) -> Vec<f64> {
         let mut out = Vec::with_capacity(ps.len());
