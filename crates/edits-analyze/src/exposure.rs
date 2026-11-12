@@ -1,10 +1,18 @@
 //! Exposure: per-frame gain relative to the shot's reference frame, and flash events.
 //!
 //! The gain is read from the tone transfer between the two frames, obtained
-//! by matching quantiles of linear-light luminance (no pixel correspondence
-//! needed, so a few pixels of misregistration under a flash do not matter).
+//! by matching quantiles of the *largest channel* in linear light (no pixel
+//! correspondence needed, so a few pixels of misregistration under a flash do
+//! not matter). The renderer multiplies linear RGB by `2^stops` and clips
+//! each channel at 1 on output, so a pixel is clipped exactly when its
+//! largest channel is: the quantiles below white are untouched by clipping
+//! and their ratio is the gain. (With luminance instead, a saturated colour
+//! whose one channel has clipped would still count as unclipped and pull the
+//! gain down; `edits calib` measured -0.6 stops of bias on poster art.)
 //! Quantiles that are clipped at white in the frame are left out, which is
-//! why a flash can still be measured from the dark ink that survives it.
+//! why a flash can still be measured from the dark ink that survives it. A
+//! saturation change moves the largest channel too, so the reference frame
+//! is desaturated by the measured amount before its quantiles are taken.
 
 use crate::img::srgb_lut;
 use crate::measure::{FlatField, Pair};
@@ -46,6 +54,35 @@ impl LumHist {
         }
         LumHist { hist, count }
     }
+    /// Histogram of the largest channel (linear light) after applying a
+    /// saturation of `sat` to each pixel, as the renderer's `saturation`
+    /// effect does (mix with Rec. 709 luminance). `clip` marks pixels that
+    /// are as bright as a white field at their position as white.
+    pub fn value(rgb: &[u8], mask: &[bool], invert: bool, flat: Option<&FlatField>, sat: f32, clip: bool) -> Self {
+        let lut = srgb_lut();
+        let mut hist = vec![0u32; BINS];
+        let mut count = 0;
+        for (i, p) in rgb.chunks_exact(3).enumerate() {
+            if !mask[i] {
+                continue;
+            }
+            let white = flat.map(|f| f.white[i]).unwrap_or(255);
+            let v = |c: u8| lut[if invert { white.saturating_sub(c) } else { c } as usize];
+            let (r, g, b) = (v(p[0]), v(p[1]), v(p[2]));
+            let mut y = r.max(g).max(b);
+            if sat != 1.0 {
+                let l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                y = (l + sat * (y - l)).max(0.0);
+            }
+            if clip && white < 250 && !invert && p[0].max(p[1]).max(p[2]) as f32 >= 0.96 * white as f32 {
+                y = 1.0;
+            }
+            let b = ((y.min(1.0).powf(1.0 / 2.2) * BINS as f32) as usize).min(BINS - 1);
+            hist[b] += 1;
+            count += 1;
+        }
+        LumHist { hist, count }
+    }
     /// Linear luminance at each of the given cumulative fractions (ascending).
     pub fn quantiles(&self, ps: &[f64]) -> Vec<f64> {
         let mut out = Vec::with_capacity(ps.len());
@@ -70,20 +107,26 @@ pub struct ExposureSample {
     /// log2 of the gain relative to the reference frame.
     pub stops: f64,
     pub confidence: f64,
-    /// Share of the tone range clipped at white in this frame.
+    /// Share of the reference frame's tones below white that are at white in this frame.
     pub clipped: f64,
     /// A mix toward a colour explains the frame better than a gain: (amount, luminance of the colour).
     pub fade: Option<(f64, f64)>,
+    /// Nothing measurable is left below white: `stops` is only a lower bound.
+    pub bound: bool,
 }
 
+/// Cumulative fractions at which tones are compared: an even grid, plus a
+/// few low ones so that a small share of dark ink that survives a strong
+/// flash still gives several readings.
 pub fn quantile_grid() -> Vec<f64> {
-    (1..=48).map(|i| i as f64 / 49.0).collect()
+    [0.0025, 0.005, 0.01, 0.015].into_iter().chain((1..=48).map(|i| i as f64 / 49.0)).collect()
 }
 
-/// Gain of the frame relative to the (warped) reference frame.
-pub fn measure(pair: &Pair, inverted: bool) -> ExposureSample {
-    let hr = LumHist::new(&pair.refw, &pair.mask, false, pair.flat);
-    let hc = LumHist::new(pair.cur, &pair.mask, inverted, pair.flat);
+/// Gain of the frame relative to the (warped) reference frame. `sat` is the
+/// frame's saturation relative to the reference frame (1 = unchanged).
+pub fn measure(pair: &Pair, inverted: bool, sat: f64) -> ExposureSample {
+    let hr = LumHist::value(&pair.refw, &pair.mask, false, pair.flat, sat.clamp(0.0, 2.0) as f32, false);
+    let hc = LumHist::value(pair.cur, &pair.mask, inverted, pair.flat, 1.0, true);
     if hr.count < 200 {
         return ExposureSample::default();
     }
@@ -95,8 +138,8 @@ pub fn measure(pair: &Pair, inverted: bool) -> ExposureSample {
 /// Gain between two neighbouring frames (`pair.refw` is the other frame,
 /// unwarped). Both may be clipped, so only tones below white in both count.
 pub fn measure_between(pair: &Pair, invert_cur: bool) -> ExposureSample {
-    let hr = LumHist::new(&pair.refw, &pair.mask, false, pair.flat);
-    let hc = LumHist::new(pair.cur, &pair.mask, invert_cur, pair.flat);
+    let hr = LumHist::value(&pair.refw, &pair.mask, false, pair.flat, 1.0, true);
+    let hc = LumHist::value(pair.cur, &pair.mask, invert_cur, pair.flat, 1.0, true);
     if hr.count < 200 {
         return ExposureSample::default();
     }
@@ -122,7 +165,10 @@ pub fn measure_quantiles(x: &[f64], y: &[f64]) -> ExposureSample {
     const FLOOR_X: f64 = 0.004;
     const FLOOR_Y: f64 = 0.002;
     let n = x.len();
-    let clipped = y.iter().filter(|v| **v >= WHITE).count() as f64 / n as f64;
+    // Share of the tones that are below white in the reference frame and at white in this one.
+    let white_ref = x.iter().filter(|v| **v >= WHITE).count();
+    let white_cur = y.iter().filter(|v| **v >= WHITE).count();
+    let clipped = if white_ref < n { (white_cur.saturating_sub(white_ref)) as f64 / (n - white_ref) as f64 } else { 0.0 };
     let mut ratios: Vec<f64> = Vec::new();
     let (mut sx, mut sy, mut sxx, mut sxy, mut k) = (0.0, 0.0, 0.0, 0.0, 0.0);
     for i in 0..n {
@@ -135,11 +181,17 @@ pub fn measure_quantiles(x: &[f64], y: &[f64]) -> ExposureSample {
             k += 1.0;
         }
     }
+    if ratios.is_empty() {
+        // Everything measurable is clipped: only a lower bound is available,
+        // the gain that takes the darkest tone seen at white up to white.
+        let dark = (0..n).filter(|i| x[*i] > FLOOR_X && y[*i] >= WHITE).map(|i| x[i]).fold(f64::MAX, f64::min);
+        let bound = if clipped > 0.5 && dark < f64::MAX { (WHITE / dark).max(1.0) } else { 1.0 };
+        return ExposureSample { stops: bound.log2(), confidence: if bound > 1.0 { 0.2 } else { 0.0 }, clipped, fade: None, bound: bound > 1.0 };
+    }
     if ratios.len() < 3 {
-        // Everything measurable is clipped: only a lower bound is available.
-        let dark = x.iter().copied().find(|v| *v > FLOOR_X).unwrap_or(0.05);
-        let bound = if clipped > 0.5 { (WHITE / dark).max(1.0) } else { 1.0 };
-        return ExposureSample { stops: bound.log2(), confidence: if clipped > 0.5 { 0.2 } else { 0.0 }, clipped, fade: None };
+        // One or two tones survive: a reading, but a weak one.
+        let stops = crate::img::median(&ratios) / std::f64::consts::LN_2;
+        return ExposureSample { stops, confidence: 0.15 * ratios.len() as f64, clipped, fade: None, bound: false };
     }
     let med = crate::img::median(&ratios);
     let spread = crate::img::median(&ratios.iter().map(|r| (r - med).abs()).collect::<Vec<_>>());
@@ -156,29 +208,89 @@ pub fn measure_quantiles(x: &[f64], y: &[f64]) -> ExposureSample {
         }
     }
     let confidence = ((ratios.len() as f64 / 16.0).min(1.0) * (1.0 - (spread / 0.5).min(1.0)) * if fade.is_some() { 0.5 } else { 1.0 }).clamp(0.05, 1.0);
-    ExposureSample { stops, confidence, clipped, fade }
+    ExposureSample { stops, confidence, clipped, fade, bound: false }
 }
 
 #[derive(Clone, Debug)]
 pub struct Flash {
-    /// First frame above the floor, the peak frame and one past the last frame (indices into the input).
+    /// First frame above the floor, the peak frame and the frame at which the
+    /// flash is back at 0 (indices into the input; `end` can lie past the
+    /// last sample when the shot is cut before the flash is over).
     pub start: usize,
     pub peak: usize,
     pub end: usize,
+    /// Exposure at the peak frame: the value of the fitted curve there. When
+    /// the peak frame is clipped this is extrapolated from the frames after
+    /// it and is never below `lower_bound`.
     pub peak_stops: f64,
-    /// Fraction of the remaining exposure lost per frame after the peak (the `decay` ease rate).
+    /// What was measured on the peak frame itself.
+    pub measured: f64,
+    /// Set when the peak frame only gave a lower bound (everything measurable at white).
+    pub lower_bound: Option<f64>,
+    /// The peak comes from the fitted curve, not from the peak frame.
+    pub extrapolated: bool,
+    /// Rate of the renderer's `decay` ease from the peak frame to `end`: the
+    /// curve is `peak * (k^j - k^N) / (1 - k^N)` with `k = 1 - rate`, `j`
+    /// frames after the peak and `N = end - peak`.
     pub rate: f64,
     pub rate_confidence: f64,
     pub confidence: f64,
+    /// RMS residual of the fitted curve over the frames used, in stops.
+    pub fit_rms: f64,
+}
+
+/// The renderer's `decay` ease, falling from 1 at `j = 0` to 0 at `j = n`.
+pub fn decay_curve(rate: f64, j: f64, n: f64) -> f64 {
+    let k = (1.0 - rate).clamp(1e-4, 0.9999);
+    let end = 1.0 - k.powf(n.max(1.0));
+    if j >= n {
+        0.0
+    } else if end <= 1e-9 {
+        1.0 - j / n
+    } else {
+        (k.powf(j) - k.powf(n)) / end
+    }
+}
+
+/// Least-squares fit of `peak * decay_curve(rate, j, n)` to `s[j]` (weights
+/// `w`). With `pin`, the peak is fixed. Returns (peak, rate, sum of squares).
+fn fit_decay(s: &[f64], w: &[f64], n: f64, pin: Option<f64>) -> (f64, f64, f64) {
+    let mut best = (pin.unwrap_or(s[0]), 0.3, f64::MAX);
+    for step in 2..=96 {
+        let rate = step as f64 / 100.0;
+        let phi: Vec<f64> = (0..s.len()).map(|j| decay_curve(rate, j as f64, n)).collect();
+        let peak = match pin {
+            Some(p) => p,
+            None => {
+                let (num, den) = (0..s.len()).fold((0.0, 0.0), |a, j| (a.0 + w[j] * s[j] * phi[j], a.1 + w[j] * phi[j] * phi[j]));
+                if den > 1e-9 {
+                    num / den
+                } else {
+                    s[0]
+                }
+            }
+        };
+        let sse: f64 = (0..s.len()).map(|j| w[j] * (s[j] - peak * phi[j]).powi(2)).sum();
+        if sse < best.2 {
+            best = (peak, rate, sse);
+        }
+    }
+    best
 }
 
 /// Flash events in a shot's exposure curve (`stops[i]` relative to the
-/// reference frame). `lum[i]` (any scale) settles which frame is the peak
-/// when several are within 15% of the maximum: under clipping the measured
-/// gain is only a lower bound, the brightest frame is the peak.
-pub fn flashes(stops: &[f64], conf: &[f64], lum: &[f64]) -> Vec<Flash> {
-    const PEAK: f64 = 0.8;
-    const FLOOR: f64 = 0.12;
+/// shot's least exposed frame). `lum[i]` (any scale) settles which frame is
+/// the peak when several are within 15% of the maximum: under clipping the
+/// measured gain is only a lower bound, the brightest frame is the peak.
+/// `bound[i]` marks frames whose value is such a lower bound.
+///
+/// The fall of each flash is fitted with the curve the renderer draws for a
+/// `decay` ease that ends on 0 (see [`Flash::rate`]); frames that only gave a
+/// lower bound are left out of the fit, so a clipped peak is extrapolated
+/// from the frames in which the flash is measurable again.
+pub fn flashes(stops: &[f64], conf: &[f64], lum: &[f64], bound: &[bool]) -> Vec<Flash> {
+    const PEAK: f64 = 0.45;
+    const FLOOR: f64 = 0.1;
     let n = stops.len();
     let mut out: Vec<Flash> = Vec::new();
     let mut next = 0;
@@ -195,34 +307,86 @@ pub fn flashes(stops: &[f64], conf: &[f64], lum: &[f64]) -> Vec<Flash> {
             start -= 1;
         }
         if let Some(prev) = out.last() {
-            start = start.max(prev.end);
+            start = start.max(prev.end.min(i));
         }
         let mut end = i + 1;
         while end < n && stops[end] > FLOOR && stops[end] <= stops[end - 1] * 1.02 + 0.02 {
             end += 1;
         }
         let top = stops[i];
-        let peak = (start..end).filter(|j| stops[*j] >= 0.85 * top).max_by(|a, b| lum[*a].partial_cmp(&lum[*b]).unwrap()).unwrap_or(i);
+        let mut peak = (start..end).filter(|j| stops[*j] >= 0.85 * top).max_by(|a, b| lum[*a].partial_cmp(&lum[*b]).unwrap()).unwrap_or(i);
+        // A clipped frame before the measured maximum that is at least as
+        // bright is the real peak: its own value is only a lower bound.
+        if let Some(j) = (start..peak).find(|j| bound[*j] && lum[*j] >= lum[peak]) {
+            peak = j;
+        }
         let scan_from = i;
         let i = peak;
-        // Decay: log-linear fit of the samples after the peak.
-        let pts: Vec<(f64, f64)> = (i.max(scan_from)..end).filter(|j| stops[*j] > 0.05).map(|j| ((j - i) as f64, stops[j].ln())).collect();
-        let (mut rate, mut rate_conf) = (0.3, 0.1);
-        if pts.len() >= 3 {
-            let m = pts.len() as f64;
-            let (sx, sy): (f64, f64) = pts.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0, a.1 + p.1));
-            let (sxx, sxy): (f64, f64) = pts.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0 * p.0, a.1 + p.0 * p.1));
-            let slope = (m * sxy - sx * sy) / (m * sxx - sx * sx);
-            rate = (1.0 - slope.exp()).clamp(0.02, 0.98);
-            rate_conf = ((m - 2.0) / 4.0).min(1.0) * 0.8;
-        } else if pts.len() == 2 {
-            rate = (1.0 - (pts[1].1 - pts[0].1).exp()).clamp(0.02, 0.98);
-            rate_conf = 0.25;
+        // The fall: frames i..end, then 0 at `end` unless the cut or another flash comes first.
+        let cut_short = end >= n || stops[end] > FLOOR;
+        let mut s: Vec<f64> = stops[i..end].to_vec();
+        let mut w: Vec<f64> = (i..end).map(|j| if bound[j] || conf[j] < 0.1 { 0.0 } else { 1.0 }).collect();
+        if !cut_short {
+            s.push(stops[end].max(0.0));
+            w.push(1.0);
         }
-        out.push(Flash { start: start.min(i), peak: i, end, peak_stops: top, rate, rate_confidence: rate_conf, confidence: conf[i].clamp(0.0, 1.0) });
-        let i = end.max(scan_from + 1);
-        let _ = i;
-        next = i;
+        let usable = w.iter().filter(|v| **v > 0.0).count();
+        let peak_bound = bound[i];
+        let lower = if peak_bound { Some(stops[i]) } else { None };
+        // Candidate lengths: back at 0 on the first frame below the floor, or,
+        // when the cut comes first, somewhere past it.
+        let lengths: Vec<f64> = if cut_short { [0.0, 1.0, 2.0, 4.0, 8.0].iter().map(|e| (end - i) as f64 + e).collect() } else { vec![(end - i) as f64] };
+        let (mut peak_stops, mut rate, mut sse, mut len) = (stops[i], 0.3, f64::MAX, lengths[0]);
+        let mut extrapolated = false;
+        if usable >= 3 || (usable >= 2 && peak_bound) {
+            for l in &lengths {
+                let (p, r, e) = fit_decay(&s, &w, *l, None);
+                if e < sse - 1e-9 {
+                    (peak_stops, rate, sse, len) = (p, r, e, *l);
+                }
+            }
+            extrapolated = peak_bound;
+            if let Some(lb) = lower {
+                // Never below what the peak frame itself shows, and not far
+                // above it either: a tail of two or three frames cannot carry
+                // an extrapolation over more than a few stops.
+                if peak_stops < lb || peak_stops > lb + 3.0 {
+                    peak_stops = peak_stops.clamp(lb, lb + 3.0);
+                    let lb = peak_stops;
+                    for l in &lengths {
+                        let (_, r, e) = fit_decay(&s, &w, *l, Some(lb));
+                        if e < sse || *l == lengths[0] {
+                            (rate, sse, len) = (r, e, *l);
+                        }
+                    }
+                }
+            } else if (peak_stops - stops[i]).abs() > 0.35 {
+                // The peak frame was measured: a curve that misses it badly is not the flash's curve.
+                peak_stops = stops[i];
+                let (_, r, e) = fit_decay(&s, &w, len, Some(peak_stops));
+                (rate, sse) = (r, e);
+            }
+        } else if usable == 2 && s.len() >= 2 {
+            let (_, r, e) = fit_decay(&s, &w, len, Some(stops[i]));
+            (rate, sse) = (r, e);
+        }
+        let rate_confidence = if usable >= 3 { ((usable as f64 - 2.0) / 4.0).min(1.0) * 0.8 } else if usable == 2 { 0.25 } else { 0.1 };
+        let fit_rms = if sse < f64::MAX { (sse / usable.max(1) as f64).sqrt() } else { 0.0 };
+        let confidence = if extrapolated { 0.3 * rate_confidence.max(0.3) } else { conf[i].clamp(0.0, 1.0) };
+        out.push(Flash {
+            start: start.min(i),
+            peak: i,
+            end: i + len.round() as usize,
+            peak_stops,
+            measured: stops[i],
+            lower_bound: lower,
+            extrapolated,
+            rate,
+            rate_confidence,
+            confidence,
+            fit_rms,
+        });
+        next = end.max(scan_from + 1);
     }
     out
 }
@@ -247,7 +411,7 @@ mod tests {
         let usable = all_usable(&frames);
         for (f, s) in truth.iter().enumerate() {
             let pair = make_pair(&frames, 0, f, None, &usable);
-            let e = measure(&pair, false);
+            let e = measure(&pair, false, 1.0);
             let tol = if *s >= 3.0 { 0.45 } else { 0.15 };
             assert!((e.stops - s).abs() < tol, "frame {f}: measured {:.2} stops, truth {s}", e.stops);
             assert!(e.fade.is_none(), "frame {f}: {:?}", e.fade);
@@ -256,18 +420,46 @@ mod tests {
 
     #[test]
     fn flash_events_report_peak_and_decay() {
-        // Two flashes: 4 stops decaying by 0.25 per frame, then 2 stops decaying by 0.5.
+        // Two flashes as the renderer draws them (a `decay` ease that ends on
+        // 0): 4 stops at rate 0.25 over 10 frames, then 2 stops at rate 0.5
+        // over 8. (This test used to feed pure exponentials, which the
+        // renderer's normalised `decay` never produces; the log-linear fit
+        // that passed it overestimated real rates by 0.07 on average.)
         let mut stops = vec![0.0; 30];
         for k in 0..10 {
-            stops[3 + k] = 4.0 * 0.75f64.powi(k as i32);
-            stops[18 + k] += 2.0 * 0.5f64.powi(k as i32);
+            stops[3 + k] = 4.0 * decay_curve(0.25, k as f64, 10.0);
+        }
+        for k in 0..8 {
+            stops[18 + k] = 2.0 * decay_curve(0.5, k as f64, 8.0);
         }
         let conf = vec![1.0; 30];
-        let fl = flashes(&stops, &conf, &stops);
+        let free = vec![false; 30];
+        let fl = flashes(&stops, &conf, &stops, &free);
         assert_eq!(fl.len(), 2, "{fl:?}");
         assert_eq!((fl[0].peak, fl[1].peak), (3, 18));
-        assert!((fl[0].peak_stops - 4.0).abs() < 1e-9);
-        assert!((fl[0].rate - 0.25).abs() < 0.02, "rate {}", fl[0].rate);
-        assert!((fl[1].rate - 0.5).abs() < 0.03, "rate {}", fl[1].rate);
+        assert!((fl[0].peak_stops - 4.0).abs() < 0.05, "{fl:?}");
+        assert!((fl[0].rate - 0.25).abs() < 0.03, "rate {}", fl[0].rate);
+        assert!((fl[1].rate - 0.5).abs() < 0.06, "rate {}", fl[1].rate);
+        assert!(fl[0].lower_bound.is_none() && !fl[0].extrapolated);
+    }
+
+    #[test]
+    fn a_clipped_peak_is_extrapolated_from_its_tail() {
+        // 5 stops at rate 0.3 over 12 frames; the first three frames only give a lower bound of 2.5.
+        let truth: Vec<f64> = (0..16).map(|k| 5.0 * decay_curve(0.3, k as f64, 12.0)).collect();
+        let mut stops = truth.clone();
+        let mut bound = vec![false; 16];
+        for k in 0..3 {
+            stops[k] = 2.5;
+            bound[k] = true;
+        }
+        let lum: Vec<f64> = truth.clone();
+        let fl = flashes(&stops, &[1.0; 16], &lum, &bound);
+        assert_eq!(fl.len(), 1, "{fl:?}");
+        assert_eq!(fl[0].peak, 0);
+        assert_eq!(fl[0].lower_bound, Some(2.5));
+        assert!(fl[0].extrapolated && (fl[0].peak_stops - 5.0).abs() < 0.4, "{fl:?}");
+        assert!((fl[0].rate - 0.3).abs() < 0.05, "{fl:?}");
+        assert!(fl[0].confidence < 0.4);
     }
 }

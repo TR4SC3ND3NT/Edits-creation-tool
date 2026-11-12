@@ -87,6 +87,31 @@ fn write(v: &Value, indent: usize, used: usize, out: &mut String) {
     }
     let pad = "  ".repeat(indent + 1);
     match v {
+        // A long list of numbers (a curve, a per-frame signal) fills its lines
+        // instead of taking one line per number.
+        Value::Array(a) if a.iter().all(|e| !matches!(e, Value::Array(_) | Value::Object(_))) => {
+            out.push_str("[\n");
+            let mut line = pad.clone();
+            for (i, e) in a.iter().enumerate() {
+                let mut item = inline(e);
+                if i + 1 < a.len() {
+                    item.push(',');
+                }
+                if line.len() > pad.len() && line.chars().count() + 1 + item.chars().count() > WIDTH {
+                    out.push_str(line.trim_end());
+                    out.push('\n');
+                    line = pad.clone();
+                }
+                if line.len() > pad.len() {
+                    line.push(' ');
+                }
+                line.push_str(&item);
+            }
+            out.push_str(&line);
+            out.push('\n');
+            out.push_str(&"  ".repeat(indent));
+            out.push(']');
+        }
         Value::Array(a) => {
             out.push_str("[\n");
             for (i, e) in a.iter().enumerate() {
@@ -163,6 +188,15 @@ mod tests {
         assert!(at("\"effects\"") < at("\"alpha\"") && at("\"alpha\"") < at("\"zeta\""));
         assert!(text.lines().all(|l| l.chars().count() <= WIDTH + 2), "{text}");
         assert!(text.ends_with("}\n"));
+    }
+
+    #[test]
+    fn long_lists_of_numbers_fill_their_lines() {
+        let v = json!({ "lum": (0..200).map(|i| i as f64 * 1.5).collect::<Vec<_>>() });
+        let text = pretty(&v);
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), v);
+        assert!(text.lines().count() < 20, "200 numbers take a few lines, not 200:\n{text}");
+        assert!(text.lines().all(|l| l.chars().count() <= WIDTH), "{text}");
     }
 
     #[test]

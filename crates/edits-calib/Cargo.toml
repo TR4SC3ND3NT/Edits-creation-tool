@@ -1,0 +1,18 @@
+[package]
+name = "edits-calib"
+description = "Round-trip calibration for the edits engine: random recipes with known parameters are rendered, analysed and scored against the truth; automatic fitting of a project to a reference analysis in signature space"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+edits-core = { path = "../edits-core" }
+edits-render = { path = "../edits-render" }
+edits-analyze = { path = "../edits-analyze" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }

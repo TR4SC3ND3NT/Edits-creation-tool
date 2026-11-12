@@ -1,7 +1,7 @@
 //! Tone hits relative to the reference frame: saturation, inversion,
 //! threshold and posterise.
 //!
-//! - saturation: ratio of chroma to value, over pixels not clipped by a flash;
+//! - saturation: ratio of chroma to luminance in linear light, over blocks not clipped by a flash;
 //! - inversion: negative correlation of luminance with the registered
 //!   reference frame (and, without registration, sign flips of the
 //!   frame-to-frame correlation, see `shots::invert_toggles`);
@@ -17,7 +17,7 @@ pub struct ToneSample {
     /// Saturation of the frame divided by that of the reference frame.
     pub sat_ratio: f64,
     pub sat_confidence: f64,
-    /// Chroma/value of the frame and of the reference frame (0..1).
+    /// Chroma/luminance, in linear light, of the frame and of the reference frame.
     pub sat_cur: f64,
     pub sat_ref: f64,
     /// Correlation of luminance with the warped reference frame (meaningful when registered).
@@ -28,11 +28,18 @@ pub struct ToneSample {
     pub posterize: Option<u32>,
 }
 
-/// Chroma and value sums of the frame and of the reference frame over
-/// blocks that a flash has not clipped. Block means are used so that noise
-/// (which reads as chroma in dark areas) does not pass for colour. Returns
-/// (chroma cur, value cur, chroma ref, value ref, share of blocks used).
+/// Chroma and luminance sums, in linear light, of the frame and of the
+/// reference frame over blocks that a flash has not clipped. The renderer's
+/// `saturation` mixes linear RGB with its Rec. 709 luminance, which keeps the
+/// luminance and multiplies the chroma (largest minus smallest channel) by
+/// the amount, and an exposure gain multiplies both: so the ratio of
+/// chroma / luminance between the two frames *is* the saturation amount,
+/// whatever the exposure. (Measured on display values instead, a 3-stop flash
+/// alone read as 0.87x.) Block means are used so that noise (which reads as
+/// chroma in dark areas) does not pass for colour. Returns (chroma cur,
+/// luminance cur, chroma ref, luminance ref, share of blocks used).
 fn chroma_stats(pair: &Pair) -> (f64, f64, f64, f64, f64) {
+    let lut = crate::img::srgb_lut();
     let b = (pair.h / 90).max(3);
     let (mut cc, mut cv, mut rc, mut rv) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
     let (mut blocks, mut used) = (0usize, 0usize);
@@ -49,8 +56,8 @@ fn chroma_stats(pair: &Pair) -> (f64, f64, f64, f64, f64) {
                         // White is 255 only where there is no vignette.
                         let white = pair.flat.map(|f| f.white[i]).unwrap_or(255) as f32;
                         for ch in 0..3 {
-                            c[ch] += pair.cur[i * 3 + ch] as f64;
-                            r[ch] += pair.refw[i * 3 + ch] as f64;
+                            c[ch] += lut[pair.cur[i * 3 + ch] as usize] as f64;
+                            r[ch] += lut[pair.refw[i * 3 + ch] as usize] as f64;
                             clipped |= pair.cur[i * 3 + ch] as f32 >= 0.96 * white;
                         }
                         k += 1.0;
@@ -64,14 +71,16 @@ fn chroma_stats(pair: &Pair) -> (f64, f64, f64, f64, f64) {
             blocks += 1;
             let mx = |v: &[f64; 3]| v[0].max(v[1]).max(v[2]) / k;
             let mn = |v: &[f64; 3]| v[0].min(v[1]).min(v[2]) / k;
-            if clipped || mx(&r) <= 24.0 {
+            let lum = |v: &[f64; 3]| (0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]) / k;
+            // Too dark in the reference frame to carry a readable colour (about code 24).
+            if clipped || mx(&r) <= 0.009 {
                 continue;
             }
             used += 1;
             cc += mx(&c) - mn(&c);
-            cv += mx(&c);
+            cv += lum(&c);
             rc += mx(&r) - mn(&r);
-            rv += mx(&r);
+            rv += lum(&r);
         }
         y += b;
     }
@@ -155,10 +164,10 @@ pub fn measure(pair: &Pair, inverted: bool) -> ToneSample {
     let (cc, cv, rc, rv, share) = chroma_stats(pair);
     let sat_cur = if cv > 0.0 { cc / cv } else { 0.0 };
     let sat_ref = if rv > 0.0 { rc / rv } else { 0.0 };
-    let (sat_ratio, sat_confidence) = if sat_ref < 0.04 || inverted {
+    let (sat_ratio, sat_confidence) = if sat_ref < 0.03 || inverted {
         (1.0, 0.0)
     } else {
-        ((sat_cur / sat_ref).clamp(0.0, 4.0), (share / 0.3).min(1.0) * ((sat_ref - 0.04) / 0.1).clamp(0.2, 1.0))
+        ((sat_cur / sat_ref).clamp(0.0, 4.0), (share / 0.3).min(1.0) * ((sat_ref - 0.02) / 0.06).clamp(0.2, 1.0))
     };
 
     let lum_corr = lum_correlation(pair);
@@ -169,7 +178,8 @@ pub fn measure(pair: &Pair, inverted: bool) -> ToneSample {
     let mut threshold = None;
     let mut posterize = None;
     if hr.count >= 200 {
-        let ps: Vec<f64> = (1..=98).map(|i| i as f64 / 99.0).collect();
+        // An even grid, plus the top end: a threshold on dark art leaves only a few white specks.
+        let ps: Vec<f64> = (1..=98).map(|i| i as f64 / 99.0).chain([0.993, 0.996, 0.998]).collect();
         let enc = |v: &f64| v.powf(1.0 / 2.2);
         let x: Vec<f64> = hr.quantiles(&ps).iter().map(enc).collect();
         let y: Vec<f64> = hc.quantiles(&ps).iter().map(enc).collect();
@@ -179,7 +189,8 @@ pub fn measure(pair: &Pair, inverted: bool) -> ToneSample {
             ext > 0.82 && mid < 0.08
         };
         let dark = y.iter().filter(|t| **t < 0.3).count();
-        if two_tone(&y) && !two_tone(&x) && dark >= 3 && dark + 3 <= y.len() {
+        let white = y.iter().filter(|t| **t > 0.84).count();
+        if two_tone(&y) && !two_tone(&x) && dark >= 3 && white >= 2 {
             // Where does the transfer cross a quarter and three quarters of its range?
             let cross = |level: f64| x[y.iter().position(|t| *t >= level).unwrap_or(y.len() - 1)];
             let (x25, x50, x75) = (cross(0.25), cross(0.5), cross(0.75));

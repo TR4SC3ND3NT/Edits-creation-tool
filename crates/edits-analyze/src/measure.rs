@@ -49,6 +49,8 @@ pub struct Pair<'a> {
     pub refw: Vec<u8>,
     /// Pixels to use: central region, not overlay, covered by the warped reference.
     pub mask: Vec<bool>,
+    /// Pixels of the warped reference frame that hold picture: covered, and not an overlay stroke of the reference frame.
+    pub ref_ok: Vec<bool>,
     /// The reference frame was registered to this frame (pixels correspond).
     pub aligned: bool,
     /// Share of the central region covered by the warped reference.
@@ -74,12 +76,14 @@ pub fn make_pair<'a>(frames: &'a Frames, ref_frame: usize, cur_frame: usize, sim
     let src = frames.rgb(ref_frame);
     let (mx, my) = ((w as f64 * BORDER) as usize, (h as f64 * BORDER) as usize);
     let mut mask = vec![false; w * h];
+    let mut ref_ok = vec![false; w * h];
     let mut refw = vec![0u8; w * h * 3];
     let mut central = 0usize;
     let mut covered = 0usize;
     match sim {
         None => {
             refw.copy_from_slice(src);
+            ref_ok.copy_from_slice(usable);
             for y in my..h - my {
                 for x in mx..w - mx {
                     central += 1;
@@ -111,12 +115,13 @@ pub fn make_pair<'a>(frames: &'a Frames, ref_frame: usize, cur_frame: usize, sim
                     }
                     // Overlay pixels of either frame must not enter the statistics.
                     let src_ok = usable[((sy + 0.5) as usize).min(h - 1) * w + ((sx + 0.5) as usize).min(w - 1)];
+                    ref_ok[y * w + x] = src_ok;
                     mask[y * w + x] = is_central && usable[y * w + x] && src_ok;
                 }
             }
         }
     }
-    Pair { w, h, cur, refw, mask, aligned: sim.is_some(), coverage: covered as f64 / central.max(1) as f64, flat: None }
+    Pair { w, h, cur, refw, mask, ref_ok, aligned: sim.is_some(), coverage: covered as f64 / central.max(1) as f64, flat: None }
 }
 
 /// Luma (0..1, gamma encoded) of an RGB8 buffer.
@@ -124,6 +129,18 @@ pub fn luma_image(rgb: &[u8], w: usize, h: usize) -> Gray {
     let mut d = Vec::with_capacity(w * h);
     for p in rgb.chunks_exact(3) {
         d.push((0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32) / 255.0);
+    }
+    Gray { w, h, d }
+}
+
+/// Luminance in linear light (0..1) of an RGB8 buffer. Blur is measured on
+/// this: the renderer blurs in linear light, and only there is a Gaussian
+/// blur a multiplication of the spectrum by a Gaussian.
+pub fn linear_luma_image(rgb: &[u8], w: usize, h: usize) -> Gray {
+    let lut = crate::img::srgb_lut();
+    let mut d = Vec::with_capacity(w * h);
+    for p in rgb.chunks_exact(3) {
+        d.push(0.2126 * lut[p[0] as usize] + 0.7152 * lut[p[1] as usize] + 0.0722 * lut[p[2] as usize]);
     }
     Gray { w, h, d }
 }

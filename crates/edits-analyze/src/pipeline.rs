@@ -8,7 +8,7 @@ use crate::exposure::{self, ExposureSample};
 use crate::img::{median, save_rgb, Frames, Sim};
 use crate::ingest;
 use crate::layers::{self, Plate};
-use crate::measure::{luma_image, make_pair, FlatField};
+use crate::measure::{linear_luma_image, make_pair, FlatField};
 use crate::media;
 use crate::schema::*;
 use crate::shots::{self, Cut};
@@ -252,13 +252,22 @@ fn process_shot(frames: &Frames, sigs: &[FrameSig], toggles: &[bool], usable: &[
                 }
             }
             let tone = tone::measure(&pair, inverted);
-            let mut exp = exposure::measure(&pair, inverted);
+            let sat = if tone.sat_confidence > 0.3 { tone.sat_ratio.min(1.0) } else { 1.0 };
+            let mut exp = exposure::measure(&pair, inverted, sat);
             if tone.threshold.is_some() {
                 exp = ExposureSample::default();
             }
-            let cur = frames.gray(i);
-            let reference = if pair.aligned && pair.coverage > 0.999 { luma_image(&pair.refw, pair.w, pair.h) } else { frames.gray(ref_frame) };
-            let blur = if i == ref_frame { BlurSample::default() } else { blur::measure(&cur, &reference) };
+            let blur = if i == ref_frame {
+                BlurSample::default()
+            } else {
+                // Linear light, with overlay strokes filled in. The reference
+                // frame is used in this frame's geometry when the warp covers
+                // the analysis window (a zoom changes the spectrum by itself).
+                let (cur, _) = blur::fill_masked(&linear_luma_image(frames.rgb(i), frames.w, frames.h), usable);
+                let (warped, share) = blur::fill_masked(&linear_luma_image(&pair.refw, pair.w, pair.h), &pair.ref_ok);
+                let reference = if pair.aligned && share > 0.9 { warped } else { blur::fill_masked(&linear_luma_image(frames.rgb(ref_frame), frames.w, frames.h), usable).0 };
+                blur::measure(&cur, &reference)
+            };
             FrameMeasure { exp, tone, blur, inverted }
         })
         .collect();
@@ -283,6 +292,16 @@ fn process_shot(frames: &Frames, sigs: &[FrameSig], toggles: &[bool], usable: &[
             let s = steps_back[i - f0];
             acc += s.stops;
             meas[i - f0].exp = ExposureSample { stops: acc, confidence: 0.5 * s.confidence, ..s };
+        }
+    }
+    // Exposure is reported relative to the shot's least exposed frame: the
+    // reference frame is the sharpest, not necessarily the darkest (a flash
+    // that is still fading on it would turn up as negative exposure later).
+    let mut normal: Vec<f64> = meas.iter().filter(|m| !m.inverted && m.tone.threshold.is_none() && !m.exp.bound && m.exp.confidence > 0.2).map(|m| m.exp.stops).collect();
+    normal.sort_by(|a, b| a.total_cmp(b));
+    if let Some(base) = normal.get(if normal.len() >= 8 { 1 } else { 0 }).copied().filter(|b| *b < -0.03) {
+        for m in meas.iter_mut().filter(|m| m.tone.threshold.is_none()) {
+            m.exp.stops -= base;
         }
     }
     ShotWork { f0, f1, ref_frame, track, tracked, reasons, meas }
@@ -401,28 +420,38 @@ fn build_shot(id: usize, w: &ShotWork, sigs: &[FrameSig], dup: &[bool], t: &Timi
     // ---- exposure -------------------------------------------------------------
     let stops: Vec<f64> = w.meas.iter().map(|m| m.exp.stops).collect();
     let econf: Vec<f64> = w.meas.iter().map(|m| m.exp.confidence * if w.tracked { 1.0 } else { 0.6 }).collect();
+    let bound: Vec<bool> = w.meas.iter().map(|m| m.exp.bound).collect();
     let lum_c: Vec<f64> = (f0..f1).map(|i| sigs[i].lum_center as f64).collect();
     let lum_all: Vec<f64> = (f0..f1).map(|i| sigs[i].lum as f64).collect();
-    let fl = exposure::flashes(&stops, &econf, &lum_all);
+    let fl = exposure::flashes(&stops, &econf, &lum_all, &bound);
     let mut ekeys: Vec<CurveKey> = Vec::new();
-    for f in &fl {
-        let clipped = w.meas[f.peak].exp.clipped;
+    for (fi, f) in fl.iter().enumerate() {
         let mut params = BTreeMap::new();
-        params.insert("peak".into(), Est::measured(f.peak_stops, "stops", f.confidence));
-        params.insert("decay_rate".into(), Est::measured(f.rate, "fraction of the remainder per frame", f.rate_confidence));
+        let peak_ident = if f.extrapolated || f.lower_bound.is_some() { Ident::Qualitative } else { Ident::Measured };
+        params.insert("peak".into(), Est::new(f.peak_stops, "stops", f.confidence, peak_ident));
+        if let Some(lb) = f.lower_bound {
+            params.insert("lower_bound".into(), Est::measured(lb, "stops", 0.8));
+        }
+        params.insert("decay_rate".into(), Est::measured(f.rate, "fraction of the remainder per frame (`decay` ease from the peak frame to `frames` later)", f.rate_confidence));
+        params.insert("frames".into(), Est::measured((f.end - f.peak) as f64, "frames from the peak back to 0", f.rate_confidence));
         params.insert("peak_luminance".into(), Est::measured(sigs[f0 + f.peak].lum_center as f64, "0..255 (centre of frame)", 0.95));
         // The same decay read directly off the luminance: share of the excess
         // over the settled level that is left after each frame.
-        let settle = lum_c[f.end.min(n - 1)].min(lum_c[w.ref_frame - f0]);
-        let ratios: Vec<f64> = (f.peak..f.end.min(n - 1)).filter(|i| lum_c[*i] - settle > 12.0).map(|i| (lum_c[i + 1] - settle) / (lum_c[i] - settle)).collect();
+        let last = f.end.min(n - 1);
+        let settle = lum_c[last].min(lum_c[w.ref_frame - f0]);
+        let ratios: Vec<f64> = (f.peak..last).filter(|i| lum_c[*i] - settle > 12.0).map(|i| (lum_c[i + 1] - settle) / (lum_c[i] - settle)).collect();
         if ratios.len() >= 2 {
             params.insert("luminance_excess_kept".into(), Est::measured(median(&ratios), "fraction kept per frame", ((ratios.len() as f64 - 1.0) / 4.0).min(0.8)));
         }
-        let mut note = if clipped > 0.6 { Some("most of the frame is clipped at white: the peak is a lower bound".to_string()) } else { None };
+        let mut note = match (f.lower_bound, f.extrapolated) {
+            (Some(lb), true) => Some(format!("the peak frame is clipped at white (at least {lb:.1} stops): the peak is extrapolated from the frames after it")),
+            (Some(_), false) => Some("everything measurable is clipped at white: the peak is a lower bound".to_string()),
+            _ => None,
+        };
         if f.end >= n && f.peak + 2 >= n && f.start < f.peak {
             note = Some("rises into the cut: the attack of the next shot's flash".into());
         }
-        events.push(t.event("flash", f0 + f.start, f0 + f.end, f0 + f.peak, params, note));
+        events.push(t.event("flash", f0 + f.start, f0 + f.end.min(n), f0 + f.peak, params, note));
         // Keys: (0 before) -> peak with a decay ease -> back to 0.
         let last_idx = ekeys.last().map(|k| k.frame - f0);
         if f.start < f.peak {
@@ -439,18 +468,25 @@ fn build_shot(id: usize, w: &ShotWork, sigs: &[FrameSig], dup: &[bool], t: &Timi
             ekeys.pop();
         }
         ekeys.push(t.plain_key(f0 + f.peak, f.peak_stops, decay(f.rate)));
-        if f.end >= n {
-            if n - 1 > f.peak {
-                let v = f.peak_stops * (1.0 - f.rate).powi((n - 1 - f.peak) as i32);
-                ekeys.push(t.plain_key(f0 + n - 1, v, named("hold")));
-            }
-        } else {
-            ekeys.push(t.plain_key(f0 + f.end, 0.0, named("hold")));
+        // The fall ends where the fitted curve reaches 0, or is cut off by
+        // the next flash or the end of the shot. A `decay` segment cut off
+        // early and ended on the curve's value there is the same curve.
+        let mut stop = match fl.get(fi + 1) {
+            Some(g) => f.end.min(g.start.saturating_sub(1).max(f.peak)),
+            None => f.end,
+        };
+        if stop >= n {
+            stop = n - 1;
+        }
+        if stop > f.peak {
+            let v = if stop == f.end { 0.0 } else { f.peak_stops * exposure::decay_curve(f.rate, (stop - f.peak) as f64, (f.end - f.peak) as f64) };
+            ekeys.push(t.plain_key(f0 + stop, v, named("hold")));
         }
     }
     if !ekeys.is_empty() {
         let conf = crate::img::mean(&fl.iter().map(|f| f.confidence).collect::<Vec<_>>());
-        curves_out.push(Curve { prop: "exposure.stops".into(), unit: "stops".into(), confidence: round_to(conf, 2), identifiability: Ident::Measured, keys: ekeys });
+        let ident = if fl.iter().any(|f| f.lower_bound.is_some()) { Ident::Qualitative } else { Ident::Measured };
+        curves_out.push(Curve { prop: "exposure.stops".into(), unit: "stops".into(), confidence: round_to(conf, 2), identifiability: ident, keys: ekeys });
     }
     // A mix toward a colour instead of a gain.
     let fades: Vec<bool> = w.meas.iter().map(|m| w.tracked && m.exp.fade.map(|f| f.0 > 0.3).unwrap_or(false)).collect();
@@ -496,9 +532,10 @@ fn build_shot(id: usize, w: &ShotWork, sigs: &[FrameSig], dup: &[bool], t: &Timi
     // A flash (glow, clipping) washes colour out by itself: under one, only a
     // near-total loss of colour counts as a saturation hit.
     let low = |m: &FrameMeasure| m.tone.sat_ratio < if m.exp.stops > 1.0 { 0.1 } else { 0.5 };
-    let mut bw_frames: Vec<bool> = w.meas.iter().map(|m| m.tone.sat_confidence > 0.5 && low(m)).collect();
+    // A threshold leaves black and white only: that is the threshold, not a saturation hit.
+    let mut bw_frames: Vec<bool> = w.meas.iter().map(|m| m.tone.threshold.is_none() && m.tone.sat_confidence > 0.5 && low(m)).collect();
     // A confident run extends over neighbours that agree but are hard to read (the flash peak).
-    let weak = |m: &FrameMeasure| m.tone.sat_confidence > 0.1 && low(m);
+    let weak = |m: &FrameMeasure| m.tone.threshold.is_none() && m.tone.sat_confidence > 0.1 && low(m);
     for i in 1..n {
         if bw_frames[i - 1] && !bw_frames[i] && weak(&w.meas[i]) {
             bw_frames[i] = true;

@@ -23,6 +23,44 @@ pub fn window(w: usize, h: usize) -> usize {
     ((w.min(h) as f64 * 0.62 / 8.0).floor() as usize * 8).max(16)
 }
 
+/// Replace the pixels that are not `ok` (static overlay strokes, parts the
+/// warped reference frame does not cover) by the mean of their nearest valid
+/// neighbours. A sharp overlay stroke on top of a blurred picture keeps its
+/// high frequencies; left in, it hides the blur (the spectrum ratio stays
+/// near 1 where the stroke's power dominates). Returns the filled image and
+/// the share of the analysis window that was valid.
+pub fn fill_masked(img: &Gray, ok: &[bool]) -> (Gray, f64) {
+    let (w, h) = (img.w, img.h);
+    let n = window(w, h);
+    let (x0, y0) = ((w - n) / 2, (h - n) / 2);
+    let mut out = img.clone();
+    let mut valid = 0usize;
+    for y in y0..y0 + n {
+        for x in x0..x0 + n {
+            if ok[y * w + x] {
+                valid += 1;
+                continue;
+            }
+            for r in [2usize, 4, 8, 16] {
+                let (mut acc, mut k) = (0.0f32, 0.0f32);
+                for yy in y.saturating_sub(r)..(y + r + 1).min(h) {
+                    for xx in x.saturating_sub(r)..(x + r + 1).min(w) {
+                        if ok[yy * w + xx] {
+                            acc += img.d[yy * w + xx];
+                            k += 1.0;
+                        }
+                    }
+                }
+                if k >= 3.0 {
+                    out.d[y * w + x] = acc / k;
+                    break;
+                }
+            }
+        }
+    }
+    (out, valid as f64 / (n * n) as f64)
+}
+
 /// Weighted least squares of `y = c - k x` with `x = f^2`; returns (k, rms).
 fn fit(pc: &[f64], pr: &[f64], n: usize, f_hi: f64) -> Option<(f64, f64)> {
     let (mut sw, mut sx, mut sy, mut sxx, mut sxy) = (0.0, 0.0, 0.0, 0.0, 0.0);
