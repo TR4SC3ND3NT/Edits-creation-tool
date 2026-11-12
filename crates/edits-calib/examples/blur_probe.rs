@@ -24,7 +24,12 @@ fn main() -> anyhow::Result<()> {
         let mut project = edits_core::Project::from_json(&text)?;
         project.settings.fps = 1.0;
         let frames = stage.render(&project, &dir, 1.0, None)?;
-        let usable = vec![true; frames.w * frames.h];
+        let mut usable = vec![true; frames.w * frames.h];
+        if extra.contains("mask") {
+            let plate = image::open(dir.join("img/o.png"))?.to_rgb8();
+            let p = edits_analyze::layers::Plate { w: frames.w, h: frames.h, rgb: plate.into_raw() };
+            usable = edits_analyze::layers::usable_mask(&p);
+        }
         let flat = edits_analyze::measure::FlatField::flat(frames.w, frames.h);
         let _ = (blur::window(8, 8), linear_luma_image(frames.rgb(0), frames.w, frames.h));
         print!("{:9}", kind.name());

@@ -127,6 +127,34 @@ fn roundtrip_scores(c: &Comparison) -> Scores {
     s
 }
 
+/// How well the recovered overlay plate covers the true one: true overlay
+/// pixels inside the analysis mask (hits) and outside it (misses), and
+/// masked pixels that are not overlay (extras, includes the mask's dilation).
+fn overlay_pixels(case: &Case, a: &Analyzed) -> score::Count {
+    let (w, h) = (a.plate.w, a.plate.h);
+    let masked: Vec<bool> = if a.analysis.layers.overlay.is_some() { edits_analyze::layers::usable_mask(&a.plate).iter().map(|u| !u).collect() } else { vec![false; w * h] };
+    let truth: Vec<bool> = if case.truth.overlay {
+        let img = crate::pictures::overlay(case.overlay_seed, case.project.settings.width, case.project.settings.height);
+        if img.width() as usize == w && img.height() as usize == h {
+            img.pixels().map(|p| p[0] > 40).collect()
+        } else {
+            vec![false; w * h]
+        }
+    } else {
+        vec![false; w * h]
+    };
+    let (mut hits, mut misses, mut extras) = (0, 0, 0);
+    for i in 0..w * h {
+        match (truth[i], masked[i]) {
+            (true, true) => hits += 1,
+            (true, false) => misses += 1,
+            (false, true) => extras += 1,
+            _ => {}
+        }
+    }
+    score::Count { est: "overlay.pixels".into(), kind: "-".into(), hits, misses, extras }
+}
+
 /// Run one case in `dir` (scratch media is written there).
 pub fn run_case(stage: &mut Stage, spec: &CaseSpec, dir: &Path, degraded: Option<&Degrade>, with_roundtrip: bool) -> Result<CaseOutcome> {
     let case = recipe::generate(spec);
@@ -135,6 +163,7 @@ pub fn run_case(stage: &mut Stage, spec: &CaseSpec, dir: &Path, degraded: Option
     let audio = if spec.audio { Some(case.click_track(22050)) } else { None };
     let first = analyse(&frames, audio.as_deref(), &format!("calib:{}", spec.seed));
     let mut clean = score::score(&case, &first.analysis);
+    clean.counts.push(overlay_pixels(&case, &first));
     let mut rt = None;
     if with_roundtrip {
         let c = roundtrip(stage, &case, &first, dir)?;
@@ -146,7 +175,9 @@ pub fn run_case(stage: &mut Stage, spec: &CaseSpec, dir: &Path, degraded: Option
     if let Some(d) = degraded {
         let worse = degrade(&frames, d, &dir.join("degraded.mp4"))?;
         let a = analyse(&worse, audio.as_deref(), &format!("calib:{}:{}", spec.seed, d.label()));
-        results.push((d.label(), score::score(&case, &a.analysis)));
+        let mut sc = score::score(&case, &a.analysis);
+        sc.counts.push(overlay_pixels(&case, &a));
+        results.push((d.label(), sc));
     }
     Ok(CaseOutcome { case, results, analysis: first.analysis, roundtrip: rt })
 }

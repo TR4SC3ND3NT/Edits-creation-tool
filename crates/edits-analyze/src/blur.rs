@@ -110,6 +110,14 @@ pub fn measure(cur: &Gray, reference: &Gray) -> BlurSample {
 /// sigma squared, which makes this the step of a fixed-point search: blur
 /// the reference by the current estimate, measure what is left, add it.
 pub fn measure_signed(cur: &Gray, reference: &Gray) -> (f64, BlurSample) {
+    measure_signed_at(cur, reference, 0.0)
+}
+
+/// As [`measure_signed`] when `reference` is itself already blurred by
+/// `blurred_px`: both spectra then run into the noise at about
+/// `1 / (pi sigma)` cycles per pixel, and the fit must stop there whatever
+/// the remaining difference is.
+pub fn measure_signed_at(cur: &Gray, reference: &Gray, blurred_px: f64) -> (f64, BlurSample) {
     let n = window(cur.w, cur.h);
     let sectors = 4;
     let pc = radial_power(cur, n, sectors);
@@ -125,7 +133,7 @@ pub fn measure_signed(cur: &Gray, reference: &Gray) -> (f64, BlurSample) {
             Some(r) => res = r,
             None => return (0.0, BlurSample::default()),
         }
-        let s = sigma_of(res.0);
+        let s = (sigma_of(res.0).powi(2) + blurred_px * blurred_px).sqrt();
         let next = if s > 0.05 { (1.0 / (std::f64::consts::PI * s)).clamp(0.05, 0.4) } else { 0.4 };
         // Widen gradually so one noisy low-frequency fit cannot throw the range.
         f_hi = next.min(f_hi * 2.0);

@@ -175,7 +175,7 @@ pub fn aggregate(all: &[(String, Scores)]) -> (Vec<Row>, Vec<EventRow>) {
         }
         for c in &sc.counts {
             for k in ["all", c.kind.as_str()] {
-                if k == "-" {
+                if k == "-" || c.hits + c.misses + c.extras == 0 {
                     continue;
                 }
                 let e = counts.entry((cond.clone(), c.est.clone(), k.into())).or_default();
@@ -223,7 +223,7 @@ pub fn badness(sc: &Scores) -> (f64, Vec<String>) {
         e.2 += c.extras;
     }
     for (k, (h, m, x)) in ev {
-        if m + x > 0 && k != "track.frames" {
+        if m + x > 0 && k != "track.frames" && k != "overlay.pixels" {
             parts.push((2.0 * (m + x) as f64, format!("{k}: {h} found, {m} missed, {x} extra")));
         }
     }
