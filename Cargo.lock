@@ -753,6 +753,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "edits-calib"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "edits-analyze",
+ "edits-core",
+ "edits-render",
+ "image",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "edits-cli"
 version = "0.1.0"
 dependencies = [

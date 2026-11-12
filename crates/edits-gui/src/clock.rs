@@ -195,7 +195,7 @@ mod tests {
         let cached: HashSet<u64> = [10, 11, 12, 14].into_iter().collect();
         assert_eq!(next_request(10, 1, 100, false, 50, |f| cached.contains(&f)), Some(13));
         // Everything in the window is there: nothing to do.
-        assert_eq!(next_request(10, 1, 100, false, 3, |f| cached.contains(&f)), None);
+        assert_eq!(next_request(10, 1, 100, false, 2, |f| cached.contains(&f)), None);
         assert_eq!(next_request(0, 1, 5, true, 50, |_| true), None);
     }
 

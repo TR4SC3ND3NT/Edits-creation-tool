@@ -195,11 +195,11 @@ impl View {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TickLevel {
-    /// A bar line (every four beats), or a labelled line in a seconds project.
+    /// A bar line (every four beats); a whole second in a seconds project.
     Bar,
-    /// A whole beat, or an unlabelled line in a seconds project.
+    /// A whole beat; a labelled fraction of a second in a seconds project.
     Beat,
-    /// A subdivision of a beat.
+    /// A subdivision: a short line in the ruler only.
     Sub,
 }
 
@@ -252,7 +252,7 @@ fn label_text(t: f64) -> String {
 /// is four beats. In a seconds project lines fall on round numbers of seconds.
 /// Labels are thinned so they never overlap.
 pub fn ruler_ticks(from: f64, to: f64, px_per_unit: f64, beats: bool) -> Vec<Tick> {
-    if !(to > from) || !(px_per_unit > 0.0) {
+    if !(to - from).is_finite() || to <= from || !px_per_unit.is_finite() || px_per_unit <= 0.0 {
         return Vec::new();
     }
     let (line_step, label_step) = if beats {
@@ -278,10 +278,13 @@ pub fn ruler_ticks(from: f64, to: f64, px_per_unit: f64, beats: bool) -> Vec<Tic
             } else {
                 TickLevel::Sub
             }
-        } else if labelled {
+        } else if is_multiple(t, label_step.max(1.0)) {
+            // Whole seconds (or the labelled step, when that is coarser).
             TickLevel::Bar
-        } else {
+        } else if labelled {
             TickLevel::Beat
+        } else {
+            TickLevel::Sub
         };
         out.push(Tick { t, level, label: labelled.then(|| label_text(t)) });
     }
@@ -421,28 +424,30 @@ mod tests {
 
     #[test]
     fn beat_ruler_marks_bars_beats_and_subdivisions() {
-        // 50 px per beat: a line per beat, a label per beat.
-        let ticks = ruler_ticks(0.0, 8.0, 50.0, true);
-        assert_eq!(ticks.len(), 9);
-        assert_eq!(ticks[0], Tick { t: 0.0, level: TickLevel::Bar, label: Some("0".into()) });
-        assert_eq!(ticks[1].level, TickLevel::Beat);
-        assert_eq!(ticks[4].level, TickLevel::Bar);
-        assert_eq!(ticks[4].label.as_deref(), Some("4"));
-        assert_eq!(ticks[8].level, TickLevel::Bar);
+        let at = |ticks: &[Tick], t: f64| ticks.iter().find(|k| k.t == t).cloned().unwrap();
+        let labels = |ticks: &[Tick]| -> Vec<String> { ticks.iter().filter_map(|t| t.label.clone()).collect() };
 
-        // 200 px per beat: quarter-beat lines, half-beat labels.
-        let ticks = ruler_ticks(0.0, 1.0, 200.0, true);
+        // 50 px per beat: a short line every quarter beat, a number on every beat.
+        let ticks = ruler_ticks(0.0, 8.0, 50.0, true);
+        assert_eq!(ticks.len(), 33);
+        assert_eq!(at(&ticks, 0.0), Tick { t: 0.0, level: TickLevel::Bar, label: Some("0".into()) });
+        assert_eq!(at(&ticks, 0.25), Tick { t: 0.25, level: TickLevel::Sub, label: None });
+        assert_eq!(at(&ticks, 1.0).level, TickLevel::Beat);
+        assert_eq!(at(&ticks, 4.0).level, TickLevel::Bar);
+        assert_eq!(at(&ticks, 8.0).level, TickLevel::Bar);
+        assert_eq!(labels(&ticks), vec!["0", "1", "2", "3", "4", "5", "6", "7", "8"]);
+
+        // 100 px per beat: numbers on half beats too.
+        let ticks = ruler_ticks(0.0, 1.0, 100.0, true);
         let ts: Vec<f64> = ticks.iter().map(|t| t.t).collect();
         assert_eq!(ts, vec![0.0, 0.25, 0.5, 0.75, 1.0]);
-        assert_eq!(ticks[1].level, TickLevel::Sub);
-        assert_eq!(ticks[1].label, None);
-        assert_eq!(ticks[2].label.as_deref(), Some("0.5"));
+        assert_eq!(labels(&ticks), vec!["0", "0.5", "1"]);
+        assert_eq!(at(&ticks, 0.5).level, TickLevel::Sub);
 
-        // 12 px per beat: every beat still has a line, labels only on bars.
+        // 12 px per beat: every beat still has a line, numbers only on bars.
         let ticks = ruler_ticks(0.0, 16.0, 12.0, true);
         assert_eq!(ticks.len(), 17);
-        let labels: Vec<&str> = ticks.iter().filter_map(|t| t.label.as_deref()).collect();
-        assert_eq!(labels, vec!["0", "4", "8", "12", "16"]);
+        assert_eq!(labels(&ticks), vec!["0", "4", "8", "12", "16"]);
 
         // 2 px per beat: only bars are drawn at all.
         let ticks = ruler_ticks(0.0, 64.0, 2.0, true);
@@ -452,10 +457,13 @@ mod tests {
 
     #[test]
     fn rulers_cover_negative_time_and_only_the_visible_range() {
-        let ticks = ruler_ticks(-1.3, 2.2, 50.0, true);
+        // A project whose first beat is late starts before beat 0.
+        let ticks = ruler_ticks(-1.3, 2.2, 10.0, true);
         let ts: Vec<f64> = ticks.iter().map(|t| t.t).collect();
         assert_eq!(ts, vec![-1.0, 0.0, 1.0, 2.0]);
-        assert_eq!(ticks[0].label.as_deref(), Some("-1"));
+        let ticks = ruler_ticks(-1.3, 0.2, 50.0, true);
+        assert_eq!(ticks.iter().find(|t| t.t == -1.0).unwrap().label.as_deref(), Some("-1"));
+        assert!(ticks.iter().all(|t| t.t >= -1.3 && t.t <= 0.2));
         assert!(ruler_ticks(5.0, 5.0, 50.0, true).is_empty());
         assert!(ruler_ticks(0.0, 5.0, 0.0, true).is_empty());
     }
@@ -467,8 +475,10 @@ mod tests {
         assert_eq!(ticks.len(), 11);
         let labels: Vec<&str> = ticks.iter().filter_map(|t| t.label.as_deref()).collect();
         assert_eq!(labels, vec!["0", "0.5", "1"]);
-        assert_eq!(ticks[5].level, TickLevel::Bar);
-        assert_eq!(ticks[1].level, TickLevel::Beat);
+        assert_eq!(ticks[0].level, TickLevel::Bar);
+        assert_eq!(ticks[5].level, TickLevel::Beat, "a labelled half second");
+        assert_eq!(ticks[1].level, TickLevel::Sub);
+        assert_eq!(ticks[10].level, TickLevel::Bar);
         // Labels never crowd, at any zoom.
         for px in [0.3, 1.0, 7.0, 33.0, 250.0, 4000.0] {
             let ticks = ruler_ticks(0.0, 2000.0 / px, px, false);
