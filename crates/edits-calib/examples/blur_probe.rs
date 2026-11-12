@@ -15,11 +15,12 @@ fn main() -> anyhow::Result<()> {
         pictures::overlay(3, h, h).save(dir.join("img/o.png"))?;
         let overlay = if extra.contains("overlay") { r#",{"id":"o","kind":"image","slot":"o","blend":"screen"}"# } else { "" };
         let vig = if extra.contains("vignette") { r#",{"id":"v","kind":"adjustment","effects":[{"kind":"vignette","params":{"amount":0.6,"radius":0.5,"softness":0.4}}]}"# } else { "" };
-        let flash = if extra.contains("flash") { r#",{"kind":"exposure","params":{"stops":{"keys":[{"t":0,"v":3,"ease":"linear"},{"t":12,"v":0}]}}}"# } else { "" };
+        let flash = if extra.contains("flash") { r#",{"kind":"exposure","params":{"stops":{"keys":[{"t":0,"v":1.0,"ease":"hold"},{"t":12,"v":0}]}}}"# } else { "" };
+        let slide = if extra.contains("slide") { r#","position":{"keys":[{"t":0,"v":[0.1003,0.013,0],"ease":"linear"},{"t":13,"v":[0,0,0]}]}"# } else { "" };
         let text = format!(
             r#"{{"format":"edits.project/1","settings":{{"width":{h},"height":{h},"fps":25,"duration":14,"time_base":"seconds"}},
             "slots":{{"p":{{"path":"img/p.png"}},"o":{{"path":"img/o.png","fit":"stretch"}}}},
-            "layers":[{{"id":"a","kind":"image","slot":"p","transform":{{"scale":1.1}},"effects":[{{"kind":"gaussian_blur","params":{{"radius":{{"keys":[{{"t":0,"v":3,"ease":"linear"}},{{"t":12,"v":0}}]}}}}}}{flash}]}}{overlay}{vig}]}}"#
+            "layers":[{{"id":"a","kind":"image","slot":"p","transform":{{"scale":1.3{slide}}},"effects":[{{"kind":"gaussian_blur","params":{{"radius":{{"keys":[{{"t":0,"v":3,"ease":"linear"}},{{"t":12,"v":0}}]}}}}}}{flash}]}}{overlay}{vig}]}}"#
         );
         let mut project = edits_core::Project::from_json(&text)?;
         project.settings.fps = 1.0;
@@ -35,7 +36,8 @@ fn main() -> anyhow::Result<()> {
         print!("{:9}", kind.name());
         for f in 0..13 {
             let truth = 3.0 * (1.0 - f as f64 / 12.0);
-            let m = edits_analyze::pipeline::measure_frame(&frames, 13, f, Some(&edits_analyze::img::Sim::IDENTITY), true, false, &usable, &flat);
+            let sim = if extra.contains("slide") { edits_analyze::img::Sim::from_parts(1.0, 0.0, 0.1003 * (1.0 - f as f64 / 13.0), 0.013 * (1.0 - f as f64 / 13.0)) } else { edits_analyze::img::Sim::IDENTITY };
+            let m = edits_analyze::pipeline::measure_frame(&frames, 13, f, Some(&sim), true, false, &usable, &flat);
             print!(" {:.2}/{:.2} {:+.2}", 100.0 * m.blur.sigma_px / frames.h as f64, truth, m.exp.stops);
         }
         println!();
