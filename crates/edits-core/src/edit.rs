@@ -538,7 +538,7 @@ pub fn state_dir(dir: &Path, sub: &str) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
-fn project_dir(project: &Path) -> PathBuf {
+pub fn project_dir(project: &Path) -> PathBuf {
     match project.parent() {
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
         _ => PathBuf::from("."),
@@ -754,13 +754,23 @@ pub fn apply(project: &Path, ops: &[EditOp], opts: &EditOptions) -> Result<EditO
     if ops.is_empty() {
         return Err("\"ops\" is empty: give at least one edit".into());
     }
+    apply_with(project, opts, &|doc| apply_ops(doc, ops))
+}
+
+/// Like [`apply`], but the change is a function of the current document:
+/// what presets and beat operations use, since what they write depends on
+/// what is there (existing keys, free layer ids). The function runs under
+/// the step lock, on the file as it is now. Times written as strings
+/// (`"b4"`, `"drop"`) are resolved before validation, here as in [`apply`].
+pub fn apply_with(project: &Path, opts: &EditOptions, change: &dyn Fn(&Value) -> Result<Value, String>) -> Result<EditOutcome, String> {
     let _lock = if opts.dry_run { None } else { Some(lock(project)?) };
     let text = std::fs::read_to_string(project).map_err(|e| format!("cannot read {}: {e}", project.display()))?;
     if opts.expect.is_some_and(|h| h != text_hash(&text)) {
         return Err(STALE.to_string());
     }
     let old: Value = serde_json::from_str(&text).map_err(|e| format!("{} is not valid JSON ({e}); fix the file by hand or restore a backup with project_undo", project.display()))?;
-    let new = apply_ops(&old, ops).map_err(|e| format!("{e}. Nothing was changed."))?;
+    let mut new = change(&old).map_err(|e| format!("{e}. Nothing was changed."))?;
+    crate::time::resolve_doc(&mut new, None).map_err(|e| format!("{e}. Nothing was changed."))?;
     let dir = project_dir(project);
     let mut findings = validate(&new, &dir, opts.extra);
     let changes = diff(&old, &new);

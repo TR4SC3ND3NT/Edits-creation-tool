@@ -35,6 +35,15 @@ pub struct ResolvedEffect {
     /// Every parameter of the effect's spec, with defaults filled in.
     pub params: BTreeMap<String, Vec<f64>>,
 }
+#[derive(Clone, Debug)]
+pub struct ResolvedTransition {
+    pub kind: &'static str,
+    /// 0 at the start (only the picture beneath), 1 at the end.
+    pub progress: f64,
+    /// Every parameter of the transition's spec, with defaults filled in.
+    pub params: BTreeMap<String, Vec<f64>>,
+}
+
 impl ResolvedEffect {
     pub fn num(&self, name: &str) -> f64 {
         self.params.get(name).and_then(|v| v.first().copied()).unwrap_or(0.0)
@@ -171,6 +180,25 @@ impl<'a> Evaluator<'a> {
             params.insert(k.clone(), pad(val, want.max(1)));
         }
         ResolvedEffect { kind: e.kind.clone(), source: e.source.clone(), params }
+    }
+
+    /// The transition into `layer` running at `t`, if any: its progress
+    /// (eased, 0..1) and its parameters with defaults filled in.
+    pub fn transition(&self, layer: &Layer, t: f64) -> Option<ResolvedTransition> {
+        let tr = layer.transition.as_ref()?;
+        let spec = effects::transition(&tr.kind)?;
+        if !(tr.duration > 0.0) || t < layer.start - 1e-9 || t >= layer.start + tr.duration - 1e-9 {
+            return None;
+        }
+        let u = ((t - layer.start) / tr.duration).clamp(0.0, 1.0);
+        let frames = tr.duration / self.project.frame_len().max(1e-9);
+        let progress = ease::apply(&tr.ease, u, frames);
+        let mut params = BTreeMap::new();
+        for p in spec.params {
+            let v = tr.params.get(p.name).map(|v| self.prop(v, t)).unwrap_or_else(|| p.default.to_vec());
+            params.insert(p.name.to_string(), pad(v, p.default.len()));
+        }
+        Some(ResolvedTransition { kind: spec.kind, progress, params })
     }
 
     /// True when `layer` is visible at project time `t`.

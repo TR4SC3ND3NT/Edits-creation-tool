@@ -29,6 +29,7 @@ pub mod pipeline;
 pub mod schema;
 pub mod shots;
 pub mod signals;
+pub mod song;
 #[doc(hidden)]
 pub mod synth;
 pub mod tone;

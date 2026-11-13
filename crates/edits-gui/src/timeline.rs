@@ -1,6 +1,7 @@
-//! The timeline panel: a ruler, the project's markers, the waveform, one row
-//! per layer with its span, effects and keyframes, and the playhead.
-//! Everything is painted by hand; the arithmetic is in `timemap` and `rows`.
+//! The timeline panel: a toolbar, an overview strip of the whole edit, a
+//! ruler, the project's markers, the waveform, one track per layer with its
+//! span, effects and keyframes, and the playhead. Everything is painted by
+//! hand with the tokens of `theme`; the arithmetic is in `timemap` and `rows`.
 //!
 //! Editing: drag a bar to move the layer (with its keys), drag its left or
 //! right edge to change `in` or `out`, drag a keyframe marker to move the
@@ -8,37 +9,40 @@
 //! Times snap to quarter beats (Alt: frames). A drag is drawn as a ghost and
 //! written as one edit when the button is released (`editing::TimeDrag`).
 
-use crate::app::{pal, App, Selected};
+use crate::app::{App, Cmd, Selected};
 use crate::audio::peak_range;
 use crate::editing::{self, DragKind, DragResult, Snap, TimeDrag};
-use crate::rows::{group_marks, Row};
+use crate::rows::{group_marks, KeyShape, Row};
+use crate::theme::{self, color, kind_colors, radius, size, space, text};
 use crate::timemap::{ruler_ticks, TickLevel, View};
-use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, CursorIcon, FontId, Layout, Painter, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, UiBuilder};
+use crate::widgets::{self, tip, Icon};
+use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, CornerRadius, CursorIcon, Layout, Painter, Pos2, Rect, RichText, Sense, Shape, Stroke, StrokeKind, Ui, UiBuilder};
 
-const GUTTER: f32 = 190.0;
-const RULER_H: f32 = 22.0;
-const MARKER_H: f32 = 16.0;
-const WAVE_H: f32 = 38.0;
+const GUTTER: f32 = size::TRACK_HEADER;
+const RULER_H: f32 = size::RULER;
+const MARKER_H: f32 = size::MARKERS;
+const WAVE_H: f32 = size::WAVE;
 const ROW_H: f32 = 30.0;
-const SCROLL_H: f32 = 10.0;
+const OVERVIEW_H: f32 = size::OVERVIEW;
+const TOOLBAR_H: f32 = size::TIMELINE_TOOLBAR;
+/// Key glyphs: half their size.
+const KEY_R: f32 = 4.0;
 
-fn kind_color(kind: &str) -> Color32 {
-    match kind.split(' ').next().unwrap_or("") {
-        "image" => Color32::from_rgb(86, 150, 220),
-        "cube" => Color32::from_rgb(178, 120, 225),
-        "solid" => Color32::from_rgb(135, 138, 150),
-        "adjustment" => Color32::from_rgb(225, 150, 70),
-        _ => Color32::from_rgb(90, 185, 130),
+/// A key glyph: its shape says the ease of the segment it starts.
+fn key_glyph(painter: &Painter, c: Pos2, r: f32, shape: KeyShape, fill: Color32) {
+    let outline = Stroke::new(1.0, Color32::from_black_alpha(160));
+    match shape {
+        KeyShape::Linear => {
+            let r = r + 0.6;
+            painter.add(Shape::convex_polygon(vec![pos2(c.x, c.y - r), pos2(c.x + r, c.y), pos2(c.x, c.y + r), pos2(c.x - r, c.y)], fill, outline));
+        }
+        KeyShape::Hold => {
+            painter.rect(Rect::from_center_size(c, vec2(2.0 * r - 1.0, 2.0 * r - 1.0)), 1, fill, outline, StrokeKind::Outside);
+        }
+        KeyShape::Eased => {
+            painter.circle(c, r - 0.3, fill, outline);
+        }
     }
-}
-
-fn diamond(painter: &Painter, c: Pos2, r: f32, fill: Color32) {
-    let points = vec![pos2(c.x, c.y - r), pos2(c.x + r, c.y), pos2(c.x, c.y + r), pos2(c.x - r, c.y)];
-    painter.add(Shape::convex_polygon(points, fill, Stroke::new(1.0, Color32::from_black_alpha(200))));
-}
-
-fn dot(painter: &Painter, c: Pos2, r: f32, fill: Color32) {
-    painter.circle(c, r, fill, Stroke::new(1.0, Color32::from_black_alpha(200)));
 }
 
 fn selection_of(row: &Row) -> Selected {
@@ -55,57 +59,75 @@ fn fmt_time(t: f64) -> String {
 
 /// The panel height at which every row of `project` is visible without scrolling.
 pub(crate) fn natural_height(project: &edits_core::Project, rows: usize) -> f32 {
-    let lanes = RULER_H + if project.markers.is_empty() { 0.0 } else { MARKER_H } + if project.audio.is_some() { WAVE_H } else { 0.0 };
-    34.0 + lanes + rows as f32 * ROW_H + SCROLL_H + 12.0
+    let lanes = TOOLBAR_H + OVERVIEW_H + 6.0 + RULER_H + if project.markers.is_empty() { 0.0 } else { MARKER_H } + if project.audio.is_some() { WAVE_H } else { 0.0 };
+    lanes + rows as f32 * ROW_H + 10.0
+}
+
+/// The toolbar: add a layer, what drags snap to, the size of the edit, zoom.
+fn toolbar(app: &mut App, ui: &mut Ui, rect: Rect, tm: &crate::timemap::TimeMap, layers: usize) -> Option<f64> {
+    let mut zoom_by = None;
+    ui.scope_builder(UiBuilder::new().max_rect(rect.shrink2(vec2(space::S, 0.0))).layout(Layout::left_to_right(Align::Center)), |ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        let add = tip(widgets::button(ui, Some(Icon::Plus), "Layer", false), "Add a layer at the playhead, above the selected one", &[]);
+        egui::Popup::menu(&add).frame(widgets::popover_frame()).show(|ui| crate::panels::add_layer_entries(app, ui));
+        ui.add_space(space::M);
+        let alt = ui.input(|i| i.modifiers.alt);
+        let snap = Snap::of(tm, alt);
+        let (r, resp) = ui.allocate_exact_size(vec2(16.0, size::ICON_BUTTON), Sense::hover());
+        widgets::paint_icon(ui.painter(), r.center(), Icon::Magnet, text::ICON_SMALL, color::TEXT_FAINT);
+        let label = match snap {
+            Snap::QuarterBeat => "¼ beat",
+            Snap::Frame => "frames",
+        };
+        let l = ui.label(RichText::new(label).font(theme::small()).color(color::TEXT_MUTED));
+        let help = format!(
+            "Drags snap to {}.\n\nDrag a bar to move a layer (its keys move with it), its left or right edge to change in or out, a key to move the keys at that time. \
+             Double-click a row to add a key of the property picked in the inspector. One edit per drag, written when you let go; Ctrl+Z undoes it.\n\n\
+             Keys: ◆ linear, ■ hold, ● eased.",
+            snap.label()
+        );
+        resp.union(l).on_hover_text(help);
+        ui.add_space(space::L);
+        let tempo = tm.bpm.map(|b| format!(" · {b} BPM")).unwrap_or_default();
+        ui.label(RichText::new(format!("{layers} layer{} · {} {}{tempo} · {} fps", if layers == 1 { "" } else { "s" }, fmt_time(tm.duration), tm.unit(), tm.fps)).font(theme::small()).color(color::TEXT_FAINT));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            if tip(widgets::icon_toggle(ui, Icon::Maximize2, app.view_fit), "Fit the whole edit", &[]).clicked() {
+                app.run(Cmd::ZoomFit);
+            }
+            if tip(widgets::icon_button(ui, Icon::ZoomIn), "Zoom in", &["Ctrl", "Wheel"]).clicked() {
+                zoom_by = Some(1.6);
+            }
+            if tip(widgets::icon_button(ui, Icon::ZoomOut), "Zoom out", &["Ctrl", "Wheel"]).clicked() {
+                zoom_by = Some(1.0 / 1.6);
+            }
+        });
+    });
+    zoom_by
 }
 
 pub(crate) fn show(app: &mut App, ui: &mut Ui) {
+    let full = ui.max_rect();
+    // Claim the whole panel, so it keeps the height it was given or dragged to.
+    ui.allocate_rect(full, Sense::hover());
     let (Some(tm), Some(project)) = (app.tm, app.project().cloned()) else {
-        ui.add_space(6.0);
-        ui.weak("The timeline appears when the project file is valid.");
+        ui.scope_builder(UiBuilder::new().max_rect(full), |ui| {
+            widgets::empty_state(ui, Icon::Film, "No timeline yet", "It appears when the project file is valid.", &[]);
+        });
         return;
     };
-    let unit = tm.unit();
 
-    // ---- header: what the project is, the legend, zoom ----
-    let mut zoom_by: Option<f64> = None;
-    ui.add_space(3.0);
-    ui.horizontal(|ui| {
-        ui.strong("Timeline");
-        let tempo = tm.bpm.map(|b| format!(" · {b} BPM")).unwrap_or_default();
-        ui.weak(format!("{} layers · {} {unit} · {} frames at {} fps{tempo}", project.layers.len(), fmt_time(tm.duration), tm.frames, tm.fps));
-        ui.menu_button("+ Layer", |ui| crate::panels::add_layer_entries(app, ui)).response.on_hover_text("Add a layer at the playhead, above the selected one");
-        let alt = ui.input(|i| i.modifiers.alt);
-        ui.weak(Snap::of(&tm, alt).label()).on_hover_text(
-            "Drag a bar to move a layer (its keys move with it), its left or right edge to change in or out, a key marker to move the keys at that time.\n\
-             Double-click a row to add a key of the property picked in the inspector.\nOne edit per drag, written when you let go; Ctrl+Z undoes it.",
-        );
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui.button("Fit").on_hover_text("Show the whole project").clicked() {
-                app.view_fit = true;
-            }
-            if ui.button("+").on_hover_text("Zoom in (Ctrl + wheel)").clicked() {
-                zoom_by = Some(1.6);
-            }
-            if ui.button("−").on_hover_text("Zoom out (Ctrl + wheel)").clicked() {
-                zoom_by = Some(1.0 / 1.6);
-            }
-            ui.weak("zoom");
-            ui.separator();
-            ui.weak("effect key");
-            let (r, _) = ui.allocate_exact_size(vec2(10.0, 12.0), Sense::hover());
-            dot(ui.painter(), r.center(), 3.4, pal::KEY_EFFECT);
-            ui.weak("transform key");
-            let (r, _) = ui.allocate_exact_size(vec2(10.0, 12.0), Sense::hover());
-            diamond(ui.painter(), r.center(), 4.2, pal::KEY_TRANSFORM);
-        });
-    });
-    ui.add_space(2.0);
+    // ---- toolbar ----
+    let bar = Rect::from_min_size(full.min, vec2(full.width(), TOOLBAR_H));
+    let mut zoom_by = toolbar(app, ui, bar, &tm, project.layers.len());
+    if let Some(z) = app.zoom_request.take() {
+        zoom_by = Some(z);
+    }
+    let painter = ui.painter_at(full);
+    painter.hline(full.x_range(), bar.bottom(), Stroke::new(1.0, color::LINE));
 
-    let area = ui.available_rect_before_wrap();
-    // Claim the whole panel, so it keeps the height it was given or dragged to.
-    ui.allocate_rect(area, Sense::hover());
-    if area.height() < RULER_H + ROW_H || area.width() < GUTTER + 60.0 {
+    let area = Rect::from_min_max(pos2(full.left(), bar.bottom() + 1.0), full.right_bottom());
+    if area.height() < OVERVIEW_H + RULER_H + ROW_H || area.width() < GUTTER + 60.0 {
         return;
     }
     let time_left = area.left() + GUTTER;
@@ -147,89 +169,136 @@ pub(crate) fn show(app: &mut App, ui: &mut Ui) {
         y += h;
         r
     };
+    let overview_lane = lane(OVERVIEW_H + 6.0);
     let ruler = lane(RULER_H);
     let marker_lane = (!project.markers.is_empty()).then(|| lane(MARKER_H));
     let wave_lane = project.audio.as_ref().map(|_| lane(WAVE_H));
-    let rows_rect = Rect::from_min_max(pos2(area.left(), y), pos2(area.right(), (area.bottom() - SCROLL_H - 3.0).max(y)));
-    let scroll_rect = Rect::from_min_max(pos2(time_left, area.bottom() - SCROLL_H), area.right_bottom());
+    let rows_rect = Rect::from_min_max(pos2(area.left(), y), pos2(area.right(), area.bottom().max(y)));
     let time_clip = Rect::from_min_max(pos2(time_left, area.top()), area.right_bottom());
 
-    let weak = ui.visuals().weak_text_color();
-    let text = ui.visuals().text_color();
-    let gutter = ui.painter_at(Rect::from_min_max(area.left_top(), pos2(time_left - 1.0, area.bottom())));
+    let gutter_rect = Rect::from_min_max(area.left_top(), pos2(time_left, area.bottom()));
+    let gutter = ui.painter_at(gutter_rect);
     let tp = ui.painter_at(time_clip);
-    let small = FontId::proportional(10.5);
+    let small = theme::small();
+    let tiny = theme::mono_small();
+
+    // The track headers sit on a raised column.
+    gutter.rect_filled(gutter_rect, 0, color::RAISED);
+    painter.vline(time_left, area.y_range(), Stroke::new(1.0, color::LINE));
+
+    // ---- overview: the whole edit, the visible part, the playhead ----
+    let mut recentre: Option<f64> = None;
+    let ov = Rect::from_min_max(pos2(time_left + 6.0, overview_lane.top() + 4.0), pos2(area.right() - 6.0, overview_lane.bottom() - 2.0));
+    {
+        let ov_x = |t: f64| ov.left() + ((t - t0) / (t1 - t0).max(1e-9)) as f32 * ov.width();
+        let p = ui.painter_at(overview_lane);
+        p.rect_filled(ov, radius::SMALL, color::CONTROL);
+        let layers: Vec<&Row> = app.rows.iter().collect();
+        let n = layers.len().max(1) as f32;
+        let lh = ((ov.height() - 4.0) / n).clamp(1.0, 3.0);
+        let top = ov.center().y - lh * n / 2.0;
+        for (i, row) in layers.iter().enumerate() {
+            let k = kind_colors(&row.kind);
+            let r = Rect::from_min_max(pos2(ov_x(row.start), top + i as f32 * lh), pos2(ov_x(row.end).max(ov_x(row.start) + 1.0), top + (i as f32 + 1.0) * lh - 0.5));
+            p.rect_filled(r, 0, k.stripe.gamma_multiply(if row.enabled { 0.7 } else { 0.25 }));
+        }
+        for m in &project.markers {
+            p.vline(ov_x(m.t), ov.y_range(), Stroke::new(1.0, color::MARKER.gamma_multiply(0.7)));
+        }
+        if !app.view_fit {
+            let vr = Rect::from_min_max(pos2(ov_x(view.start).max(ov.left()), ov.top()), pos2(ov_x(view.end(width)).min(ov.right()), ov.bottom()));
+            p.rect(vr, radius::SMALL, color::ACCENT.gamma_multiply(0.12), Stroke::new(1.0, color::ACCENT_LINE), StrokeKind::Inside);
+        }
+        let px = ov_x(tm.frame_time(app.playhead));
+        p.vline(px, ov.top() - 2.0..=ov.bottom() + 1.0, Stroke::new(1.5, color::PLAYHEAD));
+        gutter.text(pos2(area.left() + space::L, ov.center().y), Align2::LEFT_CENTER, "Overview", small.clone(), color::TEXT_FAINT);
+        // Click or drag to move the playhead; drag the box (when zoomed) to scroll.
+        let resp = ui.interact(ov.expand2(vec2(4.0, 2.0)), ui.scope_id().with("overview"), Sense::click_and_drag()).on_hover_cursor(CursorIcon::PointingHand);
+        let resp = resp.on_hover_text("The whole edit. Click or drag to move the playhead.");
+        if let Some(p) = resp.interact_pointer_pos().filter(|_| resp.clicked() || resp.dragged()) {
+            let t = t0 + ((p.x - ov.left()) / ov.width()).clamp(0.0, 1.0) as f64 * (t1 - t0);
+            app.seek(tm.frame_at(t));
+            if !app.view_fit && (t < view.start || t > view.end(width)) {
+                recentre = Some(t - width / view.px_per_unit / 2.0);
+            }
+        }
+    }
 
     // ---- ruler and grid ----
-    tp.rect_filled(ruler.intersect(time_clip), 0.0, Color32::from_gray(38));
-    gutter.text(pos2(area.left() + 8.0, ruler.center().y), Align2::LEFT_CENTER, if tm.uses_beats() { "beats (bar = 4)" } else { "seconds" }, small.clone(), weak);
+    tp.rect_filled(ruler.intersect(time_clip), 0, color::BG);
+    painter.hline(area.x_range(), ruler.bottom(), Stroke::new(1.0, color::LINE));
+    gutter.text(pos2(area.left() + space::L, ruler.center().y), Align2::LEFT_CENTER, if tm.uses_beats() { "Beats" } else { "Seconds" }, small.clone(), color::TEXT_FAINT);
     // Outside the project: before the first frame and after the last.
-    let shade = Color32::from_black_alpha(90);
+    let shade = Color32::from_black_alpha(80);
     let (px0, px1) = (x_of(tm.start_time()), x_of(tm.end_time()));
     if px0 > time_left {
-        tp.rect_filled(Rect::from_min_max(pos2(time_left, ruler.bottom()), pos2(px0, rows_rect.bottom())), 0.0, shade);
+        tp.rect_filled(Rect::from_min_max(pos2(time_left, ruler.bottom()), pos2(px0, rows_rect.bottom())), 0, shade);
     }
     if px1 < area.right() {
-        tp.rect_filled(Rect::from_min_max(pos2(px1, ruler.bottom()), pos2(area.right(), rows_rect.bottom())), 0.0, shade);
+        tp.rect_filled(Rect::from_min_max(pos2(px1, ruler.bottom()), pos2(area.right(), rows_rect.bottom())), 0, shade);
     }
     for tick in ruler_ticks(view.start, view.end(width), view.px_per_unit, tm.uses_beats()) {
         let x = x_of(tick.t);
         let (top, ruler_color, grid_alpha) = match tick.level {
-            TickLevel::Bar => (ruler.top() + 1.0, Color32::from_gray(190), 46),
-            TickLevel::Beat => (ruler.bottom() - 8.0, Color32::from_gray(130), 20),
-            TickLevel::Sub => (ruler.bottom() - 4.0, Color32::from_gray(95), 0),
+            TickLevel::Bar => (ruler.top() + 3.0, color::TEXT_FAINT, 22),
+            TickLevel::Beat => (ruler.bottom() - 6.0, color::LINE_STRONG, 10),
+            TickLevel::Sub => (ruler.bottom() - 3.0, color::CONTROL_HOVER, 0),
         };
-        tp.line_segment([pos2(x, top), pos2(x, ruler.bottom())], Stroke::new(1.0, ruler_color));
+        tp.vline(x, top..=ruler.bottom(), Stroke::new(1.0, ruler_color));
         if grid_alpha > 0 {
-            tp.line_segment([pos2(x, ruler.bottom()), pos2(x, rows_rect.bottom())], Stroke::new(1.0, Color32::from_white_alpha(grid_alpha)));
+            tp.vline(x, ruler.bottom()..=rows_rect.bottom(), Stroke::new(1.0, Color32::from_white_alpha(grid_alpha)));
         }
         if let Some(label) = &tick.label {
-            let color = if tick.level == TickLevel::Bar { text } else { weak };
-            tp.text(pos2(x + 3.0, ruler.top() + 1.0), Align2::LEFT_TOP, label, small.clone(), color);
+            let c = if tick.level == TickLevel::Bar { color::TEXT_MUTED } else { color::TEXT_FAINT };
+            tp.text(pos2(x + 4.0, ruler.top() + 2.0), Align2::LEFT_TOP, label, tiny.clone(), c);
         }
     }
 
     // ---- markers ----
     if let Some(lane) = marker_lane {
-        tp.rect_filled(lane.intersect(time_clip), 0.0, Color32::from_gray(30));
-        gutter.text(pos2(area.left() + 8.0, lane.center().y), Align2::LEFT_CENTER, "markers", small.clone(), weak);
+        gutter.text(pos2(area.left() + space::L, lane.center().y), Align2::LEFT_CENTER, "Markers", small.clone(), color::TEXT_FAINT);
         for m in &project.markers {
             let x = x_of(m.t);
-            tp.line_segment([pos2(x, lane.top()), pos2(x, lane.bottom())], Stroke::new(2.0, pal::MARKER));
-            tp.line_segment([pos2(x, lane.bottom()), pos2(x, rows_rect.bottom())], Stroke::new(1.0, pal::MARKER.gamma_multiply(0.35)));
-            tp.text(pos2(x + 4.0, lane.center().y), Align2::LEFT_CENTER, &m.label, small.clone(), pal::MARKER);
+            tp.vline(x, lane.top() + 2.0..=rows_rect.bottom(), Stroke::new(1.0, color::MARKER.gamma_multiply(0.25)));
+            let flag = Rect::from_min_size(pos2(x, lane.top() + 2.0), vec2(6.0, 6.0));
+            tp.rect_filled(flag, CornerRadius { nw: 0, ne: 2, sw: 0, se: 2 }, color::MARKER);
+            tp.text(pos2(x + 9.0, lane.center().y), Align2::LEFT_CENTER, &m.label, small.clone(), color::MARKER);
         }
     }
 
     // ---- waveform ----
     if let (Some(lane), Some(audio)) = (wave_lane, &project.audio) {
-        tp.rect_filled(lane.intersect(time_clip), 0.0, Color32::from_gray(24));
-        gutter.text(pos2(area.left() + 8.0, lane.center().y - 6.0), Align2::LEFT_CENTER, "audio", small.clone(), weak);
-        gutter.text(pos2(area.left() + 8.0, lane.center().y + 7.0), Align2::LEFT_CENTER, &audio.path, small.clone(), weak);
+        painter.hline(area.x_range(), lane.bottom(), Stroke::new(1.0, color::LINE));
+        let name = audio.path.rsplit('/').next().unwrap_or(&audio.path).to_string();
+        let (ir, _) = (Rect::from_center_size(pos2(area.left() + space::L + 7.0, lane.center().y), vec2(14.0, 14.0)), ());
+        widgets::paint_icon(&gutter, ir.center(), Icon::AudioWaveform, text::ICON_SMALL, color::TEXT_FAINT);
+        gutter.text(pos2(area.left() + space::L + 22.0, lane.center().y - 7.0), Align2::LEFT_CENTER, "Audio", theme::body(), color::TEXT_MUTED);
+        gutter.text(pos2(area.left() + space::L + 22.0, lane.center().y + 8.0), Align2::LEFT_CENTER, crate::app::shorten(&name, 20), small.clone(), color::TEXT_FAINT);
         let mid = lane.center().y;
-        let half = lane.height() / 2.0 - 2.0;
+        let half = lane.height() / 2.0 - 4.0;
+        let played_x = x_of(tm.frame_time(app.playhead));
         match app.audio.clip() {
             Some(clip) => {
-                tp.line_segment([pos2(time_left, mid), pos2(area.right(), mid)], Stroke::new(1.0, pal::WAVE.gamma_multiply(0.4)));
                 let columns = width.ceil() as usize;
                 for c in 0..columns {
-                    // Project time → seconds of the project → seconds of the audio file.
+                    // Project time -> seconds of the project -> seconds of the audio file.
                     let a = tm.to_seconds(view.t_at(c as f64)) + audio.offset;
                     let b = tm.to_seconds(view.t_at(c as f64 + 1.0)) + audio.offset;
                     if let Some((lo, hi)) = peak_range(&clip.peaks, a, b) {
                         let x = time_left + c as f32 + 0.5;
                         let (lo, hi) = (lo.clamp(-1.0, 1.0), hi.clamp(-1.0, 1.0));
-                        tp.line_segment([pos2(x, mid - hi * half - 0.5), pos2(x, mid - lo * half + 0.5)], Stroke::new(1.0, pal::WAVE));
+                        let ink = if x <= played_x { color::WAVE_PLAYED } else { color::WAVE };
+                        tp.vline(x, (mid - hi * half - 0.5)..=(mid - lo * half + 0.5), Stroke::new(1.0, ink));
                     }
                 }
             }
             None => {
                 let note = match app.audio.status() {
-                    crate::audio::AudioStatus::Decoding => "decoding the audio…".to_string(),
-                    crate::audio::AudioStatus::Silent(why) => format!("no waveform: {}", crate::app::shorten(&why, 110)),
+                    crate::audio::AudioStatus::Decoding => "Decoding the audio…".to_string(),
+                    crate::audio::AudioStatus::Silent(why) => format!("No waveform: {}", crate::app::shorten(&why, 110)),
                     _ => String::new(),
                 };
-                tp.text(pos2(time_left + 8.0, mid), Align2::LEFT_CENTER, note, small.clone(), weak);
+                tp.text(pos2(time_left + space::M, mid), Align2::LEFT_CENTER, note, small.clone(), color::TEXT_FAINT);
             }
         }
     }
@@ -248,6 +317,7 @@ pub(crate) fn show(app: &mut App, ui: &mut Ui) {
     // A click on a row's background toggles its selection; a click or drag on its bar selects it.
     let mut picked: Option<Selected> = None;
     let mut chosen: Option<Selected> = None;
+    let mut toggled: Option<String> = None;
     let selected = app.selected.clone();
     let tolerance = 3.0 / view.px_per_unit;
     let alt = ui.input(|i| i.modifiers.alt);
@@ -257,6 +327,10 @@ pub(crate) fn show(app: &mut App, ui: &mut Ui) {
     let mut moved_to: Option<f64> = None;
     let mut released = false;
     let mut keyed: Option<(String, f64)> = None;
+    if rows.is_empty() {
+        let r = Rect::from_min_max(rows_rect.min, pos2(rows_rect.right(), rows_rect.top() + 48.0));
+        painter.text(pos2(time_left + space::L, r.center().y), Align2::LEFT_CENTER, "No layers yet. + Layer adds one at the playhead.", theme::body(), color::TEXT_FAINT);
+    }
     ui.scope_builder(UiBuilder::new().max_rect(rows_rect), |ui| {
         egui::ScrollArea::vertical().id_salt("timeline-rows").auto_shrink([false, false]).show(ui, |ui| {
             let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), rows.len() as f32 * ROW_H), Sense::hover());
@@ -270,60 +344,82 @@ pub(crate) fn show(app: &mut App, ui: &mut Ui) {
                     continue;
                 }
                 let me = selection_of(row);
+                let is_selected = selected.as_ref() == Some(&me);
                 let resp = ui.interact(r, ui.scope_id().with(("row", i)), Sense::click());
-                if selected.as_ref() == Some(&me) {
-                    ui.painter().rect_filled(r, 0.0, ui.visuals().selection.bg_fill.gamma_multiply(0.45));
+                let header = Rect::from_min_max(r.min, pos2(time_left, r.bottom()));
+                if is_selected {
+                    gp.rect_filled(header, 0, color::ACCENT_BG);
+                    gp.rect_filled(Rect::from_min_size(header.min, vec2(2.0, header.height())), 0, color::ACCENT);
+                    tp.rect_filled(r, 0, Color32::from_rgba_unmultiplied(0x6E, 0x6A, 0xDE, 8));
                 } else if resp.hovered() {
-                    ui.painter().rect_filled(r, 0.0, Color32::from_white_alpha(10));
+                    gp.rect_filled(header, 0, color::CONTROL);
+                    tp.rect_filled(r, 0, Color32::from_white_alpha(4));
                 }
-                ui.painter().line_segment([r.left_bottom(), r.right_bottom()], Stroke::new(1.0, Color32::from_white_alpha(12)));
+                ui.painter().hline(r.x_range(), r.bottom() - 0.5, Stroke::new(1.0, Color32::from_white_alpha(7)));
 
-                // Gutter: id and kind.
-                let name_color = if row.enabled { text } else { weak };
-                let name = gp.text(pos2(r.left() + 8.0, r.center().y), Align2::LEFT_CENTER, &row.id, FontId::proportional(13.0), name_color);
-                let kind = match (row.layer, row.enabled) {
-                    (None, _) => "position, rotation, fov".to_string(),
-                    (Some(_), true) => row.kind.clone(),
-                    (Some(_), false) => format!("{} (disabled)", row.kind),
+                // Header: kind icon, id, kind; the eye on hover (always when disabled).
+                let k = kind_colors(&row.kind);
+                let dim = if row.enabled { 1.0 } else { 0.45 };
+                widgets::paint_icon(&gp, pos2(r.left() + space::L + 7.0, r.center().y), widgets::kind_icon(&row.kind), 13.0, k.stripe.lerp_to_gamma(Color32::WHITE, 0.3).gamma_multiply(dim));
+                let name_color = if is_selected { color::TEXT } else if row.enabled { color::TEXT_MUTED } else { color::TEXT_FAINT };
+                let name = gp.text(pos2(r.left() + space::L + 22.0, r.center().y), Align2::LEFT_CENTER, crate::app::shorten(&row.id, 16), theme::body(), name_color);
+                let kind = match row.layer {
+                    None => "camera".to_string(),
+                    Some(_) => row.kind.split(' ').next().unwrap_or("").to_string(),
                 };
-                gp.text(pos2(name.right() + 8.0, r.center().y + 0.5), Align2::LEFT_CENTER, kind, small.clone(), weak);
+                if name.right() + 70.0 < time_left {
+                    gp.text(pos2(name.right() + space::S, r.center().y + 0.5), Align2::LEFT_CENTER, kind, small.clone(), color::TEXT_FAINT);
+                }
+                if row.layer.is_some() && (resp.hovered() || !row.enabled || ui.rect_contains_pointer(header)) {
+                    let eye = Rect::from_center_size(pos2(time_left - 18.0, r.center().y), vec2(22.0, 22.0));
+                    let er = ui.interact(eye, ui.scope_id().with(("eye", i)), Sense::click());
+                    if er.hovered() {
+                        gp.rect_filled(eye, radius::SMALL, color::CONTROL_HOVER);
+                    }
+                    widgets::paint_icon(&gp, eye.center(), if row.enabled { Icon::Eye } else { Icon::EyeOff }, 13.0, if er.hovered() { color::TEXT } else { color::TEXT_FAINT });
+                    if tip(er.on_hover_cursor(CursorIcon::PointingHand), if row.enabled { "Disable this layer (not drawn)" } else { "Enable this layer" }, &[]).clicked() {
+                        toggled = Some(row.id.clone());
+                    }
+                }
 
-                // The layer's span.
+                // The layer's span: a muted fill with a stripe of its kind on top.
                 let (x0, x1) = (x_of(row.start), x_of(row.end));
                 let bar = Rect::from_min_max(pos2(x0, r.top() + 3.0), pos2(x1.max(x0 + 2.0), r.bottom() - 3.0));
-                let base = kind_color(&row.kind);
-                let fill = base.gamma_multiply(if row.enabled { 0.5 } else { 0.18 });
                 let ghosted = dragging_me && current.as_ref().is_some_and(|d| !matches!(d.kind, DragKind::Keys { .. }));
-                let fade = if ghosted { 0.45 } else { 1.0 };
-                tp.rect(bar, 3.0, fill.gamma_multiply(fade), Stroke::new(1.0, base.gamma_multiply(if row.enabled { fade } else { 0.5 * fade })), StrokeKind::Inside);
+                let fade = if ghosted { 0.45 } else { 1.0 } * if row.enabled { 1.0 } else { 0.45 };
+                let fill = if is_selected { color::ACCENT_BG.lerp_to_gamma(k.fill, 0.35) } else { k.fill };
+                tp.rect_filled(bar, radius::SMALL, fill.gamma_multiply(fade));
+                let stripe = Rect::from_min_max(bar.min, pos2(bar.right(), bar.top() + 2.0));
+                tp.rect_filled(stripe, CornerRadius { nw: radius::SMALL, ne: radius::SMALL, sw: 0, se: 0 }, k.stripe.gamma_multiply(fade * if is_selected { 1.0 } else { 0.85 }));
+                if is_selected {
+                    tp.rect_stroke(bar, radius::SMALL, Stroke::new(1.5, color::ACCENT), StrokeKind::Inside);
+                }
 
                 // Effect names (and the blend mode), kept in sight when the bar starts off-screen.
                 let mut parts: Vec<String> = Vec::new();
                 if !row.effects.is_empty() {
-                    parts.push(format!("fx  {}", row.effects.join(" · ")));
+                    parts.push(row.effects.join(" · "));
                 }
                 if let Some(b) = &row.blend {
                     parts.push(format!("blend {b}"));
                 }
-                if !parts.is_empty() {
-                    let inside = tp.with_clip_rect(tp.clip_rect().intersect(bar.shrink(2.0)));
-                    inside.text(pos2(x0.max(time_left) + 5.0, bar.top() + 1.5), Align2::LEFT_TOP, parts.join("    "), small.clone(), Color32::from_gray(240));
+                if !parts.is_empty() && bar.width() > 40.0 {
+                    let inside = tp.with_clip_rect(tp.clip_rect().intersect(bar.shrink2(vec2(4.0, 0.0))));
+                    let fg = if row.enabled { color::TEXT_MUTED } else { color::TEXT_FAINT };
+                    inside.text(pos2(x0.max(time_left) + 6.0, bar.top() + 4.0), Align2::LEFT_TOP, parts.join("   "), theme::mono_small(), fg);
                 }
 
-                // Keyframes: a diamond for the transform, a dot for effect parameters.
+                // Keyframes: white glyphs; the shape tells the ease.
                 let groups = group_marks(&row.marks, tolerance);
-                let key_y = bar.bottom() - 6.5;
+                let key_y = bar.bottom() - 5.5;
                 for g in &groups {
                     let x = x_of(g.t);
                     if x < time_left - 6.0 || x > area.right() + 6.0 {
                         continue;
                     }
-                    if g.transform {
-                        diamond(&tp, pos2(x, key_y), 4.2, pal::KEY_TRANSFORM);
-                    }
-                    if g.effect {
-                        dot(&tp, pos2(x, key_y), if g.transform { 2.0 } else { 3.4 }, pal::KEY_EFFECT);
-                    }
+                    let here = (g.t - tm.frame_time(app.playhead)).abs() < 1e-6 * g.t.abs().max(1.0) || tm.frame_at(g.t) == app.playhead;
+                    let ink = if is_selected && here { color::ACCENT_TEXT } else { color::TEXT.gamma_multiply(if row.enabled { 1.0 } else { 0.5 }) };
+                    key_glyph(&tp, pos2(x, key_y), KEY_R, g.shape, ink);
                 }
 
                 if resp.clicked() {
@@ -379,6 +475,9 @@ pub(crate) fn show(app: &mut App, ui: &mut Ui) {
                     }
                     let tip = if kind == DragKind::TrimIn { "drag: change in" } else { "drag: change out" };
                     let e = ui.interact(edge, ui.scope_id().with(("edge", i, kind == DragKind::TrimIn)), Sense::drag()).on_hover_cursor(CursorIcon::ResizeHorizontal).on_hover_text_at_pointer(tip);
+                    if e.hovered() {
+                        tp.vline(x + if kind == DragKind::TrimIn { 1.0 } else { -1.0 }, bar.top() + 2.0..=bar.bottom() - 2.0, Stroke::new(2.0, color::TEXT));
+                    }
                     handles.push((e, kind));
                 }
                 for (h, kind) in handles {
@@ -404,21 +503,22 @@ pub(crate) fn show(app: &mut App, ui: &mut Ui) {
                     match d.result(&project, &tm) {
                         Some(DragResult::Span { start, end }) => {
                             let g = Rect::from_min_max(pos2(x_of(start), bar.top() - 1.0), pos2(x_of(end).max(x_of(start) + 2.0), bar.bottom() + 1.0));
-                            tp.rect(g, 3.0, Color32::from_white_alpha(28), Stroke::new(1.5, Color32::WHITE), StrokeKind::Inside);
+                            tp.rect(g, radius::SMALL, Color32::from_white_alpha(22), Stroke::new(1.5, color::TEXT), StrokeKind::Inside);
                             // The times next to the edge that moves, outside the bar's own text.
-                            let label = format!("{} .. {}", fmt_time(start), fmt_time(end));
+                            let label = format!("{} – {}", fmt_time(start), fmt_time(end));
                             let (at, align) = if d.kind == DragKind::TrimIn { (pos2(g.left() + 4.0, g.bottom() - 2.0), Align2::LEFT_BOTTOM) } else { (pos2(g.right() - 4.0, g.bottom() - 2.0), Align2::RIGHT_BOTTOM) };
-                            let r = tp.text(at, align, &label, small.clone(), Color32::WHITE);
-                            tp.rect_filled(r.expand(1.0), 2.0, Color32::from_black_alpha(140));
-                            tp.text(at, align, label, small.clone(), Color32::WHITE);
+                            let r = tp.text(at, align, &label, tiny.clone(), color::TEXT);
+                            tp.rect_filled(r.expand(2.0), 2, Color32::from_black_alpha(200));
+                            tp.text(at, align, label, tiny.clone(), color::TEXT);
                         }
                         Some(DragResult::Key { to }) => {
                             if let DragKind::Keys { from } = d.kind {
                                 let (a, b) = (x_of(from), x_of(to));
-                                tp.line_segment([pos2(a, key_y), pos2(b, key_y)], Stroke::new(1.0, Color32::WHITE));
-                                let pts = vec![pos2(b, key_y - 5.5), pos2(b + 5.5, key_y), pos2(b, key_y + 5.5), pos2(b - 5.5, key_y)];
-                                tp.add(Shape::convex_polygon(pts, Color32::from_white_alpha(60), Stroke::new(1.5, Color32::WHITE)));
-                                tp.text(pos2(b + 7.0, bar.top() + 1.0), Align2::LEFT_TOP, fmt_time(to), small.clone(), Color32::WHITE);
+                                tp.hline(a.min(b)..=a.max(b), key_y, Stroke::new(1.0, color::TEXT));
+                                key_glyph(&tp, pos2(b, key_y), KEY_R + 1.5, KeyShape::Linear, color::ACCENT_TEXT);
+                                let r = tp.text(pos2(b + 8.0, bar.top() + 2.0), Align2::LEFT_TOP, fmt_time(to), tiny.clone(), color::TEXT);
+                                tp.rect_filled(r.expand(2.0), 2, Color32::from_black_alpha(200));
+                                tp.text(pos2(b + 8.0, bar.top() + 2.0), Align2::LEFT_TOP, fmt_time(to), tiny.clone(), color::TEXT);
                             }
                         }
                         None => {}
@@ -427,7 +527,9 @@ pub(crate) fn show(app: &mut App, ui: &mut Ui) {
             }
         });
     });
-    if let Some(p) = chosen {
+    if let Some(id) = toggled {
+        app.toggle_layer(&id);
+    } else if let Some(p) = chosen {
         app.selected = Some(p);
     } else if let Some(p) = picked {
         // A second click on the selected row lets go of it.
@@ -453,37 +555,16 @@ pub(crate) fn show(app: &mut App, ui: &mut Ui) {
         app.key_at(&id, editing::snap(&tm, t, alt));
     }
 
-    // ---- playhead ----
+    // ---- playhead: a light line with an accent cap on the ruler ----
     let x = x_of(tm.frame_time(app.playhead));
-    tp.line_segment([pos2(x, ruler.top()), pos2(x, rows_rect.bottom())], Stroke::new(1.5, pal::PLAYHEAD));
-    tp.add(Shape::convex_polygon(vec![pos2(x - 5.5, ruler.top()), pos2(x + 5.5, ruler.top()), pos2(x, ruler.top() + 8.0)], pal::PLAYHEAD, Stroke::NONE));
-
-    // ---- horizontal scroll bar ----
-    let pad = View::PAD / view.px_per_unit;
-    let (lo, hi) = (t0 - pad, t1 + pad);
-    let total = (hi - lo).max(1e-9);
-    let painter = ui.painter_at(area);
-    painter.rect_filled(scroll_rect, 3.0, Color32::from_gray(30));
-    if !app.view_fit {
-        let frac0 = ((view.start - lo) / total).clamp(0.0, 1.0) as f32;
-        let frac1 = ((view.end(width) - lo) / total).clamp(0.0, 1.0) as f32;
-        let thumb = Rect::from_min_max(
-            pos2(scroll_rect.left() + frac0 * scroll_rect.width(), scroll_rect.top()),
-            pos2(scroll_rect.left() + (frac1 * scroll_rect.width()).max(frac0 * scroll_rect.width() + 12.0), scroll_rect.bottom()),
-        );
-        let resp = ui.interact(scroll_rect, ui.scope_id().with("hscroll"), Sense::click_and_drag());
-        if resp.dragged() {
-            view.start += resp.drag_delta().x as f64 / scroll_rect.width() as f64 * total;
-            view.clamp(t0, t1, width);
-        } else if resp.clicked() {
-            if let Some(p) = resp.interact_pointer_pos() {
-                let centre = lo + ((p.x - scroll_rect.left()) / scroll_rect.width()) as f64 * total;
-                view.start = centre - width / view.px_per_unit / 2.0;
-                view.clamp(t0, t1, width);
-            }
-        }
-        let color = if resp.hovered() || resp.dragged() { Color32::from_gray(150) } else { Color32::from_gray(105) };
-        painter.rect_filled(thumb, 3.0, color);
+    if x >= time_left - 1.0 {
+        tp.vline(x, ruler.top()..=rows_rect.bottom(), Stroke::new(1.0, color::PLAYHEAD));
+        let cap = vec![pos2(x - 5.0, ruler.top()), pos2(x + 5.0, ruler.top()), pos2(x + 5.0, ruler.top() + 7.0), pos2(x, ruler.top() + 12.0), pos2(x - 5.0, ruler.top() + 7.0)];
+        tp.add(Shape::convex_polygon(cap, color::ACCENT, Stroke::new(1.0, color::ACCENT_TEXT.gamma_multiply(0.6))));
+    }
+    if let Some(start) = recentre {
+        view.start = start;
+        view.clamp(t0, t1, width);
     }
     app.view = Some(view);
 }

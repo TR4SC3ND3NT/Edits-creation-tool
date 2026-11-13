@@ -119,6 +119,45 @@ pub fn check(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> {
             }
         }
     }
+    for (i, l) in p.layers.iter().enumerate() {
+        let Some(tr) = &l.transition else { continue };
+        let tp = format!("layers[{i}:\"{}\"].transition", l.id);
+        match effects::transition(&tr.kind) {
+            None => {
+                let kinds: Vec<&str> = effects::TRANSITIONS.iter().map(|t| t.kind).collect();
+                err(tp.clone(), format!("unknown transition \"{}\"", tr.kind), Some(&format!("known transitions: {}", kinds.join(", "))));
+            }
+            Some(spec) => {
+                for (k, v) in &tr.params {
+                    if !spec.params.iter().any(|q| q.name == k) {
+                        let names: Vec<&str> = spec.params.iter().map(|q| q.name).collect();
+                        err(format!("{tp}.params.{k}"), format!("transition \"{}\" has no parameter \"{k}\"", tr.kind), Some(&format!("parameters: {}", if names.is_empty() { "(none)".into() } else { names.join(", ") })));
+                    }
+                    check_prop(v, &format!("{tp}.params.{k}"), &mut err);
+                }
+            }
+        }
+        let end = l.end.unwrap_or(s.duration);
+        if tr.duration.is_nan() || tr.duration <= 0.0 {
+            err(format!("{tp}.duration"), "duration must be positive".into(), None);
+        } else if l.start + tr.duration > end + 1e-9 {
+            err(format!("{tp}.duration"), format!("the transition ({}) is longer than the layer ({})", tr.duration, end - l.start), Some("shorten the transition or move the layer's out"));
+        } else {
+            // What it comes from: a picture beneath that is still there when the transition ends.
+            let covered = p.layers[..i].iter().any(|b| b.enabled && !matches!(b.kind, LayerKind::Adjustment) && b.start <= l.start + 1e-9 && b.end.unwrap_or(s.duration) >= l.start + tr.duration - 1e-9);
+            if !covered {
+                warn.push(Finding {
+                    severity: Severity::Warning,
+                    path: tp.clone(),
+                    message: format!("no layer beneath \"{}\" lasts until the transition ends at {}: it comes from the background", l.id, l.start + tr.duration),
+                    hint: Some("move the outgoing layer's out to the end of the transition (the transition:<kind> presets do this)".into()),
+                });
+            }
+        }
+        if !ease::is_known(&tr.ease) {
+            err(format!("{tp}.ease"), format!("unknown ease {:?}", tr.ease), Some(&format!("names: {}", ease::NAMES.join(", "))));
+        }
+    }
     for (name, prop) in [("fov", &p.camera.fov), ("position", &p.camera.position), ("rotation", &p.camera.rotation)] {
         check_prop(prop, &format!("camera.{name}"), &mut err);
     }

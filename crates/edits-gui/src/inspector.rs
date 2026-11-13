@@ -1,17 +1,20 @@
-//! The right-hand panel: the Problems list, the inspector of the selected
-//! layer (or the camera and project), the Slots page and the History list.
+//! The inspector on the right: the Problems list, then the selected layer
+//! (or the camera, or the project) in collapsible sections, every value
+//! editable.
 //!
 //! Values are read from the project as shown (with a change being dragged
 //! applied) and edits are prepared against the file's version, so dragging
 //! a value is one edit however long the drag. Editing a constant changes
 //! the constant; editing a keyframed property sets a key at the playhead.
 
-use crate::app::{pal, App, Selected, Tab};
+use crate::app::{App, Cmd, Selected};
 use crate::editing::{self, base_value, ease_choices, ease_from_choice, ease_name, key_at_or_before, key_index_at, keys_of, set_prop, tidy, with_ease, with_key_here, with_value, without_key, PropRef};
 use crate::panels;
 use crate::reload::Problem;
 use crate::rows::{blend_text, prop_key_times};
-use eframe::egui::{self, Color32, RichText, Sense, Stroke, Ui};
+use crate::theme::{self, color, kind_colors, radius, size, space, text};
+use crate::widgets::{self, tip, Icon};
+use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, CornerRadius, FontId, Layout, Rect, RichText, Sense, Stroke, Ui};
 use edits_core::{effects, Blend, Ease, Evaluator, Layer, LayerKind, Modifier, Project, Prop};
 use serde_json::json;
 use std::ops::RangeInclusive;
@@ -61,24 +64,50 @@ pub(crate) fn animation_note(prop: &Prop) -> String {
 
 const BLENDS: [Blend; 8] = [Blend::Normal, Blend::Add, Blend::Screen, Blend::Multiply, Blend::Overlay, Blend::Lighten, Blend::Darken, Blend::Difference];
 
-fn row(ui: &mut Ui, name: &str, value: String, note: &str) {
-    ui.label(RichText::new(name).color(ui.visuals().weak_text_color()));
-    ui.label(RichText::new(value).monospace());
-    if note.is_empty() {
-        ui.label("");
-    } else {
-        ui.label(RichText::new(note).small().color(pal::KEY_TRANSFORM));
-    }
-    ui.end_row();
+/// Height of a row of the inspector.
+const ROW: f32 = 26.0;
+/// Width of the unit column after the values.
+const UNIT: f32 = 26.0;
+/// Width of the key button at the end of a row.
+const KEY: f32 = 20.0;
+
+/// A row: a label in the label column, then `add` in the rest. Returns
+/// whether the pointer is over the row.
+fn field_row(ui: &mut Ui, label: RichText, hover: &str, add: impl FnOnce(&mut Ui)) -> bool {
+    let row = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), ROW));
+    let hovered = ui.rect_contains_pointer(row);
+    ui.allocate_ui_with_layout(row.size(), Layout::left_to_right(Align::Center), |ui| {
+        ui.set_min_size(row.size());
+        let (r, resp) = ui.allocate_exact_size(vec2(size::LABEL_COLUMN, ROW), Sense::hover());
+        let galley = ui.painter().layout_no_wrap(label.text().to_string(), theme::body(), color::TEXT_MUTED);
+        let _ = galley;
+        ui.put(r, egui::Label::new(label).truncate().selectable(false));
+        if !hover.is_empty() {
+            resp.on_hover_text(hover);
+        }
+        add(ui);
+    });
+    hovered
+}
+
+fn label_text(t: &str) -> RichText {
+    RichText::new(t).color(color::TEXT_MUTED)
+}
+
+fn faint(t: impl Into<String>) -> RichText {
+    RichText::new(t).font(theme::small()).color(color::TEXT_FAINT)
+}
+
+/// A read-only value row.
+fn info_row(ui: &mut Ui, name: &str, value: String) {
+    field_row(ui, label_text(name), "", |ui| {
+        ui.add(egui::Label::new(RichText::new(value).font(theme::mono()).color(color::TEXT)).truncate());
+    });
 }
 
 fn problems(app: &App, ui: &mut Ui) {
     let (errors, warnings) = (app.state.errors(), app.state.warnings());
     if errors + warnings == 0 {
-        ui.horizontal(|ui| {
-            ui.strong("Problems");
-            ui.colored_label(pal::GOOD, "none");
-        });
         return;
     }
     let mut title = vec![];
@@ -88,60 +117,57 @@ fn problems(app: &App, ui: &mut Ui) {
     if warnings > 0 {
         title.push(format!("{warnings} warning{}", if warnings == 1 { "" } else { "s" }));
     }
-    let color = if errors > 0 { pal::BAD } else { pal::WARN };
     // Warnings alone stay folded, so the inspector keeps its room.
-    egui::CollapsingHeader::new(RichText::new(format!("Problems: {}", title.join(", "))).color(color)).id_salt("problems-header").default_open(errors > 0).open(if errors > 0 { Some(true) } else { None }).show(ui, |ui| {
+    widgets::section(ui, ("problems", errors > 0), &format!("Problems · {}", title.join(", ")), errors > 0, |_| {}, |ui| {
         if app.state.rejected {
             let what = if app.state.current.is_some() {
                 format!("The file on disk is not shown. The preview stays on revision {}, the last version without errors. Edits in the window wait until it is fixed (Undo may fix it).", app.state.revision)
             } else {
                 "The file has never been valid, so there is nothing to show yet.".to_string()
             };
-            ui.label(RichText::new(what).color(pal::BAD));
+            ui.label(RichText::new(what).color(color::ERROR_TEXT));
+            ui.add_space(space::XS);
         }
-        let max = (ui.available_height() * 0.4).max(100.0);
-        egui::ScrollArea::vertical().id_salt("problems").max_height(max).auto_shrink([false, true]).show(ui, |ui| {
-            for p in &app.state.problems {
-                problem(ui, p);
-            }
-        });
+        for p in &app.state.problems {
+            problem(ui, p);
+        }
     });
+    widgets::section_rule(ui);
 }
 
 fn problem(ui: &mut Ui, p: &Problem) {
-    let color = if p.error { pal::BAD } else { pal::WARN };
-    egui::Frame::new().fill(color.gamma_multiply(0.10)).stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.5))).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
+    let (tint, fill, icon) = if p.error { (color::ERROR_TEXT, color::ERROR_BG, Icon::CircleAlert) } else { (color::WARN, color::RAISED, Icon::TriangleAlert) };
+    egui::Frame::new().fill(fill).corner_radius(CornerRadius::same(radius::NORMAL)).inner_margin(egui::Margin::same(space::M as i8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new(if p.error { "error" } else { "warning" }).color(color).strong());
-            ui.label(RichText::new(&p.path).monospace());
+        ui.spacing_mut().item_spacing.y = space::XS;
+        ui.horizontal(|ui| {
+            ui.label(widgets::icon_sized(icon, 13.0).color(tint));
+            ui.add(egui::Label::new(RichText::new(&p.path).font(theme::mono_small()).color(color::TEXT_MUTED)).truncate());
         });
-        ui.label(&p.message);
+        ui.label(RichText::new(&p.message).color(color::TEXT));
         if let Some(hint) = &p.hint {
-            ui.label(RichText::new(hint).size(11.5).color(ui.visuals().weak_text_color()));
+            ui.label(faint(hint));
         }
     });
-    ui.add_space(3.0);
+    ui.add_space(space::XS);
 }
 
 fn project_summary(ui: &mut Ui, p: &Project) {
     let s = &p.settings;
-    egui::Grid::new("summary").num_columns(3).spacing([10.0, 3.0]).show(ui, |ui| {
-        row(ui, "size", format!("{} x {}", s.width, s.height), "");
-        row(ui, "fps", num(s.fps), "");
-        row(ui, "duration", format!("{} {}", num(s.duration), if s.bpm.is_some() && s.time_base == edits_core::TimeBase::Beats { "beats" } else { "s" }), "");
-        if let Some(bpm) = s.bpm {
-            row(ui, "tempo", format!("{} BPM", num(bpm)), "");
-            row(ui, "beat 0 at", format!("{} s", num(s.beat_offset)), "");
-        }
-        row(ui, "motion blur", format!("{} samples, shutter {}", s.motion_blur.samples, num(s.motion_blur.shutter)), "");
-        row(ui, "layers", p.layers.len().to_string(), "");
-        row(ui, "slots", p.slots.len().to_string(), "");
-        if let Some(a) = &p.audio {
-            row(ui, "audio", a.path.clone(), "");
-            row(ui, "audio offset", format!("{} s", num(a.offset)), "");
-        }
-    });
+    info_row(ui, "Size", format!("{} × {}", s.width, s.height));
+    info_row(ui, "Frame rate", format!("{} fps", num(s.fps)));
+    info_row(ui, "Duration", format!("{} {}", num(s.duration), if s.bpm.is_some() && s.time_base == edits_core::TimeBase::Beats { "beats" } else { "s" }));
+    if let Some(bpm) = s.bpm {
+        info_row(ui, "Tempo", format!("{} BPM", num(bpm)));
+        info_row(ui, "Beat 0 at", format!("{} s", num(s.beat_offset)));
+    }
+    info_row(ui, "Motion blur", format!("{} samples · shutter {}", s.motion_blur.samples, num(s.motion_blur.shutter)));
+    info_row(ui, "Layers", p.layers.len().to_string());
+    info_row(ui, "Slots", p.slots.len().to_string());
+    if let Some(a) = &p.audio {
+        info_row(ui, "Audio", a.path.clone());
+        info_row(ui, "Audio offset", format!("{} s", num(a.offset)));
+    }
 }
 
 // ---- editable values -------------------------------------------------------------
@@ -171,22 +197,27 @@ impl Cx<'_> {
     }
 }
 
-/// A drag-value whose identity does not depend on what is drawn before it,
-/// so a drag (one edit) survives the layout changing while it lasts.
-pub(crate) fn stable_drag(ui: &mut Ui, key: impl std::hash::Hash + std::fmt::Debug, dv: egui::DragValue) -> egui::Response {
-    ui.scope_builder(egui::UiBuilder::new().scope_id(egui::Id::unique(("edits-value", key))), |ui| ui.add(dv)).inner
+/// A drag-value of a fixed width whose identity does not depend on what is
+/// drawn before it, so a drag (one edit) survives the layout changing while it lasts.
+pub(crate) fn stable_drag(ui: &mut Ui, key: impl std::hash::Hash + std::fmt::Debug, width: f32, dv: egui::DragValue) -> egui::Response {
+    ui.scope_builder(egui::UiBuilder::new().scope_id(egui::Id::unique(("edits-value", key))), |ui| ui.add_sized(vec2(width, 22.0), dv)).inner
 }
 
-/// A small diamond button: filled when there is a key at the playhead.
-fn key_button(ui: &mut Ui, filled: bool) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::click());
+/// The key button: a diamond, filled when a key is at the playhead,
+/// outlined when the property is animated, and only on hover otherwise.
+fn key_button(ui: &mut Ui, here: bool, animated: bool, row_hovered: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(KEY, ROW), Sense::click());
+    let hot = resp.hovered();
+    if !(here || animated || row_hovered || hot) {
+        return resp;
+    }
     let c = rect.center();
-    let r = if resp.hovered() { 5.5 } else { 4.8 };
-    let pts = vec![egui::pos2(c.x, c.y - r), egui::pos2(c.x + r, c.y), egui::pos2(c.x, c.y + r), egui::pos2(c.x - r, c.y)];
-    let color = if filled { pal::KEY_TRANSFORM } else { ui.visuals().weak_text_color() };
-    let fill = if filled { color } else { Color32::TRANSPARENT };
-    ui.painter().add(egui::Shape::convex_polygon(pts, fill, Stroke::new(1.2, color)));
-    resp
+    let r = 4.5;
+    let pts = vec![pos2(c.x, c.y - r), pos2(c.x + r, c.y), pos2(c.x, c.y + r), pos2(c.x - r, c.y)];
+    let ink = if hot { color::ACCENT_TEXT } else if here || animated { color::TEXT } else { color::TEXT_FAINT };
+    let fill = if here { ink } else { Color32::TRANSPARENT };
+    ui.painter().add(egui::Shape::convex_polygon(pts, fill, Stroke::new(1.2, ink)));
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 fn short_name(r: &PropRef) -> String {
@@ -196,8 +227,8 @@ fn short_name(r: &PropRef) -> String {
     }
 }
 
-/// One editable property: name (click to pick it), one drag-value per
-/// component, the key button, and how it is animated.
+/// One editable property: name (click to pick it), one value field per
+/// component, its unit, and the key button.
 #[allow(clippy::too_many_arguments)]
 fn prop_row(app: &mut App, ui: &mut Ui, cx: &Cx, r: PropRef, speed: f64, range: Option<RangeInclusive<f64>>, doc: &str, unit: &str) {
     let base_prop = r.get(cx.base, cx.base_layer()).cloned();
@@ -205,68 +236,106 @@ fn prop_row(app: &mut App, ui: &mut Ui, cx: &Cx, r: PropRef, speed: f64, range: 
     let default = r.default_value();
     let width = |v: Vec<f64>| if matches!(r, PropRef::Effect { .. }) && v.len() < default.len() { edits_core::eval::pad(v, default.len()) } else { v };
     let value = width(base_value(cx.shown, shown_prop.as_ref(), &default, cx.t));
-    let selected = app.selected_prop.as_ref() == Some(&r);
-
-    let mut tip = String::new();
-    if !doc.is_empty() {
-        tip.push_str(doc);
-        tip.push('\n');
-    }
-    tip.push_str(&format!("default {}{}\n", vector(&default), if unit.is_empty() { String::new() } else { format!(" {unit}") }));
-    tip.push_str("Click to pick it: the key strip edits its keys, and double-clicking a timeline row keys it there.");
-    if ui.selectable_label(selected, short_name(&r)).on_hover_text(tip).clicked() {
-        app.selected_prop = Some(r.clone());
-    }
-
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 3.0;
-        for c in 0..value.len() {
-            let mut v = value[c];
-            let mut dv = egui::DragValue::new(&mut v).speed(speed).max_decimals(4);
-            if let Some(range) = &range {
-                dv = dv.range(range.clone()).clamp_existing_to_range(false);
-            }
-            let resp = stable_drag(ui, (cx.id(), r.label(), c), dv);
-            if resp.changed() {
-                let mut new = width(base_value(cx.base, base_prop.as_ref(), &default, cx.t));
-                new.resize(value.len(), 0.0);
-                new[c] = tidy(v);
-                let prop = with_value(base_prop.as_ref(), cx.t, new.clone());
-                let how = if keys_of(base_prop.as_ref()).is_empty() { String::new() } else { format!(" (key at {} {})", num(cx.t), cx.unit) };
-                app.edit_live(resp.id, vec![set_prop(cx.id(), &r, &prop)], format!("{} of {} = {}{how}", r.label(), cx.id(), vector(&new)));
-            }
-            if resp.dragged() || resp.has_focus() {
-                app.keep_live(resp.id);
-            }
-        }
-        if !unit.is_empty() {
-            ui.label(RichText::new(unit).small().color(ui.visuals().weak_text_color()));
-        }
-    });
-
+    let picked = app.selected_prop.as_ref() == Some(&r);
     let here = key_index_at(base_prop.as_ref(), cx.t).is_some();
     let animated = !keys_of(base_prop.as_ref()).is_empty();
-    let tip = if here {
-        "A key is at the playhead. Pick the property (click its name) to remove it or change its ease."
-    } else if animated {
-        "Key here: add a key at the playhead holding the value it has now"
-    } else {
-        "Key here: make this property keyframed, with a key at the playhead"
-    };
-    if key_button(ui, here).on_hover_text(tip).clicked() {
-        app.selected_prop = Some(r.clone());
-        if let Some(prop) = with_key_here(cx.base, base_prop.as_ref(), &default, cx.t) {
-            app.commit(vec![set_prop(cx.id(), &r, &prop)], format!("key {} of {} at {} {}", r.label(), cx.id(), num(cx.t), cx.unit));
-        }
-    }
-
     let note = match &base_prop {
-        None => "default".to_string(),
+        None => "default: the file does not set it".to_string(),
         Some(p) => animation_note(p),
     };
-    let weak = note == "default";
-    ui.label(RichText::new(note).small().color(if weak { ui.visuals().weak_text_color() } else { pal::KEY_TRANSFORM }));
-    ui.end_row();
+    let modifiers: Vec<Icon> = match &base_prop {
+        Some(Prop::Anim(a)) => a.modifiers.iter().map(|m| if matches!(m, Modifier::Shake { .. }) { Icon::Activity } else { Icon::Repeat }).collect(),
+        _ => Vec::new(),
+    };
+
+    let row = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), ROW));
+    let row_hovered = ui.rect_contains_pointer(row);
+    if picked {
+        ui.painter().rect_filled(row.expand2(vec2(space::XS, 0.0)), radius::SMALL, color::ACCENT_BG);
+    } else if row_hovered {
+        ui.painter().rect_filled(row.expand2(vec2(space::XS, 0.0)), radius::SMALL, color::RAISED);
+    }
+    ui.allocate_ui_with_layout(row.size(), Layout::left_to_right(Align::Center), |ui| {
+        ui.set_min_size(row.size());
+        ui.spacing_mut().item_spacing.x = 3.0;
+        // ---- the name: click to pick ----
+        let (lr, lresp) = ui.allocate_exact_size(vec2(size::LABEL_COLUMN, ROW), Sense::click());
+        let name_color = if picked {
+            color::ACCENT_TEXT
+        } else if lresp.hovered() {
+            color::TEXT
+        } else if base_prop.is_none() {
+            color::TEXT_FAINT
+        } else {
+            color::TEXT_MUTED
+        };
+        let label = ui.painter().text(pos2(lr.left(), lr.center().y), Align2::LEFT_CENTER, short_name(&r), theme::body(), name_color);
+        let mut x = label.right() + space::XS;
+        for m in &modifiers {
+            widgets::paint_icon(ui.painter(), pos2(x + 5.0, lr.center().y), *m, 11.0, color::TEXT_FAINT);
+            x += 12.0;
+        }
+        let mut hover = String::new();
+        if !doc.is_empty() {
+            hover.push_str(doc);
+            hover.push_str("\n\n");
+        }
+        if !note.is_empty() {
+            hover.push_str(&format!("{note}\n"));
+        }
+        hover.push_str(&format!("Default {}{}\n", vector(&default), if unit.is_empty() { String::new() } else { format!(" {unit}") }));
+        hover.push_str("Click to pick it: its keys show below, and double-clicking a timeline row keys it there.");
+        if lresp.on_hover_text(hover).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            app.selected_prop = Some(r.clone());
+        }
+
+        // ---- the key button and the unit, from the right ----
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            let key_tip = if here {
+                "A key is at the playhead. Pick the property (click its name) to remove it or change its ease."
+            } else if animated {
+                "Key here: add a key at the playhead holding the value it has now"
+            } else {
+                "Key here: make this property keyframed, with a key at the playhead"
+            };
+            if key_button(ui, here, animated, row_hovered).on_hover_text(key_tip).clicked() {
+                app.selected_prop = Some(r.clone());
+                if let Some(prop) = with_key_here(cx.base, base_prop.as_ref(), &default, cx.t) {
+                    app.commit(vec![set_prop(cx.id(), &r, &prop)], format!("key {} of {} at {} {}", r.label(), cx.id(), num(cx.t), cx.unit));
+                }
+            }
+            let (ur, _) = ui.allocate_exact_size(vec2(UNIT, ROW), Sense::hover());
+            if !unit.is_empty() {
+                ui.painter().text(pos2(ur.left() + 1.0, ur.center().y), Align2::LEFT_CENTER, unit, theme::small(), color::TEXT_FAINT);
+            }
+            // ---- the values ----
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                let n = value.len().max(1) as f32;
+                let each = ((ui.available_width() - 3.0 * (n - 1.0)) / n).clamp(36.0, 120.0);
+                for c in 0..value.len() {
+                    let mut v = value[c];
+                    let mut dv = egui::DragValue::new(&mut v).speed(speed).max_decimals(4);
+                    if let Some(range) = &range {
+                        dv = dv.range(range.clone()).clamp_existing_to_range(false);
+                    }
+                    let resp = stable_drag(ui, (cx.id(), r.label(), c), each, dv);
+                    if resp.changed() {
+                        let mut new = width(base_value(cx.base, base_prop.as_ref(), &default, cx.t));
+                        new.resize(value.len(), 0.0);
+                        new[c] = tidy(v);
+                        let prop = with_value(base_prop.as_ref(), cx.t, new.clone());
+                        let how = if keys_of(base_prop.as_ref()).is_empty() { String::new() } else { format!(" (key at {} {})", num(cx.t), cx.unit) };
+                        app.edit_live(resp.id, vec![set_prop(cx.id(), &r, &prop)], format!("{} of {} = {}{how}", r.label(), cx.id(), vector(&new)));
+                    }
+                    if resp.dragged() || resp.has_focus() {
+                        app.keep_live(resp.id);
+                    }
+                }
+            });
+        });
+    });
 }
 
 /// The keys of the picked property: remove the one at the playhead, and the
@@ -274,87 +343,106 @@ fn prop_row(app: &mut App, ui: &mut Ui, cx: &Cx, r: PropRef, speed: f64, range: 
 fn key_strip(app: &mut App, ui: &mut Ui, cx: &Cx, r: &PropRef) {
     let base_prop = r.get(cx.base, cx.base_layer()).cloned();
     let keys = keys_of(base_prop.as_ref()).to_vec();
-    egui::Frame::new().fill(pal::KEY_TRANSFORM.gamma_multiply(0.07)).stroke(Stroke::new(1.0, pal::KEY_TRANSFORM.gamma_multiply(0.35))).corner_radius(4.0).inner_margin(5.0).show(ui, |ui| {
+    ui.add_space(space::XS);
+    egui::Frame::new().fill(color::RAISED).corner_radius(CornerRadius::same(radius::NORMAL)).inner_margin(egui::Margin::same(space::M as i8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new(format!("Keys of {}", r.label())).strong());
-            if keys.is_empty() {
-                ui.weak("none: it is a constant. The diamond makes it keyframed, with a key at the playhead.");
-                return;
-            }
-            ui.weak(format!("{} keys at {}", keys.len(), keys.iter().map(|k| num(k.t)).collect::<Vec<_>>().join(", ")));
+        ui.spacing_mut().item_spacing.y = space::S;
+        ui.horizontal(|ui| {
+            ui.label(widgets::icon_sized(Icon::Diamond, 12.0).color(color::ACCENT_TEXT));
+            ui.label(RichText::new(format!("Keys of {}", r.label())).font(FontId::new(text::BODY, theme::medium())).color(color::TEXT));
         });
         if keys.is_empty() {
+            ui.label(faint("None: it is a constant. The diamond at the end of its row makes it keyframed, with a key at the playhead."));
             return;
         }
         ui.horizontal_wrapped(|ui| {
-            if key_index_at(base_prop.as_ref(), cx.t).is_some() {
-                if ui.button("Remove key").on_hover_text("Remove the key at the playhead. Without keys the property becomes a constant again.").clicked() {
+            ui.spacing_mut().item_spacing = vec2(3.0, 3.0);
+            for k in &keys {
+                let on = (k.t - cx.t).abs() < editing::SAME_TIME;
+                let g = ui.painter().layout_no_wrap(num(k.t), theme::mono_small(), if on { color::ACCENT_TEXT } else { color::TEXT_MUTED });
+                let (kr, _) = ui.allocate_exact_size(g.size() + vec2(10.0, 6.0), Sense::hover());
+                ui.painter().rect_filled(kr, radius::SMALL, if on { color::ACCENT_BG } else { color::CONTROL });
+                ui.painter().galley(kr.center() - g.size() / 2.0, g, color::TEXT_MUTED);
+            }
+            ui.label(faint(cx.unit));
+        });
+        let at = key_index_at(base_prop.as_ref(), cx.t);
+        let seg = key_at_or_before(base_prop.as_ref(), cx.t).filter(|i| i + 1 < keys.len());
+        ui.horizontal(|ui| {
+            match seg {
+                Some(i) => {
+                    let k = &keys[i];
+                    ui.label(label_text("Ease")).on_hover_text(format!("How the value moves from the key at {} to the one at {}", num(k.t), num(keys[i + 1].t)));
+                    let current = ease_name(&k.ease);
+                    egui::ComboBox::from_id_salt(("ease", r.label())).selected_text(RichText::new(&current).font(theme::mono())).width(116.0).show_ui(ui, |ui| {
+                        for name in ease_choices() {
+                            if ui.selectable_label(current == name, name).clicked() && current != name {
+                                if let Some(prop) = with_ease(base_prop.as_ref(), i, ease_from_choice(name, &k.ease)) {
+                                    app.commit(vec![set_prop(cx.id(), r, &prop)], format!("ease of {} of {} at {}: {name}", r.label(), cx.id(), num(k.t)));
+                                }
+                            }
+                        }
+                    });
+                }
+                None => {
+                    let why = if key_at_or_before(base_prop.as_ref(), cx.t).is_none() { "Before the first key: no ease here" } else { "After the last key: no ease here" };
+                    ui.label(faint(why));
+                }
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if at.is_some() && tip(widgets::button(ui, Some(Icon::Trash2), "Remove key", false), "Remove the key at the playhead. Without keys the property becomes a constant again.", &[]).clicked() {
                     if let Some(prop) = without_key(base_prop.as_ref(), cx.t) {
                         app.commit(vec![set_prop(cx.id(), r, &prop)], format!("remove key of {} of {} at {} {}", r.label(), cx.id(), num(cx.t), cx.unit));
                     }
                 }
-            } else {
-                ui.weak("no key at the playhead");
-            }
+            });
         });
-        let Some(i) = key_at_or_before(base_prop.as_ref(), cx.t) else {
-            ui.weak("The playhead is before the first key: no ease to edit here.");
-            return;
-        };
-        if i + 1 >= keys.len() {
-            ui.weak("The playhead is at or after the last key: no ease to edit here.");
-            return;
-        }
+        let Some(i) = seg else { return };
         let k = &keys[i];
         // What is shown follows a value being dragged; the edit is made against the file's keys.
         let shown_prop = r.get(cx.shown, cx.shown_layer()).cloned();
         let shown_ease = keys_of(shown_prop.as_ref()).get(i).filter(|s| (s.t - k.t).abs() < editing::SAME_TIME).map_or(k.ease.clone(), |s| s.ease.clone());
-        ui.horizontal_wrapped(|ui| {
-            ui.label(format!("ease {} to {}", num(k.t), num(keys[i + 1].t))).on_hover_text("How the value moves from this key to the next one");
-            let current = ease_name(&k.ease);
-            egui::ComboBox::from_id_salt(("ease", r.label())).selected_text(&current).width(110.0).show_ui(ui, |ui| {
-                for name in ease_choices() {
-                    if ui.selectable_label(current == name, name).clicked() && current != name {
-                        if let Some(prop) = with_ease(base_prop.as_ref(), i, ease_from_choice(name, &k.ease)) {
-                            app.commit(vec![set_prop(cx.id(), r, &prop)], format!("ease of {} of {} at {}: {name}", r.label(), cx.id(), num(k.t)));
-                        }
-                    }
+        let live = |app: &mut App, resp: &egui::Response, ease: Ease, what: &str| {
+            if resp.changed() {
+                if let Some(prop) = with_ease(base_prop.as_ref(), i, ease) {
+                    app.edit_live(resp.id, vec![set_prop(cx.id(), r, &prop)], format!("ease of {} of {} at {}: {what}", r.label(), cx.id(), num(k.t)));
                 }
-            });
-            let live = |app: &mut App, resp: &egui::Response, ease: Ease, what: &str| {
-                if resp.changed() {
-                    if let Some(prop) = with_ease(base_prop.as_ref(), i, ease) {
-                        app.edit_live(resp.id, vec![set_prop(cx.id(), r, &prop)], format!("ease of {} of {} at {}: {what}", r.label(), cx.id(), num(k.t)));
-                    }
-                }
-                if resp.dragged() || resp.has_focus() {
-                    app.keep_live(resp.id);
-                }
-            };
-            match &shown_ease {
-                Ease::Params { name, args } if name == "decay" => {
+            }
+            if resp.dragged() || resp.has_focus() {
+                app.keep_live(resp.id);
+            }
+        };
+        match &shown_ease {
+            Ease::Params { name, args } if name == "decay" => {
+                ui.horizontal(|ui| {
+                    ui.label(label_text("Rate"));
                     let mut rate = args.get("rate").copied().unwrap_or(0.4);
-                    ui.label("rate");
-                    let resp = stable_drag(ui, ("rate", cx.id(), r.label()), egui::DragValue::new(&mut rate).speed(0.005).range(0.01..=0.99).max_decimals(3)).on_hover_text("Fraction of the remaining distance covered per frame (0.39 = a step ratio of 0.61)");
+                    let resp = stable_drag(ui, ("rate", cx.id(), r.label()), 64.0, egui::DragValue::new(&mut rate).speed(0.005).range(0.01..=0.99).max_decimals(3))
+                        .on_hover_text("Fraction of the remaining distance covered per frame (0.39 = a step ratio of 0.61)");
                     let mut args = args.clone();
                     args.insert("rate".into(), tidy(rate));
                     live(app, &resp, Ease::Params { name: name.clone(), args }, &format!("decay {}", num(rate)));
-                }
-                Ease::Bezier(b) => {
+                });
+            }
+            Ease::Bezier(b) => {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    ui.label(label_text("Curve"));
+                    let each = ((ui.available_width() - 9.0) / 4.0).clamp(36.0, 64.0);
                     for c in 0..4 {
                         let mut x = b[c];
                         let range = if c % 2 == 0 { 0.0..=1.0 } else { -2.0..=3.0 };
-                        let resp = stable_drag(ui, ("bezier", cx.id(), r.label(), c), egui::DragValue::new(&mut x).speed(0.005).range(range).max_decimals(3)).on_hover_text("CSS cubic bezier x1, y1, x2, y2");
+                        let resp = stable_drag(ui, ("bezier", cx.id(), r.label(), c), each, egui::DragValue::new(&mut x).speed(0.005).range(range).max_decimals(3)).on_hover_text("CSS cubic bezier x1, y1, x2, y2");
                         let mut nb = *b;
                         nb[c] = tidy(x);
                         live(app, &resp, Ease::Bezier(nb), &format!("bezier {}", vector(&nb)));
                     }
-                }
-                _ => {}
+                });
             }
-        });
+            _ => {}
+        }
     });
+    ui.add_space(space::XS);
 }
 
 fn speed_for(r: &PropRef, unit: &str, default: &[f64]) -> (f64, Option<RangeInclusive<f64>>) {
@@ -368,24 +456,27 @@ fn speed_for(r: &PropRef, unit: &str, default: &[f64]) -> (f64, Option<RangeIncl
     }
 }
 
-fn props_grid(app: &mut App, ui: &mut Ui, cx: &Cx, salt: impl std::hash::Hash + std::fmt::Debug, props: Vec<(PropRef, &'static str)>) {
-    egui::Grid::new(salt).num_columns(4).spacing([8.0, 3.0]).show(ui, |ui| {
-        for (r, doc) in props {
-            let unit = editing::unit_of(doc);
-            let (speed, range) = speed_for(&r, unit, &r.default_value());
-            prop_row(app, ui, cx, r, speed, range, doc, unit);
-        }
-    });
+fn props(app: &mut App, ui: &mut Ui, cx: &Cx, props: Vec<(PropRef, &'static str)>) {
+    ui.spacing_mut().item_spacing.y = 2.0;
+    for (r, doc) in props {
+        let unit = match &r {
+            PropRef::Transform("rotation") | PropRef::Camera("rotation") | PropRef::Camera("fov") => "°",
+            PropRef::Transform("scale") => "×",
+            _ => editing::unit_of(doc),
+        };
+        let (speed, range) = speed_for(&r, unit, &r.default_value());
+        prop_row(app, ui, cx, r, speed, range, doc, unit);
+    }
 }
 
 fn camera(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, t: f64, unit: &'static str) {
     let cx = Cx { base, shown, layer: None, t, unit };
-    let props = vec![
+    let list = vec![
         (PropRef::Camera("fov"), "Vertical field of view in degrees; the plane z = 0 always fills the frame."),
         (PropRef::Camera("position"), "Offset of the camera from its rest position, in composition-height units."),
         (PropRef::Camera("rotation"), "Camera rotation in degrees (x, y, z)."),
     ];
-    props_grid(app, ui, &cx, "camera", props);
+    props(app, ui, &cx, list);
     if let Some(r @ PropRef::Camera(_)) = app.selected_prop.clone() {
         key_strip(app, ui, &cx, &r);
     }
@@ -401,8 +492,25 @@ fn transform_doc(name: &str) -> &'static str {
     }
 }
 
-fn small_button(ui: &mut Ui, text: &str, tip: &str) -> bool {
-    ui.add(egui::Button::new(text).small()).on_hover_text(tip).clicked()
+/// A value field for a component of a non-animated layer field (colour, size).
+#[allow(clippy::too_many_arguments)]
+fn fixed_values(app: &mut App, ui: &mut Ui, id: &str, field: &'static str, shown: Vec<f64>, base: Vec<f64>, range: RangeInclusive<f64>, label: &str) {
+    ui.spacing_mut().item_spacing.x = 3.0;
+    let n = shown.len() as f32;
+    let each = ((ui.available_width() - UNIT - KEY - 6.0 - 3.0 * (n - 1.0)) / n).clamp(32.0, 120.0);
+    for c in 0..shown.len() {
+        let mut v = shown[c];
+        let resp = stable_drag(ui, (id, field, c), each, egui::DragValue::new(&mut v).speed(0.005).range(range.clone()).max_decimals(3));
+        if resp.changed() {
+            let mut nv: Vec<f64> = base.iter().map(|x| tidy(*x)).collect();
+            nv[c] = tidy(v);
+            app.edit_live(resp.id, vec![editing::set_field(id, field, json!(nv))], format!("{field} of {id} = {}", vector(&nv)));
+        }
+        if resp.dragged() || resp.has_focus() {
+            app.keep_live(resp.id);
+        }
+    }
+    let _ = label;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -413,259 +521,285 @@ fn layer(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, l: &Layer,
     let end = l.end.unwrap_or(shown.settings.duration);
     let active = Evaluator::new(shown).active(l, t);
 
-    ui.horizontal_wrapped(|ui| {
-        let mut enabled = base_l.enabled;
-        if ui.checkbox(&mut enabled, "enabled").on_hover_text("A disabled layer is not drawn").changed() {
-            app.toggle_layer(&id);
-        }
-        if small_button(ui, "Up", "Move one place up: towards the front") {
-            app.move_layer(&id, true);
-        }
-        if small_button(ui, "Down", "Move one place down: towards the back") {
-            app.move_layer(&id, false);
-        }
-        if small_button(ui, "Duplicate", "A copy directly above, with a new id") {
-            app.duplicate_layer(&id);
-        }
-        if ui.add(egui::Button::new(RichText::new("Delete").color(pal::BAD)).small()).on_hover_text("Remove the layer (Undo brings it back)").clicked() {
-            app.delete_layer(&id);
-        }
-    });
-    ui.add_space(3.0);
-
-    egui::Grid::new("layer").num_columns(3).spacing([8.0, 3.0]).show(ui, |ui| {
-        let weak = ui.visuals().weak_text_color();
+    // ---- Layer ----
+    widgets::section(ui, "layer", "Layer", true, |_| {}, |ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
         match &l.kind {
             LayerKind::Image { slot } => {
-                ui.label(RichText::new("slot").color(weak));
-                let names: Vec<String> = base.slots.keys().cloned().collect();
-                egui::ComboBox::from_id_salt("layer-slot").selected_text(slot.as_str()).width(110.0).show_ui(ui, |ui| {
-                    for n in &names {
-                        if ui.selectable_label(n == slot, n).clicked() && n != slot {
-                            app.commit(vec![editing::set_field(&id, "slot", json!(n))], format!("slot of {id}: {n}"));
+                let file = shown.slots.get(slot).and_then(|s| s.path.clone()).unwrap_or_else(|| "empty: a placeholder".into());
+                field_row(ui, label_text("Slot"), "The picture this layer shows. Change the slot's picture in the Slots drawer.", |ui| {
+                    let names: Vec<String> = base.slots.keys().cloned().collect();
+                    egui::ComboBox::from_id_salt("layer-slot").selected_text(slot.as_str()).width(96.0).show_ui(ui, |ui| {
+                        for n in &names {
+                            if ui.selectable_label(n == slot, n).clicked() && n != slot {
+                                app.commit(vec![editing::set_field(&id, "slot", json!(n))], format!("slot of {id}: {n}"));
+                            }
                         }
-                    }
+                    });
+                    ui.add(egui::Label::new(faint(file.clone())).truncate()).on_hover_text(file);
                 });
-                let file = shown.slots.get(slot).and_then(|s| s.path.clone()).unwrap_or_else(|| "(empty: placeholder)".into());
-                ui.label(RichText::new(crate::app::shorten(&file, 28)).small().color(weak)).on_hover_text(file);
-                ui.end_row();
             }
-            LayerKind::Solid { color } => {
-                ui.label(RichText::new("color").color(weak));
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 3.0;
-                    let base_color = match &base_l.kind {
-                        LayerKind::Solid { color } => *color,
-                        _ => *color,
-                    };
-                    for c in 0..4 {
-                        let mut v = color[c] as f64;
-                        let resp = stable_drag(ui, (&id, "color", c), egui::DragValue::new(&mut v).speed(0.005).range(0.0..=1.0).max_decimals(3));
-                        if resp.changed() {
-                            let mut nc = base_color.map(|x| tidy(x as f64));
-                            nc[c] = tidy(v);
-                            app.edit_live(resp.id, vec![editing::set_field(&id, "color", json!(nc))], format!("color of {id} = {}", vector(&nc)));
-                        }
-                        if resp.dragged() || resp.has_focus() {
-                            app.keep_live(resp.id);
-                        }
-                    }
+            LayerKind::Solid { color: c } => {
+                let base_color = match &base_l.kind {
+                    LayerKind::Solid { color } => *color,
+                    _ => *c,
+                };
+                field_row(ui, label_text("Colour"), "Red, green, blue and alpha, from 0 to 1", |ui| {
+                    let (sw, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
+                    let to8 = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u8;
+                    ui.painter().rect(sw, radius::SMALL, Color32::from_rgba_unmultiplied(to8(c[0]), to8(c[1]), to8(c[2]), to8(c[3])), Stroke::new(1.0, color::LINE_STRONG), egui::StrokeKind::Inside);
+                    fixed_values(app, ui, &id, "color", c.iter().map(|x| *x as f64).collect(), base_color.iter().map(|x| *x as f64).collect(), 0.0..=1.0, "r g b a");
                 });
-                ui.label(RichText::new("r g b a").small().color(weak));
-                ui.end_row();
             }
-            LayerKind::Cube { faces, size } => {
-                row(ui, "faces", faces.join(", "), "");
-                ui.label(RichText::new("size").color(weak));
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 3.0;
-                    let base_size = match &base_l.kind {
-                        LayerKind::Cube { size, .. } => *size,
-                        _ => *size,
-                    };
-                    for c in 0..3 {
-                        let mut v = size[c];
-                        let resp = stable_drag(ui, (&id, "size", c), egui::DragValue::new(&mut v).speed(0.005).range(0.001..=100.0).max_decimals(3));
-                        if resp.changed() {
-                            let mut ns = base_size;
-                            ns[c] = tidy(v);
-                            app.edit_live(resp.id, vec![editing::set_field(&id, "size", json!(ns))], format!("size of {id} = {}", vector(&ns)));
-                        }
-                        if resp.dragged() || resp.has_focus() {
-                            app.keep_live(resp.id);
-                        }
-                    }
+            LayerKind::Cube { faces, size: sz } => {
+                info_row(ui, "Faces", faces.join(", "));
+                let base_size = match &base_l.kind {
+                    LayerKind::Cube { size, .. } => *size,
+                    _ => *sz,
+                };
+                field_row(ui, label_text("Size"), "Width, height and depth of the cube", |ui| {
+                    fixed_values(app, ui, &id, "size", sz.to_vec(), base_size.to_vec(), 0.001..=100.0, "w h d");
                 });
-                ui.label(RichText::new("w h d").small().color(weak));
-                ui.end_row();
             }
-            LayerKind::Adjustment => row(ui, "kind", "adjustment".into(), "applies its effects to the layers below"),
+            LayerKind::Adjustment => {
+                field_row(ui, label_text("Kind"), "", |ui| {
+                    ui.label(faint("Applies its effects to the layers below"));
+                });
+            }
         }
-        for (field, value) in [("in", l.start), ("out", end)] {
-            ui.label(RichText::new(field).color(weak)).on_hover_text(format!("In {unit}. Or drag the edge of the bar in the timeline (snaps to quarter beats; Alt: frames)."));
-            let mut v = value;
-            let resp = stable_drag(ui, (&id, field), egui::DragValue::new(&mut v).speed(0.02).max_decimals(4).suffix(format!(" {unit}")));
-            if resp.changed() {
-                app.edit_live(resp.id, vec![editing::set_field(&id, field, json!(tidy(v)))], format!("{field} of {id} = {}", num(v)));
-            }
-            if resp.dragged() || resp.has_focus() {
-                app.keep_live(resp.id);
-            }
-            let note = if field == "out" && l.end.is_none() { format!("frame {} (end of project)", frame_of(value)) } else { format!("frame {}", frame_of(value)) };
-            ui.label(RichText::new(note).small().color(weak));
-            ui.end_row();
+        for (field, value, label) in [("in", l.start, "In"), ("out", end, "Out")] {
+            field_row(ui, label_text(label), &format!("In {unit}. Or drag the edge of the bar in the timeline (snaps to quarter beats; Alt: frames)."), |ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                let mut v = value;
+                let resp = stable_drag(ui, (&id, field), 86.0, egui::DragValue::new(&mut v).speed(0.02).max_decimals(4));
+                if resp.changed() {
+                    app.edit_live(resp.id, vec![editing::set_field(&id, field, json!(tidy(v)))], format!("{field} of {id} = {}", num(v)));
+                }
+                if resp.dragged() || resp.has_focus() {
+                    app.keep_live(resp.id);
+                }
+                ui.label(faint(unit));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let note = if field == "out" && l.end.is_none() { format!("F {} · end", frame_of(value)) } else { format!("F {}", frame_of(value)) };
+                    ui.label(RichText::new(note).font(theme::mono_small()).color(color::TEXT_FAINT));
+                });
+            });
         }
-        ui.label(RichText::new("blend").color(weak));
-        egui::ComboBox::from_id_salt("layer-blend").selected_text(blend_text(base_l.blend)).width(110.0).show_ui(ui, |ui| {
-            for b in BLENDS {
-                if ui.selectable_label(b == base_l.blend, blend_text(b)).clicked() && b != base_l.blend {
-                    app.commit(vec![editing::set_field(&id, "blend", json!(blend_text(b)))], format!("blend of {id}: {}", blend_text(b)));
-                }
-            }
-        });
-        ui.label("");
-        ui.end_row();
-        ui.label(RichText::new("now").color(weak));
-        if !l.enabled {
-            ui.colored_label(pal::WARN, "disabled");
-        } else if active {
-            ui.colored_label(pal::GOOD, "visible");
-        } else {
-            ui.colored_label(Color32::GRAY, "outside in..out");
-        }
-        ui.label("");
-        ui.end_row();
-    });
-
-    ui.add_space(6.0);
-    ui.strong("Transform");
-    let props: Vec<(PropRef, &'static str)> = editing::TRANSFORM_PROPS.iter().map(|n| (PropRef::Transform(n), transform_doc(n))).collect();
-    props_grid(app, ui, &cx, "transform", props);
-    if let Some(r @ PropRef::Transform(_)) = app.selected_prop.clone() {
-        key_strip(app, ui, &cx, &r);
-    }
-
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        ui.strong("Effects");
-        ui.menu_button("+ Add effect", |ui| panels::effect_entries(app, ui, &id)).response.on_hover_text("Add an effect after the others (they apply top to bottom)");
-    });
-    for (i, e) in l.effects.iter().enumerate() {
-        ui.add_space(4.0);
-        let spec = effects::spec(&e.kind);
-        ui.horizontal(|ui| {
-            let title = ui.label(RichText::new(format!("{} · {}", i + 1, e.kind)).strong());
-            if let Some(s) = spec {
-                title.on_hover_text(s.doc);
-            }
-            let base_enabled = base_l.effects.get(i).map_or(e.enabled, |b| b.enabled);
-            let mut on = base_enabled;
-            if ui.checkbox(&mut on, "on").changed() {
-                if let Some(op) = editing::toggle_effect_op(&base_l, i) {
-                    app.commit(vec![op], format!("{} {} on {id}", if base_enabled { "switch off" } else { "switch on" }, e.kind));
-                }
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(egui::Button::new(RichText::new("×").color(pal::BAD)).small()).on_hover_text("Remove this effect").clicked() {
-                    app.commit(vec![editing::remove_effect_op(&base_l, i)], format!("remove {} from {id}", e.kind));
-                }
-                if small_button(ui, "down", "Apply later (move down)") {
-                    if let Some(op) = editing::move_effect_op(app.state.doc.as_deref(), &base_l, i, false) {
-                        app.commit(vec![op], format!("move {} down on {id}", e.kind));
-                    }
-                }
-                if small_button(ui, "up", "Apply earlier (move up)") {
-                    if let Some(op) = editing::move_effect_op(app.state.doc.as_deref(), &base_l, i, true) {
-                        app.commit(vec![op], format!("move {} up on {id}", e.kind));
+        field_row(ui, label_text("Blend"), "How the layer mixes with what is under it", |ui| {
+            egui::ComboBox::from_id_salt("layer-blend").selected_text(blend_text(base_l.blend)).width(96.0).show_ui(ui, |ui| {
+                for b in BLENDS {
+                    if ui.selectable_label(b == base_l.blend, blend_text(b)).clicked() && b != base_l.blend {
+                        app.commit(vec![editing::set_field(&id, "blend", json!(blend_text(b)))], format!("blend of {id}: {}", blend_text(b)));
                     }
                 }
             });
         });
-        if let Some(src) = &e.source {
-            ui.weak(format!("source: {src}"));
+        field_row(ui, label_text("Now"), "Whether the layer is drawn at the playhead", |ui| {
+            let (text, c) = if !l.enabled {
+                ("Disabled", color::WARN)
+            } else if active {
+                ("Visible", color::OK_TEXT)
+            } else {
+                ("Outside in–out", color::TEXT_FAINT)
+            };
+            let (r, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
+            ui.painter().circle_filled(r.center(), 3.0, c);
+            ui.label(RichText::new(text).color(c));
+        });
+    });
+    widgets::section_rule(ui);
+
+    // ---- Transform ----
+    widgets::section(ui, "transform", "Transform", true, |_| {}, |ui| {
+        let list: Vec<(PropRef, &'static str)> = editing::TRANSFORM_PROPS.iter().map(|n| (PropRef::Transform(n), transform_doc(n))).collect();
+        props(app, ui, &cx, list);
+        if let Some(r @ PropRef::Transform(_)) = app.selected_prop.clone() {
+            key_strip(app, ui, &cx, &r);
         }
-        let props: Vec<(PropRef, &'static str)> = match spec {
-            Some(s) => s.params.iter().map(|p| (PropRef::Effect { index: i, kind: e.kind.clone(), param: p.name.to_string() }, p.doc)).collect(),
-            None => e.params.keys().map(|k| (PropRef::Effect { index: i, kind: e.kind.clone(), param: k.clone() }, "")).collect(),
-        };
-        props_grid(app, ui, &cx, ("effect", i), props);
-        if let Some(r @ PropRef::Effect { index, .. }) = app.selected_prop.clone() {
-            if index == i && r.fits(l) {
-                key_strip(app, ui, &cx, &r);
+    });
+    widgets::section_rule(ui);
+
+    // ---- Effects ----
+    let title = if l.effects.is_empty() { "Effects".to_string() } else { format!("Effects · {}", l.effects.len()) };
+    let mut add: Option<&'static str> = None;
+    widgets::section(
+        ui,
+        "effects",
+        &title,
+        true,
+        |ui| {
+            let r = tip(widgets::small_icon_button(ui, Icon::Plus), "Add an effect after the others (they apply top to bottom)", &[]);
+            egui::Popup::menu(&r).frame(widgets::popover_frame()).show(|ui| {
+                if let Some(kind) = panels::effect_menu(ui) {
+                    add = Some(kind);
+                    ui.close();
+                }
+            });
+        },
+        |ui| {
+            for (i, e) in l.effects.iter().enumerate() {
+                let spec = effects::spec(&e.kind);
+                if i > 0 {
+                    ui.add_space(space::XS);
+                }
+                // The effect's own header: switch, name, order and remove.
+                ui.allocate_ui_with_layout(vec2(ui.available_width(), ROW + 2.0), Layout::left_to_right(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = space::S;
+                    let base_enabled = base_l.effects.get(i).map_or(e.enabled, |b| b.enabled);
+                    let mut on = base_enabled;
+                    if widgets::switch(ui, &mut on).on_hover_text(if base_enabled { "On: click to switch it off" } else { "Off: click to switch it on" }).changed() {
+                        if let Some(op) = editing::toggle_effect_op(&base_l, i) {
+                            app.commit(vec![op], format!("{} {} on {id}", if base_enabled { "switch off" } else { "switch on" }, e.kind));
+                        }
+                    }
+                    let name = ui.label(RichText::new(&e.kind).font(FontId::new(text::BODY, theme::medium())).color(if base_enabled { color::TEXT } else { color::TEXT_FAINT }));
+                    if let Some(s) = spec {
+                        name.on_hover_text(s.doc);
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        if tip(widgets::danger_icon_button(ui, Icon::Trash2), "Remove this effect", &[]).clicked() {
+                            app.commit(vec![editing::remove_effect_op(&base_l, i)], format!("remove {} from {id}", e.kind));
+                        }
+                        let last = i + 1 == l.effects.len();
+                        if tip(ui.add_enabled_ui(!last, |ui| widgets::small_icon_button(ui, Icon::ArrowDown)).inner, "Apply later (move down)", &[]).clicked() {
+                            if let Some(op) = editing::move_effect_op(app.state.doc.as_deref(), &base_l, i, false) {
+                                app.commit(vec![op], format!("move {} down on {id}", e.kind));
+                            }
+                        }
+                        if tip(ui.add_enabled_ui(i > 0, |ui| widgets::small_icon_button(ui, Icon::ArrowUp)).inner, "Apply earlier (move up)", &[]).clicked() {
+                            if let Some(op) = editing::move_effect_op(app.state.doc.as_deref(), &base_l, i, true) {
+                                app.commit(vec![op], format!("move {} up on {id}", e.kind));
+                            }
+                        }
+                    });
+                });
+                if let Some(src) = &e.source {
+                    ui.label(faint(format!("source: {src}")));
+                }
+                let list: Vec<(PropRef, &'static str)> = match spec {
+                    Some(s) => s.params.iter().map(|p| (PropRef::Effect { index: i, kind: e.kind.clone(), param: p.name.to_string() }, p.doc)).collect(),
+                    None => e.params.keys().map(|k| (PropRef::Effect { index: i, kind: e.kind.clone(), param: k.clone() }, "")).collect(),
+                };
+                ui.scope(|ui| props(app, ui, &cx, list));
+                if let Some(r @ PropRef::Effect { index, .. }) = app.selected_prop.clone() {
+                    if index == i && r.fits(l) {
+                        key_strip(app, ui, &cx, &r);
+                    }
+                }
             }
-        }
+            if l.effects.is_empty() {
+                ui.label(faint("No effects. The + above lists them all; Ctrl K finds one by name."));
+            }
+        },
+    );
+    if let Some(kind) = add {
+        app.run(Cmd::AddEffect(id.clone(), kind));
     }
-    if l.effects.is_empty() {
-        ui.weak("No effects. \"+ Add effect\" lists them all.");
-    }
+}
+
+/// The selected layer's (or the camera's) title: kind badge, name, actions.
+fn header(app: &mut App, ui: &mut Ui, l: Option<&Layer>, at: &str) {
+    ui.add_space(space::M);
+    ui.allocate_ui_with_layout(vec2(ui.available_width(), 36.0), Layout::left_to_right(Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = space::M;
+        let kind = l.map_or("camera".to_string(), |l| crate::rows::kind_text(&l.kind));
+        let tint = kind_colors(&kind);
+        let (badge, _) = ui.allocate_exact_size(vec2(30.0, 30.0), Sense::hover());
+        ui.painter().rect_filled(badge, radius::NORMAL, tint.fill);
+        widgets::paint_icon(ui.painter(), badge.center(), widgets::kind_icon(&kind), text::ICON_SMALL, tint.stripe.lerp_to_gamma(Color32::WHITE, 0.35));
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let name = l.map_or("Camera".to_string(), |l| l.id.clone());
+            ui.add(egui::Label::new(RichText::new(name).font(FontId::new(text::TITLE, theme::strong())).color(color::TEXT)).truncate());
+            ui.label(faint(kind));
+        });
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            if tip(widgets::small_icon_button(ui, Icon::X), "Deselect", &["Esc"]).clicked() {
+                app.selected = None;
+            }
+            let Some(l) = l else { return };
+            let id = l.id.clone();
+            let more = tip(widgets::small_icon_button(ui, Icon::Ellipsis), "More", &[]);
+            egui::Popup::menu(&more).frame(widgets::popover_frame()).show(|ui| {
+                ui.set_min_width(200.0);
+                if widgets::menu_item(ui, Some(Icon::ArrowUp), "Move up", None).on_hover_text("One place up: towards the front").clicked() {
+                    app.run(Cmd::MoveLayer(id.clone(), true));
+                    ui.close();
+                }
+                if widgets::menu_item(ui, Some(Icon::ArrowDown), "Move down", None).on_hover_text("One place down: towards the back").clicked() {
+                    app.run(Cmd::MoveLayer(id.clone(), false));
+                    ui.close();
+                }
+                widgets::divider(ui);
+                if widgets::menu_item_colored(ui, Some(Icon::Trash2), "Delete layer", Some("Del"), color::ERROR_TEXT).on_hover_text("Undo brings it back").clicked() {
+                    app.run(Cmd::Delete(id.clone()));
+                    ui.close();
+                }
+            });
+            if tip(widgets::small_icon_button(ui, Icon::Copy), "Duplicate: a copy directly above, with a new id", &["Ctrl", "D"]).clicked() {
+                app.run(Cmd::Duplicate(id.clone()));
+            }
+            let eye = if l.enabled { Icon::Eye } else { Icon::EyeOff };
+            if tip(widgets::small_icon_button(ui, eye), if l.enabled { "Enabled: click to disable (not drawn)" } else { "Disabled: click to enable" }, &[]).clicked() {
+                app.run(Cmd::ToggleLayer(id.clone()));
+            }
+        });
+    });
+    ui.label(RichText::new(at).font(theme::mono_small()).color(color::TEXT_FAINT)).on_hover_text("Values are what the project evaluates to at the playhead. Drag or type one: a constant changes; a keyframed one gets a key at the playhead.");
+    ui.add_space(space::S);
+    widgets::section_rule(ui);
 }
 
 #[allow(clippy::too_many_arguments)]
 fn inspect(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, t: f64, playhead: u64, frame_of: impl Fn(f64) -> u64, unit: &'static str) {
-    let at = format!("at frame {playhead} · {} {unit}", num(t));
+    let at = format!("Values at frame {playhead} · {} {}", num(t), if unit == "s" { "s" } else { "beats" });
     match app.selected.clone() {
         Some(Selected::Layer(id)) => match shown.layers.iter().find(|l| l.id == id).cloned() {
             Some(l) => {
-                ui.horizontal(|ui| {
-                    ui.heading(&l.id);
-                    ui.label(RichText::new(crate::rows::kind_text(&l.kind)).color(ui.visuals().weak_text_color()));
-                    if ui.small_button("×").on_hover_text("Deselect").clicked() {
-                        app.selected = None;
-                    }
-                });
-                ui.weak(format!("Values {at}. Drag or type a value: a constant changes; a keyframed one gets a key at the playhead."));
-                ui.add_space(4.0);
+                header(app, ui, Some(&l), &at);
                 layer(app, ui, base, shown, &l, t, frame_of, unit);
             }
             None => {
-                ui.weak(format!("Layer \"{id}\" is not in the project any more."));
+                widgets::empty_state(ui, Icon::Layers, "Layer not found", &format!("\"{id}\" is not in the project any more."), &[]);
             }
         },
         Some(Selected::Camera) => {
-            ui.horizontal(|ui| {
-                ui.heading("camera");
-                if ui.small_button("×").on_hover_text("Deselect").clicked() {
-                    app.selected = None;
-                }
-            });
-            ui.weak(format!("Values {at}"));
-            ui.add_space(4.0);
-            camera(app, ui, base, shown, t, unit);
+            header(app, ui, None, &at);
+            widgets::section(ui, "camera-props", "Camera", true, |_| {}, |ui| camera(app, ui, base, shown, t, unit));
         }
         None => {
-            ui.heading("Inspector");
-            ui.weak("Click a layer in the timeline to see and edit it. The Layer menu adds one.");
-            ui.add_space(6.0);
-            ui.strong("Project");
-            project_summary(ui, shown);
-            ui.add_space(6.0);
-            ui.strong("Camera");
-            ui.weak(at);
-            camera(app, ui, base, shown, t, unit);
+            widgets::empty_state(ui, Icon::MousePointerClick, "No layer selected", "Click a layer in the timeline to see and edit it.", &[("Ctrl+K", "Find a layer or command"), ("Space", "Play or pause")]);
+            ui.add_space(space::L);
+            widgets::section_rule(ui);
+            widgets::section(ui, "project", "Project", true, |_| {}, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                project_summary(ui, shown);
+            });
+            widgets::section_rule(ui);
+            widgets::section(ui, "camera", "Camera", false, |_| {}, |ui| {
+                ui.label(RichText::new(&at).font(theme::mono_small()).color(color::TEXT_FAINT));
+                camera(app, ui, base, shown, t, unit);
+            });
         }
     }
 }
 
 pub(crate) fn show(app: &mut App, ui: &mut Ui) {
-    ui.add_space(4.0);
-    problems(app, ui);
-    ui.separator();
-    ui.horizontal(|ui| {
-        ui.selectable_value(&mut app.tab, Tab::Inspector, "Inspector");
-        ui.selectable_value(&mut app.tab, Tab::Slots, "Slots").on_hover_text("The pictures: paths, fit and focus. Drop picture files here.");
-    });
-    egui::Panel::bottom("history").resizable(true).default_size(150.0).size_range(60.0..=420.0).show(ui, |ui| panels::history(app, ui));
-
-    let (Some(tm), Some(base), Some(shown)) = (app.tm, app.project().cloned(), app.shown_project()) else {
-        ui.weak("Nothing to inspect yet.");
-        return;
-    };
-    let t = tm.frame_time(app.playhead);
-    let unit = if tm.uses_beats() { "beats" } else { "s" };
-    let playhead = app.playhead;
-    egui::ScrollArea::vertical().id_salt(("inspector", app.tab == Tab::Slots)).auto_shrink([false, false]).show(ui, |ui| match app.tab {
-        Tab::Slots => panels::slots(app, ui),
-        Tab::Inspector => inspect(app, ui, &base, &shown, t, playhead, |time| tm.frame_at(time), unit),
+    egui::ScrollArea::vertical().id_salt("inspector").auto_shrink([false, false]).show(ui, |ui| {
+        egui::Frame::new().inner_margin(egui::Margin { left: space::L as i8, right: space::L as i8, top: 0, bottom: space::L as i8 }).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            problems(app, ui);
+            let (Some(tm), Some(base), Some(shown)) = (app.tm, app.project().cloned(), app.shown_project()) else {
+                widgets::empty_state(ui, Icon::FileWarning, "Nothing to inspect yet", "The inspector fills in when the project file is valid.", &[]);
+                return;
+            };
+            let t = tm.frame_time(app.playhead);
+            let unit = if tm.uses_beats() { "beats" } else { "s" };
+            let playhead = app.playhead;
+            inspect(app, ui, &base, &shown, t, playhead, |time| tm.frame_at(time), unit);
+        });
     });
 }
 

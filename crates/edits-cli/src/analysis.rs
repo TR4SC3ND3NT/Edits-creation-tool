@@ -86,8 +86,31 @@ pub struct ProbeArgs {
     pub height: u32,
 }
 
+#[derive(Args, Clone)]
+pub struct AudioArgs {
+    /// A song, or any video with a soundtrack
+    pub input: PathBuf,
+    /// Write the analysis here (JSON); without it the analysis goes to stdout with --json
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+    /// Use this tempo instead of estimating it
+    #[arg(long)]
+    pub bpm: Option<f64>,
+    /// Beats in a bar
+    #[arg(long, default_value_t = 4)]
+    pub beats_per_bar: u32,
+    /// Also write the tempo, the beat offset and the markers (drop, sections) into this project, as one undoable edit
+    #[arg(long, value_name = "PROJECT")]
+    pub project: Option<PathBuf>,
+    /// Print JSON: the whole analysis, or a summary of it when --output is given
+    #[arg(long)]
+    pub json: bool,
+}
+
 #[derive(Subcommand, Clone)]
 pub enum AnalysisCommand {
+    /// Analyse a song for cutting: tempo, beat grid, bars, kick/snare/hat onsets, energy, sections, the drop
+    Audio(AudioArgs),
     /// Extract the recipe of a finished edit: tempo, cuts, flashes, colour hits, blur, motion, overlays
     Analyze(AnalyzeArgs),
     /// Write a project that replays an analysed recipe, with one empty slot per picture
@@ -100,11 +123,61 @@ pub enum AnalysisCommand {
 
 pub fn run(cmd: AnalysisCommand) -> Result<ExitCode> {
     match cmd {
+        AnalysisCommand::Audio(a) => audio(a),
         AnalysisCommand::Analyze(a) => analyze(a),
         AnalysisCommand::Draft(a) => draft_project(a),
         AnalysisCommand::Compare(a) => compare_video(a),
         AnalysisCommand::Probe(a) => probe(a),
     }
+}
+
+fn audio(a: AudioArgs) -> Result<ExitCode> {
+    let t = Instant::now();
+    let opts = edits_analyze::song::SongOpts { bpm: a.bpm, beats_per_bar: a.beats_per_bar };
+    let song = edits_analyze::song::analyze_file(&a.input, &opts)?;
+    let text = edits_analyze::jsonfmt::to_string(&song)?;
+    if let Some(out) = &a.output {
+        if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(out, &text).map_err(|e| anyhow::anyhow!("cannot write {}: {e}", out.display()))?;
+    }
+    let synced = match &a.project {
+        Some(project) => Some(crate::beatcmd::sync_project(project, &serde_json::to_value(&song)?, a.output.as_deref())?),
+        None => None,
+    };
+    let seconds = (t.elapsed().as_secs_f64() * 10.0).round() / 10.0;
+    if a.json {
+        match &a.output {
+            None => print!("{text}"),
+            Some(out) => crate::print_json(&json!({
+                "analysis": out,
+                "duration": song.duration,
+                "bpm": song.tempo.bpm,
+                "confidence": song.tempo.confidence,
+                "beat_offset": song.grid.beat_offset,
+                "beats": song.beats.len(),
+                "bars": song.downbeats.len(),
+                "downbeat": song.grid.downbeat,
+                "onsets": { "kick": song.onsets.kick.len(), "snare": song.onsets.snare.len(), "hat": song.onsets.hat.len() },
+                "drop": song.drop,
+                "sections": song.sections.iter().map(|s| json!({ "label": s.label, "from": s.from, "to": s.to, "bar": s.bar, "energy": s.energy })).collect::<Vec<_>>(),
+                "markers": song.markers,
+                "project": synced,
+                "notes": song.notes,
+                "seconds": seconds,
+            })),
+        }
+    } else {
+        print!("{}", edits_analyze::song::summary(&song));
+        if let Some(out) = &a.output {
+            println!("wrote {} in {seconds:.1} s", out.display());
+        }
+        if let Some(s) = synced {
+            println!("{}", s["summary"].as_str().unwrap_or_default());
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn analyze(a: AnalyzeArgs) -> Result<ExitCode> {

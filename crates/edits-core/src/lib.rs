@@ -15,6 +15,10 @@ pub mod eval;
 pub mod jsonfmt;
 pub mod model;
 pub mod pointer;
+pub mod preset;
+pub mod beatops;
+pub mod song;
+pub mod time;
 
-pub use eval::{Evaluator, ResolvedCamera, ResolvedEffect, ResolvedLayer};
+pub use eval::{Evaluator, ResolvedCamera, ResolvedEffect, ResolvedLayer, ResolvedTransition};
 pub use model::*;

@@ -47,12 +47,35 @@ const HOP: usize = 256;
 
 /// Log-compressed spectral flux of mono audio.
 pub fn onset_envelope(samples: &[f32], sr: u32) -> Onset {
+    let bands = band_flux(samples, sr, &[]);
+    Onset { rate: bands.rate, t0: bands.t0, env: normalise_envelope(&bands.full, bands.rate) }
+}
+
+/// Spectral flux of the whole spectrum and of frequency bands, from one STFT.
+#[derive(Clone, Debug)]
+pub struct BandFlux {
+    /// Envelope samples per second.
+    pub rate: f64,
+    /// Time of sample 0 in seconds (the same alignment as [`onset_envelope`]).
+    pub t0: f64,
+    /// Flux over every bin (what [`onset_envelope`] normalises).
+    pub full: Vec<f32>,
+    /// Flux of each requested band, in the order given.
+    pub bands: Vec<Vec<f32>>,
+    /// Root mean square of each analysis window (linear, 1.0 = full scale).
+    pub rms: Vec<f32>,
+}
+
+/// Log-compressed spectral flux over the whole spectrum and over each band
+/// `(low Hz, high Hz)`, plus the loudness of each window. Not normalised.
+pub fn band_flux(samples: &[f32], sr: u32, bands: &[(f32, f32)]) -> BandFlux {
     let rate = sr as f64 / HOP as f64;
     // An onset reaches full weight in the analysis window about three hops
     // after it enters; this constant was set on synthetic click trains.
     let t0 = (N_FFT as f64 - 1.5 * HOP as f64) / sr as f64;
+    let mut out = BandFlux { rate, t0, full: Vec::new(), bands: vec![Vec::new(); bands.len()], rms: Vec::new() };
     if samples.len() < N_FFT * 2 {
-        return Onset { rate, t0, env: Vec::new() };
+        return out;
     }
     let peak = samples.iter().fold(0.0f32, |m, v| m.max(v.abs())).max(1e-6);
     let hann: Vec<f32> = (0..N_FFT).map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / N_FFT as f32).cos()).collect();
@@ -60,27 +83,36 @@ pub fn onset_envelope(samples: &[f32], sr: u32) -> Onset {
     let fft = planner.plan_fft_forward(N_FFT);
     let frames = (samples.len() - N_FFT) / HOP + 1;
     let bins = N_FFT / 2;
+    let hz = sr as f32 / N_FFT as f32;
+    let ranges: Vec<(usize, usize)> = bands.iter().map(|(lo, hi)| (((lo / hz).ceil() as usize).max(1), ((hi / hz).floor() as usize + 1).min(bins))).collect();
     let mut prev = vec![0.0f32; bins];
+    let mut diff = vec![0.0f32; bins];
     let mut buf = vec![Complex::new(0.0f32, 0.0); N_FFT];
-    let mut env = Vec::with_capacity(frames);
+    out.full.reserve(frames);
     for t in 0..frames {
         let s = &samples[t * HOP..t * HOP + N_FFT];
+        let mut energy = 0.0f64;
         for i in 0..N_FFT {
             buf[i] = Complex::new(s[i] / peak * hann[i], 0.0);
+            energy += (s[i] as f64).powi(2);
         }
+        out.rms.push((energy / N_FFT as f64).sqrt() as f32);
         fft.process(&mut buf);
         let mut flux = 0.0f32;
         for k in 1..bins {
             let m = (1.0 + 100.0 * buf[k].norm() / (N_FFT as f32 / 4.0)).ln();
             let d = m - prev[k];
-            if d > 0.0 {
-                flux += d;
-            }
+            diff[k] = d.max(0.0);
+            flux += diff[k];
             prev[k] = m;
         }
-        env.push(if t == 0 { 0.0 } else { flux });
+        out.full.push(if t == 0 { 0.0 } else { flux });
+        for (b, &(lo, hi)) in ranges.iter().enumerate() {
+            let v: f32 = if t == 0 || hi <= lo { 0.0 } else { diff[lo..hi].iter().sum::<f32>() / (hi - lo) as f32 };
+            out.bands[b].push(v);
+        }
     }
-    Onset { rate, t0, env: normalise_envelope(&env, rate) }
+    out
 }
 
 /// Remove the slow trend (0.4 s moving mean), keep the positive part, unit variance.

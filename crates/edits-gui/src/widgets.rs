@@ -30,11 +30,6 @@ pub fn eyebrow(text: impl Into<String>) -> RichText {
     RichText::new(text).text_style(theme::label_style()).extra_letter_spacing(0.4).color(color::TEXT_FAINT)
 }
 
-/// Text in the mono font, for numbers.
-pub fn mono(text: impl Into<String>) -> RichText {
-    RichText::new(text).font(theme::mono())
-}
-
 /// A tooltip that names the action, then its keys in key caps.
 pub fn tip(resp: Response, action: &str, keys: &[&str]) -> Response {
     if keys.is_empty() {
@@ -191,6 +186,13 @@ pub fn menu_item_colored(ui: &mut Ui, i: Option<Icon>, label: &str, keys: Option
     resp
 }
 
+/// Text laid out on one line, cut with "…" to fit `max_width`.
+pub fn one_line(painter: &egui::Painter, text: &str, font: FontId, color: Color32, max_width: f32) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_string(), font, color);
+    job.wrap = egui::text::TextWrapping { max_width, max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
+    painter.layout_job(job)
+}
+
 /// A thin divider inside menus and panels.
 pub fn divider(ui: &mut Ui) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 9.0), Sense::hover());
@@ -200,7 +202,7 @@ pub fn divider(ui: &mut Ui) {
 /// A collapsible section: a header row with a chevron and an eyebrow
 /// title, `right` drawn at the right end of the header (buttons that
 /// should not toggle it), and the body when open. Remembers being open.
-pub fn section<R>(ui: &mut Ui, id: impl std::hash::Hash, title: &str, default_open: bool, right: impl FnOnce(&mut Ui), body: impl FnOnce(&mut Ui) -> R) -> Option<R> {
+pub fn section<R>(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, title: &str, default_open: bool, right: impl FnOnce(&mut Ui), body: impl FnOnce(&mut Ui) -> R) -> Option<R> {
     let id = ui.make_persistent_id(("section", id));
     let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
     let width = ui.available_width();
@@ -233,7 +235,7 @@ pub fn section<R>(ui: &mut Ui, id: impl std::hash::Hash, title: &str, default_op
         ui.add_space(space::S);
         r
     });
-    out.and_then(|o| Some(o.inner))
+    out.map(|o| o.inner)
 }
 
 /// The line between sections.
@@ -300,7 +302,7 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T,
     let mut x = rect.left() + 2.0;
     for ((v, label), w) in options.iter().zip(widths) {
         let r = Rect::from_min_size(pos2(x, rect.top() + 2.0), vec2(w, rect.height() - 4.0));
-        let resp = ui.interact(r, ui.id().with(("seg", label)), Sense::click());
+        let resp = ui.interact(r, ui.scope_id().with(("seg", label)), Sense::click());
         let on = *value == *v;
         if on {
             ui.painter().rect_filled(r, 3, color::CONTROL_ACTIVE);
@@ -335,5 +337,16 @@ pub fn switch(ui: &mut Ui, on: &mut bool) -> Response {
         resp.on_hover_cursor(CursorIcon::PointingHand)
     } else {
         resp
+    }
+}
+
+/// The icon of a layer kind (`image a`, `cube`, `solid`, `adjustment`, `camera`).
+pub fn kind_icon(kind: &str) -> Icon {
+    match kind.split(' ').next().unwrap_or("") {
+        "image" => Icon::Image,
+        "cube" => Icon::Box,
+        "solid" => Icon::Square,
+        "adjustment" => Icon::SlidersHorizontal,
+        _ => Icon::Video,
     }
 }

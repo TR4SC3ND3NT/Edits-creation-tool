@@ -799,6 +799,7 @@ dependencies = [
  "edits-render",
  "eframe",
  "image",
+ "lucide-icons",
  "notify",
  "rodio",
  "serde_json",
@@ -1766,6 +1767,12 @@ name = "log"
 version = "0.4.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
+
+[[package]]
+name = "lucide-icons"
+version = "1.72.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11070677a9acffcd1c09f9e4ca20772b52fb2a3b8211802ac59ad29029e84290"
 
 [[package]]
 name = "mach2"

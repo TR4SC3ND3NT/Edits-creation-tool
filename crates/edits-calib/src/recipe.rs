@@ -359,7 +359,7 @@ pub fn generate(spec: &CaseSpec) -> Case {
             transform: tr,
             blend: Blend::Normal,
             effects,
-            enabled: true,
+            enabled: true, transition: None,
         });
         b0 = b1;
     }
@@ -382,7 +382,7 @@ pub fn generate(spec: &CaseSpec) -> Case {
             transform: Transform::default(),
             blend: Blend::Screen,
             effects: vec![],
-            enabled: true,
+            enabled: true, transition: None,
         });
     }
     if let Some(v) = vignette {
@@ -395,7 +395,7 @@ pub fn generate(spec: &CaseSpec) -> Case {
             transform: Transform::default(),
             blend: Blend::Normal,
             effects: vec![effect("vignette", vec![("amount", v[0].into()), ("radius", v[1].into()), ("softness", v[2].into())])],
-            enabled: true,
+            enabled: true, transition: None,
         });
     }
 

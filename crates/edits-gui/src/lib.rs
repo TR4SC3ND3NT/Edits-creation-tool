@@ -29,10 +29,15 @@ pub mod rows;
 pub mod timemap;
 pub mod worker;
 
+pub mod palette;
+pub mod theme;
+pub mod toasts;
+
 mod app;
 mod inspector;
 mod panels;
 mod timeline;
+mod widgets;
 
 pub use cache::Scale;
 pub use edits_render::AdapterPolicy;

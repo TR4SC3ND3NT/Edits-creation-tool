@@ -160,3 +160,21 @@ pub fn decode_audio(path: &Path, info: &VideoInfo, rate: u32) -> Result<Option<V
     let samples: Vec<f32> = data.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect();
     Ok(if samples.is_empty() { None } else { Some(samples) })
 }
+
+/// Decode the audio of any media file (a song, or a video's soundtrack) to
+/// mono float samples at `rate` Hz.
+pub fn decode_audio_file(path: &Path, rate: u32) -> Result<Vec<f32>> {
+    if !path.is_file() {
+        bail!("{} does not exist or is not a file", path.display());
+    }
+    let args: Vec<String> = ["-i", &path.to_string_lossy(), "-vn", "-sn", "-dn", "-f", "s16le", "-ar", &rate.to_string(), "-ac", "1", "-"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let data = run_ffmpeg(&args).with_context(|| format!("decoding the audio of {}", path.display()))?;
+    let samples: Vec<f32> = data.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect();
+    if samples.is_empty() {
+        bail!("{} has no audio track", path.display());
+    }
+    Ok(samples)
+}

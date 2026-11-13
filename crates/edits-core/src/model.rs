@@ -152,6 +152,31 @@ pub struct Layer {
     pub effects: Vec<Effect>,
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// How the layer comes in: instead of cutting at `in`, it replaces the
+    /// picture beneath it through a transition over `duration`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<Transition>,
+}
+
+/// A transition into a layer. From `in` to `in + duration`, the picture is
+/// `kind` applied to what is beneath the layer ("from") and what the frame
+/// looks like with the layer ("to"), at a progress going from 0 to 1. The
+/// outgoing layer has to stay visible until the end of the transition.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Transition {
+    /// One of `crate::effects::TRANSITIONS`.
+    pub kind: String,
+    /// Length in the project's time base.
+    pub duration: f64,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: BTreeMap<String, Prop>,
+    /// Easing of the progress.
+    #[serde(default, skip_serializing_if = "is_linear")]
+    pub ease: Ease,
+}
+
+fn is_linear(e: &Ease) -> bool {
+    *e == Ease::default()
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

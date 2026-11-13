@@ -19,6 +19,8 @@ edits-render = { path = "../edits-render" }
 anyhow.workspace = true
 # The window draws through OpenGL (glow): see docs/GUI.md for why.
 eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+# Lucide icons as a font (MIT AND ISC, no egui dependency): see assets/fonts/README.md.
+lucide-icons = "1.72"
 image = { version = "0.25", default-features = false, features = ["png"] }
 notify = "8"
 rodio = { version = "0.23", default-features = false, features = ["playback"] }

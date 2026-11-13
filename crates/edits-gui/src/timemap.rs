@@ -296,6 +296,12 @@ pub fn fmt_seconds(s: f64) -> String {
     format!("{s:.3}")
 }
 
+/// A clock reading for the transport: `00:01.48` (minutes, seconds, hundredths).
+pub fn fmt_clock(s: f64) -> String {
+    let cs = (s.max(0.0) * 100.0 + 1e-6).floor() as u64;
+    format!("{:02}:{:02}.{:02}", cs / 6000, cs / 100 % 60, cs % 100)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -485,5 +491,13 @@ mod tests {
             let labelled: Vec<f64> = ticks.iter().filter(|t| t.label.is_some()).map(|t| t.t).collect();
             assert!(labelled.windows(2).all(|w| (w[1] - w[0]) * px >= MIN_LABEL_PX - 1e-6), "px {px}");
         }
+    }
+
+    #[test]
+    fn clock_readings() {
+        assert_eq!(fmt_clock(0.0), "00:00.00");
+        assert_eq!(fmt_clock(1.48), "00:01.48");
+        assert_eq!(fmt_clock(61.999), "01:01.99");
+        assert_eq!(fmt_clock(-3.0), "00:00.00");
     }
 }

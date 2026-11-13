@@ -11,12 +11,16 @@ use crate::cache::{FrameCache, FrameKey, Scale};
 use crate::clock::{lead_frames, newest_ready, next_request, PlayClock, RenderAverage};
 use crate::editing::{self, NewLayer, PropRef, TimeDrag};
 use crate::export::{self, Export};
+use crate::palette::{self, Command, Palette};
 use crate::reload::{self, Applied, LoadReport, ProjectState, WatchHandle};
 use crate::rows::{self, Row};
-use crate::timemap::{fmt_seconds, TimeMap, View};
+use crate::theme::{self, color, radius, size, space, text};
+use crate::timemap::{TimeMap, View};
+use crate::toasts::{self, Toasts};
+use crate::widgets::{self, tip, Icon};
 use crate::worker::{ProjectMsg, Worker, WorkerEvent};
 use crate::{inspector, panels, timeline, Options};
-use eframe::egui::{self, Align2, Color32, ColorImage, FontId, Key, Modifiers, Rect, RichText, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui};
+use eframe::egui::{self, pos2, vec2, Align2, Color32, ColorImage, FontId, Key, Modifiers, Rect, RichText, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui};
 use edits_core::edit::{self as core_edit, EditOp, EditOptions, HistoryList};
 use edits_core::Project;
 use edits_render::{AdapterInfo, RenderOptions};
@@ -25,19 +29,6 @@ use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-
-/// Colours shared by the panels.
-pub(crate) mod pal {
-    use eframe::egui::Color32;
-    pub const GOOD: Color32 = Color32::from_rgb(96, 200, 120);
-    pub const WARN: Color32 = Color32::from_rgb(235, 190, 80);
-    pub const BAD: Color32 = Color32::from_rgb(240, 100, 90);
-    pub const PLAYHEAD: Color32 = Color32::from_rgb(255, 80, 80);
-    pub const KEY_TRANSFORM: Color32 = Color32::from_rgb(255, 214, 90);
-    pub const KEY_EFFECT: Color32 = Color32::from_rgb(90, 220, 235);
-    pub const MARKER: Color32 = Color32::from_rgb(255, 150, 60);
-    pub const WAVE: Color32 = Color32::from_rgb(90, 170, 160);
-}
 
 /// How long the "reloaded" flash stays.
 const FLASH: Duration = Duration::from_millis(2500);
@@ -49,11 +40,76 @@ const GHOST_BASE: u64 = 1 << 40;
 /// How long a message stays in the status bar (an error: twice as long).
 const STATUS_FOR: Duration = Duration::from_secs(8);
 
-/// Which page the right-hand panel shows.
+/// The drawers the rail on the left opens (one at a time, all closed at start).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Tab {
-    Inspector,
+pub(crate) enum Drawer {
     Slots,
+    History,
+}
+
+impl Drawer {
+    pub const ALL: [Drawer; 2] = [Drawer::Slots, Drawer::History];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Drawer::Slots => "Slots",
+            Drawer::History => "History",
+        }
+    }
+
+    pub fn icon(self) -> Icon {
+        match self {
+            Drawer::Slots => Icon::Images,
+            Drawer::History => Icon::History,
+        }
+    }
+
+    pub fn keys(self) -> &'static str {
+        match self {
+            Drawer::Slots => "Ctrl+1",
+            Drawer::History => "Ctrl+2",
+        }
+    }
+
+    pub fn tip(self) -> &'static str {
+        match self {
+            Drawer::Slots => "Slots: the pictures of the edit",
+            Drawer::History => "History: your edits and the agent's",
+        }
+    }
+}
+
+/// Everything the command palette, the keys and the toolbars can do.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Cmd {
+    TogglePlay,
+    Start,
+    End,
+    FrameBack,
+    FrameForward,
+    BeatBack,
+    BeatForward,
+    ToggleLoop,
+    Undo,
+    Redo,
+    Export,
+    Drawer(Drawer),
+    AddLayer(NewLayer),
+    ToggleLayer(String),
+    Duplicate(String),
+    MoveLayer(String, bool),
+    Delete(String),
+    AddEffect(String, &'static str),
+    Select(Option<Selected>),
+    Seek(u64),
+    Scale(Scale),
+    BlurPaused,
+    BlurPlaying,
+    ZoomFit,
+    Zoom(f64),
+    Shortcuts,
+    Palette,
+    Quit,
 }
 
 /// A change being made with one widget (a drag, or typing into a value): it
@@ -195,7 +251,17 @@ pub(crate) struct App {
     /// The shared history (the window's and the agent's edits), as on disk.
     pub history: HistoryList,
     pub status: Option<Status>,
-    pub tab: Tab,
+    /// The drawer open next to the rail, if any.
+    pub drawer: Option<Drawer>,
+    pub palette: Palette,
+    pub toasts: Toasts,
+    shortcuts_open: bool,
+    /// Where the preview stage is: toasts sit in its corner.
+    stage: Rect,
+    /// A zoom asked for by a command: a factor, applied by the timeline about the playhead.
+    pub zoom_request: Option<f64>,
+    /// The export whose end was already announced.
+    export_announced: bool,
     /// Files dropped on the window this frame, and whether some are being dragged over it.
     pub dropped: Vec<PathBuf>,
     pub files_hovering: bool,
@@ -207,7 +273,7 @@ pub(crate) struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, path: PathBuf, options: Options, first: LoadReport, outcome: Arc<Mutex<Option<Result<(), String>>>>) -> Self {
         let ctx = cc.egui_ctx.clone();
-        ctx.set_theme(egui::Theme::Dark);
+        theme::apply(&ctx);
 
         let (worker_tx, worker_events) = mpsc::channel();
         let wake = ctx.clone();
@@ -269,7 +335,13 @@ impl App {
             drag: None,
             history: HistoryList::default(),
             status: None,
-            tab: Tab::Inspector,
+            drawer: None,
+            palette: Palette::default(),
+            toasts: Toasts::default(),
+            shortcuts_open: false,
+            stage: Rect::NOTHING,
+            zoom_request: None,
+            export_announced: false,
             dropped: Vec::new(),
             files_hovering: false,
             new_slot: String::new(),
@@ -302,7 +374,7 @@ impl App {
 
     fn take_report(&mut self, report: LoadReport, origin: Origin) {
         let ctx = self.ctx.clone();
-        self.history = core_edit::history_list(&self.path);
+        let before = std::mem::replace(&mut self.history, core_edit::history_list(&self.path));
         match self.state.apply(report) {
             Applied::Swapped => {
                 if origin == Origin::Disk && (self.pending.is_some() || self.drag.is_some()) {
@@ -338,9 +410,19 @@ impl App {
                 }
                 if origin == Origin::Disk {
                     self.reloaded_at = Some(Instant::now());
+                    let change = toasts::disk_change(&before, &self.history);
+                    let (kind, title, body, action) = toasts::for_disk_change(&change, self.state.revision);
+                    self.toasts.push(Instant::now(), kind, title, body, action);
                 }
             }
-            Applied::Rejected | Applied::Unchanged => {}
+            Applied::Rejected => {
+                if origin == Origin::Disk {
+                    let n = self.state.errors();
+                    let body = if self.state.current.is_some() { format!("Still showing revision {}. The problems are listed in the inspector.", self.state.revision) } else { "The problems are listed in the inspector.".to_string() };
+                    self.toasts.push(Instant::now(), toasts::Kind::Error, format!("The file has {n} error{}", if n == 1 { "" } else { "s" }), body, None);
+                }
+            }
+            Applied::Unchanged => {}
         }
     }
 
@@ -368,9 +450,16 @@ impl App {
         self.status = Some(Status { text: text.into().replace('→', "->"), detail: String::new(), error: false, at: Instant::now() });
     }
 
-    /// An error in the status bar; `detail` goes into its tooltip.
+    /// An error: a toast, and the status bar (`detail` goes into its tooltip).
     pub fn fail(&mut self, text: impl Into<String>, detail: impl Into<String>) {
-        self.status = Some(Status { text: text.into().replace('→', "->"), detail: detail.into().replace('→', "->"), error: true, at: Instant::now() });
+        let (text, detail) = (text.into().replace('→', "->"), detail.into().replace('→', "->"));
+        // "Not applied (what): why" reads best as a title and a line.
+        let (title, body) = match text.split_once(": ") {
+            Some((t, b)) if t.len() < 60 => (t.to_string(), b.to_string()),
+            _ => (text.clone(), String::new()),
+        };
+        self.toasts.push(Instant::now(), toasts::Kind::Error, title, body, None);
+        self.status = Some(Status { text, detail, error: true, at: Instant::now() });
     }
 
     /// Edits are prepared against the version on screen; when the file on
@@ -512,6 +601,7 @@ impl App {
             Ok(u) => {
                 self.take_report(reload::load(&self.path), Origin::Own);
                 self.say(format!("Undid {}: {}", who(&u.entry.actor), u.entry.summary));
+                self.toasts.push(Instant::now(), toasts::Kind::Info, format!("Undid {}", who(&u.entry.actor)), u.entry.summary.clone(), Some(("Redo".into(), toasts::Action::Redo)));
             }
             Err(e) => self.fail(shorten(&e, 120), e),
         }
@@ -656,16 +746,53 @@ impl App {
     }
 
     fn keys(&mut self, ctx: &egui::Context) {
-        if ctx.egui_wants_keyboard_input() {
+        // The palette works from anywhere, even from a text field.
+        let pressed = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
+        if pressed(Modifiers::COMMAND | Modifiers::SHIFT, Key::P) || pressed(Modifiers::COMMAND, Key::K) {
+            if self.palette.open {
+                self.palette.close();
+            } else {
+                self.palette.open();
+            }
+        }
+        if ctx.egui_wants_keyboard_input() || self.palette.open {
             return;
         }
-        let pressed = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
         // With Shift first: Ctrl+Z also matches when Shift is held.
         if pressed(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || pressed(Modifiers::COMMAND, Key::Y) {
             self.redo();
         }
         if pressed(Modifiers::COMMAND, Key::Z) {
             self.undo();
+        }
+        if pressed(Modifiers::COMMAND, Key::E) {
+            self.open_export();
+        }
+        if pressed(Modifiers::COMMAND, Key::Num1) {
+            self.run(Cmd::Drawer(Drawer::Slots));
+        }
+        if pressed(Modifiers::COMMAND, Key::Num2) {
+            self.run(Cmd::Drawer(Drawer::History));
+        }
+        if pressed(Modifiers::SHIFT, Key::Questionmark) || pressed(Modifiers::NONE, Key::Questionmark) {
+            self.shortcuts_open = !self.shortcuts_open;
+        }
+        if let Some(id) = self.selected_layer() {
+            if pressed(Modifiers::COMMAND, Key::D) {
+                self.duplicate_layer(&id);
+            }
+            if pressed(Modifiers::NONE, Key::Delete) || pressed(Modifiers::NONE, Key::Backspace) {
+                self.delete_layer(&id);
+            }
+        }
+        if pressed(Modifiers::NONE, Key::Escape) {
+            if self.shortcuts_open {
+                self.shortcuts_open = false;
+            } else if self.selected.is_some() {
+                self.selected = None;
+            } else {
+                self.drawer = None;
+            }
         }
         let Some(tm) = self.tm else { return };
         // Counted, so that key repeat on a slow frame still moves one step per press.
@@ -695,6 +822,120 @@ impl App {
         if pressed(Modifiers::NONE, Key::L) {
             self.set_looping(!self.looping);
         }
+    }
+
+    /// Do what a command, a button or a key asks.
+    pub fn run(&mut self, cmd: Cmd) {
+        let tm = self.tm;
+        match cmd {
+            Cmd::TogglePlay => self.toggle_play(),
+            Cmd::Start => self.seek(0),
+            Cmd::End => {
+                if let Some(tm) = tm {
+                    self.step_to(tm.last_frame());
+                }
+            }
+            Cmd::FrameBack => self.step_to(self.playhead.saturating_sub(1)),
+            Cmd::FrameForward => self.step_to(self.playhead.saturating_add(1)),
+            Cmd::BeatBack | Cmd::BeatForward => {
+                if let Some(tm) = tm {
+                    self.step_to(tm.jump_unit(self.playhead, cmd == Cmd::BeatForward));
+                }
+            }
+            Cmd::ToggleLoop => self.set_looping(!self.looping),
+            Cmd::Undo => self.undo(),
+            Cmd::Redo => self.redo(),
+            Cmd::Export => self.open_export(),
+            Cmd::Drawer(d) => self.drawer = if self.drawer == Some(d) { None } else { Some(d) },
+            Cmd::AddLayer(kind) => self.add_layer(kind),
+            Cmd::ToggleLayer(id) => self.toggle_layer(&id),
+            Cmd::Duplicate(id) => self.duplicate_layer(&id),
+            Cmd::MoveLayer(id, up) => self.move_layer(&id, up),
+            Cmd::Delete(id) => self.delete_layer(&id),
+            Cmd::AddEffect(id, kind) => {
+                if let Some(layer) = self.project().and_then(|p| p.layers.iter().find(|l| l.id == id).cloned()) {
+                    self.commit(vec![editing::add_effect_op(&layer, kind)], format!("add {kind} to {id}"));
+                }
+            }
+            Cmd::Select(sel) => self.selected = sel,
+            Cmd::Seek(frame) => self.seek(frame),
+            Cmd::Scale(s) => self.scale = s,
+            Cmd::BlurPaused => self.blur_paused = !self.blur_paused,
+            Cmd::BlurPlaying => self.blur_playing = !self.blur_playing,
+            Cmd::ZoomFit => self.view_fit = true,
+            Cmd::Zoom(f) => self.zoom_request = Some(f),
+            Cmd::Shortcuts => self.shortcuts_open = !self.shortcuts_open,
+            Cmd::Palette => self.palette.open(),
+            Cmd::Quit => self.ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+        }
+    }
+
+    /// Every command, for the palette: built from what the window shows now.
+    fn commands(&self) -> Vec<Command<Cmd>> {
+        use Command as C;
+        let mut c = vec![
+            C::new("Playback", if self.playing.is_some() { Icon::Pause } else { Icon::Play }, if self.playing.is_some() { "Pause" } else { "Play" }, Cmd::TogglePlay).keys("Space"),
+            C::new("Playback", Icon::SkipBack, "Go to the start", Cmd::Start).keys("Home"),
+            C::new("Playback", Icon::SkipForward, "Go to the last frame", Cmd::End).keys("End"),
+            C::new("Playback", Icon::ChevronLeft, "One frame back", Cmd::FrameBack).keys("←"),
+            C::new("Playback", Icon::ChevronRight, "One frame forward", Cmd::FrameForward).keys("→"),
+            C::new("Playback", Icon::ChevronsLeft, "One beat back", Cmd::BeatBack).keys("Shift+←"),
+            C::new("Playback", Icon::ChevronsRight, "One beat forward", Cmd::BeatForward).keys("Shift+→"),
+            C::new("Playback", Icon::Repeat, if self.looping { "Turn loop off" } else { "Turn loop on" }, Cmd::ToggleLoop).keys("L"),
+        ];
+        let undo = self.history.undo.last().map_or("Undo".to_string(), |e| format!("Undo {} ({})", shorten(&e.summary, 40), editing::actor_label(&e.actor)));
+        let redo = self.history.redo.last().map_or("Redo".to_string(), |e| format!("Redo {} ({})", shorten(&e.summary, 40), editing::actor_label(&e.actor)));
+        c.push(C::new("Edit", Icon::Undo2, undo, Cmd::Undo).keys("Ctrl+Z"));
+        c.push(C::new("Edit", Icon::Redo2, redo, Cmd::Redo).keys("Ctrl+Shift+Z"));
+        if let Some(p) = self.project() {
+            c.push(C::new("Add layer", Icon::Square, "Add a solid layer", Cmd::AddLayer(NewLayer::Solid)));
+            c.push(C::new("Add layer", Icon::SlidersHorizontal, "Add an adjustment layer", Cmd::AddLayer(NewLayer::Adjustment)));
+            for name in p.slots.keys() {
+                c.push(C::new("Add layer", Icon::Image, format!("Add an image layer from slot {name}"), Cmd::AddLayer(NewLayer::Image(name.clone()))));
+            }
+            for name in p.slots.keys() {
+                c.push(C::new("Add layer", Icon::Box, format!("Add a cube with slot {name}"), Cmd::AddLayer(NewLayer::Cube(name.clone()))));
+            }
+            if let Some(l) = self.selected_layer().and_then(|id| p.layers.iter().find(|l| l.id == id)) {
+                let id = l.id.clone();
+                c.push(C::new("Layer", if l.enabled { Icon::EyeOff } else { Icon::Eye }, format!("{} {id}", if l.enabled { "Disable" } else { "Enable" }), Cmd::ToggleLayer(id.clone())));
+                c.push(C::new("Layer", Icon::Copy, format!("Duplicate {id}"), Cmd::Duplicate(id.clone())).keys("Ctrl+D"));
+                c.push(C::new("Layer", Icon::ArrowUp, format!("Move {id} up (to the front)"), Cmd::MoveLayer(id.clone(), true)));
+                c.push(C::new("Layer", Icon::ArrowDown, format!("Move {id} down (to the back)"), Cmd::MoveLayer(id.clone(), false)));
+                c.push(C::new("Layer", Icon::Trash2, format!("Delete {id}"), Cmd::Delete(id.clone())).keys("Delete"));
+                for spec in editing::addable_effects() {
+                    c.push(C::new("Add effect", Icon::Sparkles, format!("Add {} to {id}", spec.kind), Cmd::AddEffect(id.clone(), spec.kind)));
+                }
+            }
+            for l in p.layers.iter().rev() {
+                c.push(C::new("Select", widgets::kind_icon(&rows::kind_text(&l.kind)), format!("Select {}", l.id), Cmd::Select(Some(Selected::Layer(l.id.clone())))));
+            }
+            c.push(C::new("Select", Icon::Video, "Select the camera", Cmd::Select(Some(Selected::Camera))));
+            if self.selected.is_some() {
+                c.push(C::new("Select", Icon::X, "Deselect", Cmd::Select(None)).keys("Esc"));
+            }
+            if let Some(tm) = self.tm {
+                for m in &p.markers {
+                    c.push(C::new("Go to", Icon::Flag, format!("Go to marker {}", m.label), Cmd::Seek(tm.first_frame_from(m.t))));
+                }
+            }
+        }
+        for d in Drawer::ALL {
+            let verb = if self.drawer == Some(d) { "Hide" } else { "Show" };
+            c.push(C::new("View", d.icon(), format!("{verb} {}", d.title().to_lowercase()), Cmd::Drawer(d)).keys(d.keys()));
+        }
+        for s in Scale::ALL {
+            c.push(C::new("View", Icon::Gauge, format!("Preview at {}× size", s.label()), Cmd::Scale(s)));
+        }
+        c.push(C::new("View", Icon::Waves, format!("Motion blur while paused: {}", if self.blur_paused { "turn off" } else { "turn on" }), Cmd::BlurPaused));
+        c.push(C::new("View", Icon::Waves, format!("Motion blur while playing: {}", if self.blur_playing { "turn off" } else { "turn on" }), Cmd::BlurPlaying));
+        c.push(C::new("View", Icon::Maximize2, "Fit the whole edit in the timeline", Cmd::ZoomFit));
+        c.push(C::new("View", Icon::ZoomIn, "Zoom the timeline in", Cmd::Zoom(1.6)));
+        c.push(C::new("View", Icon::ZoomOut, "Zoom the timeline out", Cmd::Zoom(1.0 / 1.6)));
+        c.push(C::new("View", Icon::Keyboard, "Keyboard shortcuts", Cmd::Shortcuts).keys("?"));
+        c.push(C::new("File", Icon::Download, "Export video…", Cmd::Export).keys("Ctrl+E"));
+        c.push(C::new("File", Icon::X, "Quit", Cmd::Quit));
+        c
     }
 
     // ---- per-frame logic -----------------------------------------------------------
@@ -845,157 +1086,217 @@ impl App {
 
     // ---- panels ----------------------------------------------------------------------
 
+    /// The centre: the preview on its stage, and the transport row under it.
+    fn central(&mut self, ui: &mut Ui) {
+        let full = ui.max_rect();
+        let bar = Rect::from_min_max(pos2(full.left(), full.bottom() - size::TRANSPORT), full.right_bottom());
+        let stage = Rect::from_min_max(full.left_top(), pos2(full.right(), bar.top()));
+        ui.painter().rect_filled(bar, 0, color::BG);
+        ui.painter().hline(bar.x_range(), bar.top(), Stroke::new(1.0, color::LINE));
+        self.stage = stage;
+        self.preview(ui, stage);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(bar.shrink2(vec2(space::L, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| self.transport(ui));
+    }
+
+    /// Timecode on the left, the transport in the middle, loop and preview quality on the right.
     fn transport(&mut self, ui: &mut Ui) {
         let Some(tm) = self.tm else {
-            ui.add_space(6.0);
-            ui.label(format!("{} is not a valid project yet. The window will update when the file changes.", self.path.display()));
-            ui.add_space(6.0);
+            ui.label(RichText::new("Waiting for a valid project").color(color::TEXT_FAINT));
             return;
         };
-        ui.add_space(5.0);
-        // Wrapped: in a narrow window the preview controls move to a second line instead of overlapping.
-        ui.horizontal_wrapped(|ui| {
-            if icon_button(ui, Icon::Start, false).on_hover_text("Go to the start (Home)").clicked() {
-                self.seek(0);
-            }
-            if icon_button(ui, Icon::StepBack, false).on_hover_text("Back one frame (Left). Shift+Left: back one beat").clicked() {
-                self.step_to(self.playhead.saturating_sub(1));
-            }
-            let icon = if self.playing.is_some() { Icon::Pause } else { Icon::Play };
-            if icon_button(ui, icon, self.playing.is_some()).on_hover_text("Play or pause (Space)").clicked() {
-                self.toggle_play();
-            }
-            if icon_button(ui, Icon::StepForward, false).on_hover_text("Forward one frame (Right). Shift+Right: forward one beat").clicked() {
-                self.step_to(self.playhead.saturating_add(1));
-            }
-            if ui.selectable_label(self.looping, "Loop").on_hover_text("Start again at the end (L)").clicked() {
-                self.set_looping(!self.looping);
-            }
-            ui.separator();
+        let row = ui.max_rect();
+        // ---- timecode ----
+        let left = ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = space::XS;
+            let now = timemap_clock(tm.frame_seconds(self.playhead));
+            ui.label(RichText::new(now).text_style(theme::timecode_style()).color(color::TEXT)).on_hover_text("Position: minutes, seconds, hundredths");
+            ui.label(RichText::new(format!("/ {}", timemap_clock(tm.frame_seconds(tm.last_frame())))).font(theme::mono()).color(color::TEXT_FAINT));
+            ui.add_space(space::L);
             let digits = tm.last_frame().to_string().len();
-            let mut readout = format!("frame {:>digits$} / {}   {} s", self.playhead, tm.last_frame(), fmt_seconds(tm.frame_seconds(self.playhead)));
             if tm.uses_beats() {
-                readout.push_str(&format!("   beat {:>5.2}", tm.frame_time(self.playhead)));
+                ui.label(RichText::new("B").font(theme::small_medium()).color(color::TEXT_FAINT));
+                ui.label(RichText::new(format!("{:<6.2}", tm.frame_time(self.playhead))).font(theme::mono()).color(color::TEXT_MUTED)).on_hover_text("Beat under the playhead, counted from 0");
             }
-            ui.label(RichText::new(readout).monospace().size(13.0));
-            ui.separator();
-
-            ui.label("Preview scale");
-            for s in Scale::ALL {
-                if ui.selectable_label(self.scale == s, s.label()).on_hover_text("Preview size relative to the project's resolution").clicked() {
-                    self.scale = s;
-                }
+            ui.label(RichText::new("F").font(theme::small_medium()).color(color::TEXT_FAINT));
+            ui.label(RichText::new(format!("{:<digits$}", self.playhead)).font(theme::mono()).color(color::TEXT_MUTED)).on_hover_text(format!("Frame under the playhead, of 0 to {}", tm.last_frame()));
+        });
+        // ---- transport, centred under the picture when there is room ----
+        let group_w = 4.0 * size::ICON_BUTTON + 36.0 + 4.0 * 2.0;
+        let centred = row.center().x - group_w / 2.0;
+        let x0 = if centred > left.response.rect.right() + space::L { centred } else { left.response.rect.right() + space::L };
+        let group = Rect::from_min_size(pos2(x0, row.top()), vec2(group_w, row.height()));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(group).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            if tip(widgets::icon_button(ui, Icon::SkipBack), "Go to the start", &["Home"]).clicked() {
+                self.run(Cmd::Start);
             }
-            ui.separator();
-            let blurs = self.project().is_some_and(|p| p.settings.motion_blur.samples > 1);
-            let hint = if blurs { "Render the preview with the project's motion blur" } else { "This project has no motion blur (settings.motion_blur.samples is 1)" };
-            ui.label("Motion blur");
-            ui.add_enabled(blurs, egui::Checkbox::new(&mut self.blur_paused, "paused")).on_hover_text(hint).on_disabled_hover_text(hint);
-            ui.add_enabled(blurs, egui::Checkbox::new(&mut self.blur_playing, "playing")).on_hover_text(hint).on_disabled_hover_text(hint);
-            ui.separator();
-            if ui.button("Export…").on_hover_text("Render the project to a video file with `edits render`").clicked() {
-                self.export.open = true;
+            if tip(widgets::icon_button(ui, Icon::ChevronLeft), "One frame back (Shift: one beat)", &["←"]).clicked() {
+                self.run(Cmd::FrameBack);
+            }
+            let playing = self.playing.is_some();
+            if tip(play_button(ui, playing), if playing { "Pause" } else { "Play" }, &["Space"]).clicked() {
+                self.run(Cmd::TogglePlay);
+            }
+            if tip(widgets::icon_button(ui, Icon::ChevronRight), "One frame forward (Shift: one beat)", &["→"]).clicked() {
+                self.run(Cmd::FrameForward);
+            }
+            if tip(widgets::icon_toggle(ui, Icon::Repeat, self.looping), if self.looping { "Loop is on: playback starts again at the end" } else { "Loop is off" }, &["L"]).clicked() {
+                self.run(Cmd::ToggleLoop);
             }
         });
-        ui.add_space(2.0);
-        let mut frame = self.playhead;
-        ui.spacing_mut().slider_width = (ui.available_width() - 4.0).max(60.0);
-        if ui.add(egui::Slider::new(&mut frame, 0..=tm.last_frame()).show_value(false)).changed() {
-            self.seek(frame);
-        }
-        ui.add_space(3.0);
+        // ---- preview quality ----
+        let right = Rect::from_min_max(pos2(group.right() + space::M, row.top()), row.right_bottom());
+        ui.scope_builder(egui::UiBuilder::new().max_rect(right).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| self.quality(ui));
+    }
+
+    /// The preview-quality button and its popover: scale and motion blur.
+    fn quality(&mut self, ui: &mut Ui) {
+        let label = format!("{}×", self.scale.label().trim_end_matches(".0"));
+        let blurs = self.project().is_some_and(|p| p.settings.motion_blur.samples > 1);
+        let galley = ui.painter().layout_no_wrap(label, theme::mono(), color::TEXT);
+        let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 52.0, size::ICON_BUTTON), Sense::click());
+        let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp));
+        let fill = if open { color::CONTROL_ACTIVE } else if resp.hovered() { color::CONTROL_HOVER } else { Color32::TRANSPARENT };
+        ui.painter().rect_filled(rect, radius::SMALL, fill);
+        widgets::paint_icon(ui.painter(), pos2(rect.left() + 14.0, rect.center().y), Icon::MonitorPlay, text::ICON_SMALL, color::TEXT_MUTED);
+        ui.painter().galley(pos2(rect.left() + 26.0, rect.center().y - galley.size().y / 2.0), galley, color::TEXT);
+        widgets::paint_icon(ui.painter(), pos2(rect.right() - 11.0, rect.center().y), Icon::ChevronDown, 12.0, color::TEXT_FAINT);
+        let resp = tip(resp.on_hover_cursor(egui::CursorIcon::PointingHand), "Preview quality: size and motion blur", &[]);
+        egui::Popup::from_toggle_button_response(&resp)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .align(egui::RectAlign::TOP_END)
+            .frame(widgets::popover_frame().inner_margin(egui::Margin::same(space::L as i8)))
+            .show(|ui| {
+                ui.set_width(236.0);
+                ui.spacing_mut().item_spacing.y = space::S;
+                ui.label(widgets::eyebrow("Preview size"));
+                let mut scale = self.scale;
+                let options: Vec<(Scale, &str)> = vec![(Scale::Quarter, "0.25×"), (Scale::Half, "0.5×"), (Scale::Full, "1×")];
+                if widgets::segmented(ui, &mut scale, &options) {
+                    self.scale = scale;
+                }
+                ui.label(RichText::new("Of the project's resolution. Smaller renders faster.").font(theme::small()).color(color::TEXT_FAINT));
+                ui.add_space(space::S);
+                ui.label(widgets::eyebrow("Motion blur"));
+                let hint = if blurs { "Render the preview with the project's motion blur" } else { "This project has no motion blur (settings.motion_blur.samples is 1)" };
+                for (label, value) in [("While paused", &mut self.blur_paused), ("While playing", &mut self.blur_playing)] {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(label).color(color::TEXT_MUTED));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_enabled_ui(blurs, |ui| widgets::switch(ui, value)).response.on_hover_text(hint).on_disabled_hover_text(hint);
+                        });
+                    });
+                }
+                if !blurs {
+                    ui.label(RichText::new("This project has no motion blur.").font(theme::small()).color(color::TEXT_FAINT));
+                } else {
+                    ui.label(RichText::new("Off while playing by default: it multiplies the cost of a frame.").font(theme::small()).color(color::TEXT_FAINT));
+                }
+            });
     }
 
     fn status_bar(&mut self, ui: &mut Ui) {
-        ui.add_space(2.0);
-        // Wrapped for the same reason as the transport. What the agent just did comes first.
-        ui.horizontal_wrapped(|ui| {
-            if self.state.rejected {
-                let shown = if self.state.current.is_some() { format!("showing revision {}", self.state.revision) } else { "nothing to show yet".to_string() };
-                ui.colored_label(pal::BAD, format!("{} error(s) in the file · {shown}", self.state.errors()));
-            } else if let Some(t) = self.reloaded_at.filter(|t| t.elapsed() < FLASH) {
-                let fade = 1.0 - t.elapsed().as_secs_f32() / FLASH.as_secs_f32();
-                egui::Frame::new().fill(pal::GOOD.gamma_multiply(0.15 + 0.5 * fade)).corner_radius(3.0).inner_margin(egui::Margin::symmetric(6, 1)).show(ui, |ui| {
-                    ui.label(RichText::new(format!("reloaded · revision {}", self.state.revision)).color(Color32::WHITE).strong());
-                });
-            } else {
-                ui.label(format!("revision {}", self.state.revision)).on_hover_text("Counts the versions of the project file that were loaded; it goes up when a change lands");
+        ui.spacing_mut().item_spacing.x = space::XS;
+        let dot = |ui: &mut Ui, c: Color32| {
+            let (r, _) = ui.allocate_exact_size(vec2(8.0, 8.0), Sense::hover());
+            ui.painter().circle_filled(r.center(), 3.0, c);
+        };
+        let small = |t: String, c: Color32| RichText::new(t).font(theme::small()).color(c);
+        // What the file is doing comes first.
+        if self.state.rejected {
+            dot(ui, color::ERROR);
+            let shown = if self.state.current.is_some() { format!("showing revision {}", self.state.revision) } else { "nothing to show yet".to_string() };
+            ui.label(small(format!("{} error(s) in the file · {shown}", self.state.errors()), color::ERROR_TEXT));
+        } else if self.reloaded_at.is_some_and(|t| t.elapsed() < FLASH) {
+            dot(ui, color::OK);
+            ui.label(small(format!("Reloaded · revision {}", self.state.revision), color::OK_TEXT));
+        } else {
+            dot(ui, color::CONTROL_ACTIVE);
+            ui.label(small(format!("Revision {}", self.state.revision), color::TEXT_FAINT))
+                .on_hover_text("Counts the versions of the project file that were loaded; it goes up when a change lands");
+        }
+        if let Some(st) = self.status.as_ref().filter(|st| st.at.elapsed() < if st.error { STATUS_FOR * 2 } else { STATUS_FOR }) {
+            ui.add_space(space::L);
+            let c = if st.error { color::ERROR_TEXT } else { color::TEXT_MUTED };
+            let tip = if st.detail.is_empty() { st.text.clone() } else { format!("{}\n\n{}", st.text, st.detail) };
+            ui.add(egui::Label::new(small(st.text.clone(), c)).truncate()).on_hover_text(tip);
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = space::XS;
+            let gap = |ui: &mut Ui| ui.add_space(space::L);
+            if let Some(job) = &self.export.job {
+                let c = match &job.finished {
+                    Some(Ok(_)) => color::OK_TEXT,
+                    Some(Err(_)) => color::ERROR_TEXT,
+                    None => color::TEXT_MUTED,
+                };
+                ui.label(small(shorten(&job.status(), 60), c)).on_hover_text(job.status());
+                gap(ui);
             }
-            ui.separator();
-            if let Some(st) = self.status.as_ref().filter(|st| st.at.elapsed() < if st.error { STATUS_FOR * 2 } else { STATUS_FOR }) {
-                let color = if st.error { pal::BAD } else { pal::GOOD };
-                let r = ui.colored_label(color, shorten(&st.text, 110));
-                let tip = if st.detail.is_empty() { st.text.clone() } else { format!("{}\n\n{}", st.text, st.detail) };
-                r.on_hover_text(tip);
-                ui.separator();
-            }
-            match (&self.adapter, &self.no_adapter) {
-                (Some(a), _) => {
-                    let (kind, color) = if a.software { ("software rasteriser", pal::WARN) } else { ("hardware GPU", pal::GOOD) };
-                    ui.label(shorten(&a.name, 40)).on_hover_text(format!("{} · {} · {} · {}", a.name, a.backend, a.device_type, a.driver));
-                    ui.colored_label(color, kind);
-                }
-                (None, Some(e)) => {
-                    ui.colored_label(pal::BAD, "no graphics adapter").on_hover_text(e);
-                }
-                (None, None) => {
-                    ui.weak("opening the graphics adapter…");
-                }
-            }
-            ui.separator();
+            match self.audio.status() {
+                AudioStatus::None => ui.label(small("No audio".into(), color::TEXT_FAINT)),
+                AudioStatus::Decoding => ui.label(small("Audio decoding…".into(), color::TEXT_FAINT)),
+                AudioStatus::Ready { seconds } => ui.label(small(format!("Audio {seconds:.1} s"), color::TEXT_FAINT)),
+                AudioStatus::Silent(why) => ui.label(small("Audio silent".into(), color::WARN)).on_hover_text(format!("{why}\nPlayback carries on without sound.")),
+            };
+            gap(ui);
+            ui.label(small(format!("Cache {} · {:.0} MB", self.cache.len(), self.cache.bytes() as f64 / 1048576.0), color::TEXT_FAINT))
+                .on_hover_text(format!("Rendered preview frames kept in memory (up to {:.0} MB)", self.cache.budget() as f64 / 1048576.0));
+            gap(ui);
             match self.last_render {
                 Some((k, ms)) => {
-                    ui.label(format!("render {ms:.0} ms")).on_hover_text(format!("frame {} at scale {}, motion blur {}", k.frame, k.scale.label(), if k.blur { "on" } else { "off" }));
+                    ui.label(small(format!("{ms:.0} ms/frame"), color::TEXT_FAINT))
+                        .on_hover_text(format!("The last frame took {ms:.0} ms: frame {} at scale {}, motion blur {}", k.frame, k.scale.label(), if k.blur { "on" } else { "off" }));
                 }
                 None => {
-                    ui.weak("render –");
+                    ui.label(small("– ms/frame".into(), color::TEXT_FAINT));
                 }
             }
-            ui.separator();
-            ui.label(format!("cache {} frames · {:.0} MB", self.cache.len(), self.cache.bytes() as f64 / 1048576.0))
-                .on_hover_text(format!("Rendered preview frames kept in memory (up to {:.0} MB)", self.cache.budget() as f64 / 1048576.0));
-            ui.separator();
-            match self.audio.status() {
-                AudioStatus::None => ui.weak("no audio"),
-                AudioStatus::Decoding => ui.weak("audio: decoding…"),
-                AudioStatus::Ready { seconds } => ui.label(format!("audio {seconds:.1} s")),
-                AudioStatus::Silent(why) => {
-                    // The short reason is the part before the colon; the rest is in the tooltip.
-                    let short = shorten(why.split(':').next().unwrap_or(&why), 44);
-                    ui.colored_label(pal::WARN, format!("audio: silent ({short})")).on_hover_text(format!("{why}\nPlayback carries on without sound."))
+            gap(ui);
+            match (&self.adapter, &self.no_adapter) {
+                (Some(a), _) => {
+                    let (kind, c) = if a.software { ("software", color::WARN) } else { ("GPU", color::OK_TEXT) };
+                    ui.label(small(kind.into(), c));
+                    ui.label(small(shorten(&a.name, 32), color::TEXT_FAINT)).on_hover_text(format!(
+                        "{} · {} · {} · {}\n{}",
+                        a.name,
+                        a.backend,
+                        a.device_type,
+                        a.driver,
+                        if a.software { "A software rasteriser: the CPU renders the preview." } else { "A hardware GPU renders the preview." }
+                    ));
                 }
-            };
-            if let Some(job) = &self.export.job {
-                ui.separator();
-                let color = match &job.finished {
-                    Some(Ok(_)) => pal::GOOD,
-                    Some(Err(_)) => pal::BAD,
-                    None => pal::WARN,
-                };
-                ui.colored_label(color, shorten(&job.status(), 90)).on_hover_text(job.status());
+                (None, Some(e)) => {
+                    ui.label(small("No graphics adapter".into(), color::ERROR_TEXT)).on_hover_text(e);
+                }
+                (None, None) => {
+                    ui.label(small("Opening the graphics adapter…".into(), color::TEXT_FAINT));
+                }
             }
         });
-        ui.add_space(2.0);
     }
 
-    fn preview(&mut self, ui: &mut Ui) {
-        let area = ui.available_rect_before_wrap();
+    fn preview(&mut self, ui: &mut Ui, area: Rect) {
         let painter = ui.painter_at(area);
+        painter.rect_filled(area, 0, color::STAGE);
         let Some(project) = self.project().cloned() else {
-            painter.text(area.center(), Align2::CENTER_CENTER, "Waiting for a valid project.\nThe problems are listed on the right.", FontId::proportional(16.0), Color32::GRAY);
+            let r = Rect::from_center_size(area.center(), vec2(area.width().min(360.0), 160.0));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
+                widgets::empty_state(ui, Icon::FileWarning, "Waiting for a valid project", "The problems are listed in the inspector. The window updates when the file changes.", &[]);
+            });
             return;
         };
         let s = &project.settings;
         let aspect = s.width as f32 / s.height.max(1) as f32;
-        let inner = area.shrink(10.0);
+        let inner = area.shrink(space::XL);
         let (w, h) = if inner.width() / inner.height().max(1.0) > aspect { (inner.height() * aspect, inner.height()) } else { (inner.width(), inner.width() / aspect) };
-        let rect = Rect::from_center_size(inner.center(), egui::vec2(w.max(1.0), h.max(1.0)));
-        painter.rect_filled(rect, 0.0, Color32::BLACK);
+        let rect = Rect::from_center_size(inner.center(), vec2(w.max(1.0), h.max(1.0)));
+        painter.rect_filled(rect, 0, Color32::BLACK);
 
         let wanted = self.key(self.playhead);
         match (&self.texture, self.shown) {
             (Some(texture), Some(shown)) => {
-                painter.image(texture.id(), rect, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+                painter.image(texture.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
                 // Say so when the picture is not exactly what the transport reads.
                 let mut notes = Vec::new();
                 if shown.revision != wanted.revision {
@@ -1008,37 +1309,42 @@ impl App {
                     notes.push(if wanted.blur { "rendering motion blur…".to_string() } else { "rendering without motion blur…".to_string() });
                 }
                 if !notes.is_empty() {
-                    chip(&painter, rect.left_bottom() + egui::vec2(8.0, -8.0), Align2::LEFT_BOTTOM, &notes.join(" · "), Color32::from_black_alpha(170), Color32::from_gray(220));
+                    widgets::chip(&painter, rect.left_bottom() + vec2(space::M, -space::M), Align2::LEFT_BOTTOM, &notes.join(" · "), Color32::from_black_alpha(180), color::TEXT_MUTED);
                 }
             }
             _ => {
-                let text = if self.no_adapter.is_some() { "no picture: there is no graphics adapter" } else { "rendering…" };
-                painter.text(rect.center(), Align2::CENTER_CENTER, text, FontId::proportional(15.0), Color32::GRAY);
+                let text = if self.no_adapter.is_some() { "No picture: there is no graphics adapter" } else { "Rendering…" };
+                painter.text(rect.center(), Align2::CENTER_CENTER, text, theme::body(), color::TEXT_FAINT);
             }
         }
 
-        let mut top = rect.left_top() + egui::vec2(8.0, 8.0);
-        let mut banner = |text: &str, fill: Color32| {
-            let r = chip(&painter, top, Align2::LEFT_TOP, text, fill, Color32::WHITE);
-            top.y = r.bottom() + 4.0;
+        // Problems: a slim banner along the top of the stage, the last good frame stays.
+        let mut top = area.top() + space::M;
+        let mut banner = |text: &str| {
+            let galley = painter.layout(text.to_string(), theme::small(), color::ERROR_TEXT, (area.width() - 80.0).max(120.0));
+            let size = galley.size() + vec2(36.0, 12.0);
+            let r = Rect::from_min_size(pos2(area.center().x - size.x / 2.0, top), size);
+            painter.rect(r, radius::NORMAL, color::ERROR_BG, Stroke::new(1.0, color::ERROR.gamma_multiply(0.35)), StrokeKind::Inside);
+            widgets::paint_icon(&painter, pos2(r.left() + 14.0, r.center().y), Icon::CircleAlert, 13.0, color::ERROR_TEXT);
+            painter.galley(pos2(r.left() + 26.0, r.top() + 6.0), galley, color::ERROR_TEXT);
+            top = r.bottom() + space::XS;
         };
         if self.state.rejected {
-            banner(&format!("The file has {} error(s): this is still revision {}, the last version without errors.", self.state.errors(), self.state.revision), Color32::from_rgb(150, 40, 35));
+            banner(&format!("The file has {} error(s). Showing revision {}, the last version without errors.", self.state.errors(), self.state.revision));
         }
         if let Some(e) = &self.no_adapter {
-            banner(&shorten(e, 140), Color32::from_rgb(150, 40, 35));
+            banner(&shorten(e, 140));
         }
         if let Some(e) = &self.prepare_error {
-            banner(&format!("The renderer could not load this version: {}", shorten(e, 140)), Color32::from_rgb(150, 40, 35));
+            banner(&format!("The renderer could not load this version: {}", shorten(e, 140)));
         }
         if let Some((k, e)) = &self.failed {
-            banner(&format!("Frame {} did not render: {}", k.frame, shorten(e, 140)), Color32::from_rgb(150, 40, 35));
+            banner(&format!("Frame {} did not render: {}", k.frame, shorten(e, 140)));
         }
 
         if let Some(t) = self.reloaded_at.filter(|t| t.elapsed() < FLASH) {
             let fade = (1.0 - t.elapsed().as_secs_f32() / FLASH.as_secs_f32()).clamp(0.0, 1.0);
-            painter.rect_stroke(rect.expand(2.0), 2.0, Stroke::new(3.0, pal::GOOD.gamma_multiply(fade)), StrokeKind::Outside);
-            chip(&painter, rect.right_top() + egui::vec2(-8.0, 8.0), Align2::RIGHT_TOP, "reloaded", pal::GOOD.gamma_multiply(0.35 + 0.5 * fade), Color32::WHITE);
+            painter.rect_stroke(rect.expand(1.0), 0, Stroke::new(1.5, color::OK.gamma_multiply(fade)), StrokeKind::Outside);
         }
     }
 
@@ -1051,47 +1357,75 @@ impl App {
             return;
         }
         let edits = self.export.edits.get_or_insert_with(export::locate_edits).clone();
-        let mut open = true;
         let mut start = false;
-        egui::Window::new("Export video").open(&mut open).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-            ui.label("Renders the project file as it is on disk, at full size and quality, to H.264 with its audio.");
-            ui.add_space(4.0);
+        let mut close = false;
+        let modal = egui::Modal::new(egui::Id::unique("export")).backdrop_color(color::BACKDROP).frame(
+            egui::Frame::new()
+                .fill(color::RAISED)
+                .stroke(Stroke::new(1.0, color::CONTROL_HOVER))
+                .corner_radius(egui::CornerRadius::same(radius::LARGE))
+                .inner_margin(egui::Margin::same(20))
+                .shadow(egui::Shadow { offset: [0, 12], blur: 32, spread: 0, color: Color32::from_black_alpha(160) }),
+        );
+        let resp = modal.show(ctx, |ui| {
+            ui.set_width(480.0);
+            ui.spacing_mut().item_spacing.y = space::M;
             ui.horizontal(|ui| {
-                ui.label("Output file");
-                ui.add(egui::TextEdit::singleline(&mut self.export.path).desired_width(440.0));
+                ui.label(RichText::new("Export video").font(FontId::new(text::HEADLINE, theme::strong())).color(color::TEXT));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if tip(widgets::small_icon_button(ui, Icon::X), "Close", &["Esc"]).clicked() {
+                        close = true;
+                    }
+                });
             });
+            ui.label(RichText::new("Renders the project file as it is on disk, at full size and quality, to H.264 with its audio.").color(color::TEXT_MUTED));
+            ui.add_space(space::XS);
+            ui.label(widgets::eyebrow("Output file"));
+            ui.add(egui::TextEdit::singleline(&mut self.export.path).font(theme::mono()).desired_width(f32::INFINITY).margin(egui::Margin::symmetric(8, 6)));
             match &edits {
                 Some(bin) => {
-                    ui.weak(format!("runs: {} render {} -o …", bin.display(), self.path.display()));
+                    ui.label(RichText::new(format!("{} render {} -o …", bin.display(), self.path.display())).font(theme::mono_small()).color(color::TEXT_FAINT));
                 }
                 None => {
-                    ui.colored_label(pal::BAD, "The `edits` command was not found next to edits-gui or on PATH. Build it (cargo build --release -p edits-cli) or set EDITS_BIN.");
+                    ui.label(RichText::new("The `edits` command was not found next to edits-gui or on PATH. Build it (cargo build --release -p edits-cli) or set EDITS_BIN.").color(color::ERROR_TEXT));
                 }
             }
-            ui.add_space(6.0);
             let running = self.export.job.as_ref().is_some_and(Export::running);
-            ui.horizontal(|ui| {
+            if let Some(job) = &self.export.job {
                 if running {
-                    if ui.button("Cancel").clicked() {
+                    let frac = job.progress.map_or(0.0, |(done, total)| done as f32 / total.max(1) as f32);
+                    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), Sense::hover());
+                    ui.painter().rect_filled(r, 2, color::CONTROL);
+                    ui.painter().rect_filled(Rect::from_min_size(r.min, vec2(r.width() * frac, r.height())), 2, color::ACCENT);
+                }
+                let c = match &job.finished {
+                    Some(Ok(_)) => color::OK_TEXT,
+                    Some(Err(_)) => color::ERROR_TEXT,
+                    None => color::TEXT_MUTED,
+                };
+                ui.label(RichText::new(job.status()).font(theme::small()).color(c));
+            }
+            if let Some(e) = &self.export.error {
+                ui.label(RichText::new(e).color(color::ERROR_TEXT));
+            }
+            ui.add_space(space::XS);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if running {
+                    if widgets::button(ui, Some(Icon::X), "Cancel", false).clicked() {
                         if let Some(job) = &mut self.export.job {
                             job.cancel();
                         }
                     }
-                    if let Some((done, total)) = self.export.job.as_ref().and_then(|j| j.progress) {
-                        ui.add(egui::ProgressBar::new(done as f32 / total.max(1) as f32).desired_width(300.0).show_percentage());
-                    } else {
-                        ui.spinner();
+                } else {
+                    let ok = edits.is_some() && !self.export.path.trim().is_empty();
+                    if ui.add_enabled_ui(ok, |ui| widgets::button(ui, Some(Icon::Download), "Render", true)).inner.clicked() {
+                        start = true;
                     }
-                } else if ui.add_enabled(edits.is_some() && !self.export.path.trim().is_empty(), egui::Button::new("Render")).clicked() {
-                    start = true;
+                    if widgets::button(ui, None, "Close", false).clicked() {
+                        close = true;
+                    }
                 }
             });
-            if let Some(job) = &self.export.job {
-                ui.label(job.status());
-            }
-            if let Some(e) = &self.export.error {
-                ui.colored_label(pal::BAD, e);
-            }
         });
         if start {
             if let Some(bin) = edits {
@@ -1100,13 +1434,100 @@ impl App {
                     Ok(job) => {
                         self.export.job = Some(job);
                         self.export.error = None;
+                        self.export_announced = false;
                     }
                     Err(e) => self.export.error = Some(e),
                 }
             }
         }
-        if !open {
+        if close || resp.should_close() {
             self.export.open = false;
+        }
+    }
+
+    /// Tell when an export ends (the dialog may be closed by then).
+    fn announce_export(&mut self) {
+        let Some(job) = &self.export.job else { return };
+        if self.export_announced || job.finished.is_none() {
+            return;
+        }
+        self.export_announced = true;
+        let now = Instant::now();
+        match &job.finished {
+            Some(Ok(seconds)) => {
+                let name = job.output.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                self.toasts.push(now, toasts::Kind::Ok, "Export finished", format!("{name} in {seconds:.1} s · {}", job.output.display()), None);
+            }
+            Some(Err(e)) if e == "cancelled" => self.toasts.push(now, toasts::Kind::Info, "Export cancelled", "", None),
+            Some(Err(e)) => self.toasts.push(now, toasts::Kind::Error, "Export failed", e.clone(), Some(("Show".into(), toasts::Action::OpenExport))),
+            None => {}
+        }
+    }
+
+    fn toast_action(&mut self, action: toasts::Action) {
+        match action {
+            toasts::Action::UndoEdit(entry) => {
+                if self.history.undo.last().is_some_and(|e| e.file == entry.file) {
+                    self.undo();
+                } else {
+                    self.fail("Not undone: newer edits came after it. Undo those first (Ctrl+Z), newest first.", "");
+                }
+            }
+            toasts::Action::Redo => self.redo(),
+            toasts::Action::OpenExport => self.open_export(),
+        }
+    }
+
+    /// The sheet of keyboard shortcuts (`?`).
+    fn shortcuts_window(&mut self, ctx: &egui::Context) {
+        if !self.shortcuts_open {
+            return;
+        }
+        let modal = egui::Modal::new(egui::Id::unique("shortcuts")).backdrop_color(color::BACKDROP).frame(
+            egui::Frame::new()
+                .fill(color::RAISED)
+                .stroke(Stroke::new(1.0, color::CONTROL_HOVER))
+                .corner_radius(egui::CornerRadius::same(radius::LARGE))
+                .inner_margin(egui::Margin::same(20))
+                .shadow(egui::Shadow { offset: [0, 12], blur: 32, spread: 0, color: Color32::from_black_alpha(160) }),
+        );
+        let mut close = false;
+        let resp = modal.show(ctx, |ui| {
+            ui.set_width(560.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Keyboard shortcuts").font(FontId::new(text::HEADLINE, theme::strong())).color(color::TEXT));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if tip(widgets::small_icon_button(ui, Icon::X), "Close", &["Esc"]).clicked() {
+                        close = true;
+                    }
+                });
+            });
+            ui.add_space(space::M);
+            ui.columns(2, |cols| {
+                for (col, groups) in cols.iter_mut().zip([&SHORTCUTS[..3], &SHORTCUTS[3..]]) {
+                    for (title, keys) in groups {
+                        col.label(widgets::eyebrow(*title));
+                        col.add_space(space::XXS);
+                        for (k, what) in *keys {
+                            col.horizontal(|ui| {
+                                ui.allocate_ui_with_layout(vec2(104.0, 20.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                    for (i, alt) in k.split(" / ").enumerate() {
+                                        if i > 0 {
+                                            ui.label(RichText::new("/").font(theme::small()).color(color::TEXT_FAINT));
+                                        }
+                                        widgets::shortcut(ui, alt);
+                                    }
+                                });
+                                ui.label(RichText::new(*what).color(color::TEXT_MUTED));
+                            });
+                        }
+                        col.add_space(space::L);
+                    }
+                }
+            });
+        });
+        if close || resp.should_close() {
+            self.shortcuts_open = false;
         }
     }
 
@@ -1201,64 +1622,34 @@ fn save_png(path: &std::path::Path, image: &ColorImage) -> Result<(), String> {
     image::save_buffer(path, image.as_raw(), w as u32, h as u32, image::ExtendedColorType::Rgba8).map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Icon {
-    Start,
-    StepBack,
-    Play,
-    Pause,
-    StepForward,
+/// The play button: a filled square, the one control that is always lit.
+fn play_button(ui: &mut Ui, playing: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(36.0, size::ICON_BUTTON), Sense::click());
+    let fill = if resp.is_pointer_button_down_on() {
+        color::CONTROL_ACTIVE
+    } else if resp.hovered() {
+        color::CONTROL_HOVER
+    } else {
+        color::CONTROL
+    };
+    ui.painter().rect_filled(rect, radius::SMALL, fill);
+    widgets::paint_icon(ui.painter(), rect.center() + vec2(if playing { 0.0 } else { 1.0 }, 0.0), if playing { Icon::Pause } else { Icon::Play }, text::ICON, color::TEXT);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// A transport button. The icons are drawn, not typed: the bundled fonts
-/// have no media symbols.
-fn icon_button(ui: &mut Ui, icon: Icon, selected: bool) -> egui::Response {
-    let wide = matches!(icon, Icon::Play | Icon::Pause);
-    let size = egui::vec2(if wide { 46.0 } else { 28.0 }, 22.0);
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-    let visuals = ui.style().interact_selectable(&response, selected);
-    let painter = ui.painter();
-    painter.rect(rect, visuals.corner_radius, visuals.weak_bg_fill, visuals.bg_stroke, StrokeKind::Inside);
-    let color = visuals.fg_stroke.color;
-    let c = rect.center();
-    let tri = |painter: &egui::Painter, cx: f32, dir: f32, half: f32| {
-        // A triangle pointing right (dir 1) or left (dir -1), centred on cx.
-        let points = vec![egui::pos2(cx - dir * half * 0.8, c.y - half), egui::pos2(cx + dir * half * 0.8, c.y), egui::pos2(cx - dir * half * 0.8, c.y + half)];
-        painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
-    };
-    let bar = |painter: &egui::Painter, cx: f32, w: f32, half: f32| {
-        painter.rect_filled(Rect::from_center_size(egui::pos2(cx, c.y), egui::vec2(w, half * 2.0)), 0.5, color);
-    };
-    let chevron = |painter: &egui::Painter, cx: f32, dir: f32| {
-        let s = Stroke::new(2.0, color);
-        painter.line_segment([egui::pos2(cx - dir * 2.5, c.y - 5.0), egui::pos2(cx + dir * 2.5, c.y)], s);
-        painter.line_segment([egui::pos2(cx + dir * 2.5, c.y), egui::pos2(cx - dir * 2.5, c.y + 5.0)], s);
-    };
-    match icon {
-        Icon::Start => {
-            bar(painter, c.x - 5.0, 2.0, 5.5);
-            tri(painter, c.x + 1.5, -1.0, 5.5);
-        }
-        Icon::StepBack => chevron(painter, c.x, -1.0),
-        Icon::StepForward => chevron(painter, c.x, 1.0),
-        Icon::Play => tri(painter, c.x + 0.5, 1.0, 6.0),
-        Icon::Pause => {
-            bar(painter, c.x - 3.5, 3.0, 5.5);
-            bar(painter, c.x + 3.5, 3.0, 5.5);
-        }
-    }
-    response
+fn timemap_clock(seconds: f64) -> String {
+    crate::timemap::fmt_clock(seconds)
 }
 
-/// Text on a rounded background, anchored at `pos`. Returns where it ended up.
-fn chip(painter: &egui::Painter, pos: egui::Pos2, anchor: Align2, text: &str, fill: Color32, color: Color32) -> Rect {
-    let galley = painter.layout(text.to_string(), FontId::proportional(12.5), color, (painter.clip_rect().width() - 40.0).max(80.0));
-    let pad = egui::vec2(7.0, 4.0);
-    let rect = anchor.anchor_size(pos, galley.size() + pad * 2.0);
-    painter.rect_filled(rect, 4.0, fill);
-    painter.galley(rect.min + pad, galley, color);
-    rect
-}
+/// The shortcut sheet: (group, [(keys, what)]). Alternatives are separated by " / ".
+const SHORTCUTS: [(&str, &[(&str, &str)]); 6] = [
+    ("Playback", &[("Space", "Play or pause"), ("← / →", "One frame back / forward"), ("Shift+← / Shift+→", "One beat back / forward"), ("Home / End", "First / last frame"), ("L", "Loop on or off")]),
+    ("Edit", &[("Ctrl+Z", "Undo (yours or the agent's)"), ("Ctrl+Shift+Z / Ctrl+Y", "Redo"), ("Ctrl+D", "Duplicate the selected layer"), ("Delete", "Delete the selected layer")]),
+    ("Timeline", &[("Ctrl+Wheel", "Zoom about the pointer"), ("Shift+Wheel", "Scroll sideways"), ("Alt", "While dragging: snap to frames")]),
+    ("Window", &[("Ctrl+K / Ctrl+Shift+P", "Command palette"), ("Ctrl+1", "Slots"), ("Ctrl+2", "History"), ("Ctrl+E", "Export video"), ("?", "This sheet")]),
+    ("Selection", &[("Esc", "Deselect, then close the drawer")]),
+    ("Values", &[("Drag", "Change a value"), ("Click", "Type a value; Enter finishes")]),
+];
 
 pub(crate) fn shorten(text: &str, max: usize) -> String {
     let line = text.lines().next().unwrap_or("");
@@ -1278,24 +1669,41 @@ impl eframe::App for App {
         self.files_hovering = hovering;
         if hovering {
             // A picture dragged over the window goes on a slot: show them.
-            self.tab = Tab::Slots;
+            self.drawer = Some(Drawer::Slots);
         }
         self.keys(&ctx);
         self.tick(&ctx);
+        self.announce_export();
 
-        egui::Panel::top("menu").show(ui, |ui| panels::menu_bar(self, ui));
-        egui::Panel::top("transport").show(ui, |ui| self.transport(ui));
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
-        let tallest = (ctx.content_rect().height() * 0.6).max(140.0);
-        egui::Panel::bottom("timeline").resizable(true).default_size(self.timeline_height).size_range(130.0..=tallest).show(ui, |ui| timeline::show(self, ui));
-        egui::Panel::right("inspector").resizable(true).default_size(400.0).min_size(260.0).show(ui, |ui| inspector::show(self, ui));
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::from_gray(18))).show(ui, |ui| self.preview(ui));
+        let bar = |fill: Color32, x: i8| egui::Frame::new().fill(fill).inner_margin(egui::Margin::symmetric(x, 0));
+        egui::Panel::top("top-bar").exact_size(size::TOP_BAR).resizable(false).frame(bar(color::BG, space::L as i8)).show(ui, |ui| panels::top_bar(self, ui));
+        egui::Panel::bottom("status").exact_size(size::STATUS_BAR).resizable(false).frame(bar(color::BG, space::L as i8)).show(ui, |ui| {
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| self.status_bar(ui));
+        });
+        let tallest = (ctx.content_rect().height() * 0.6).max(160.0);
+        egui::Panel::bottom("timeline").resizable(true).default_size(self.timeline_height).size_range(150.0..=tallest).frame(egui::Frame::new().fill(color::BG)).show(ui, |ui| timeline::show(self, ui));
+        egui::Panel::left("rail").exact_size(size::RAIL).resizable(false).frame(egui::Frame::new().fill(color::BG)).show(ui, |ui| panels::rail(self, ui));
+        if let Some(d) = self.drawer {
+            egui::Panel::left("drawer").resizable(true).default_size(size::DRAWER).size_range(240.0..=460.0).frame(egui::Frame::new().fill(color::BG)).show(ui, |ui| panels::drawer(self, ui, d));
+        }
+        egui::Panel::right("inspector").resizable(true).default_size(size::INSPECTOR).size_range(280.0..=560.0).frame(egui::Frame::new().fill(color::BG)).show(ui, |ui| inspector::show(self, ui));
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(color::STAGE)).show(ui, |ui| self.central(ui));
 
         self.export_window(&ctx);
+        self.shortcuts_window(&ctx);
+        if self.palette.open {
+            let commands = self.commands();
+            if let Some(cmd) = palette::show(&ctx, &mut self.palette, &commands) {
+                self.run(cmd);
+            }
+        }
+        if let Some(action) = toasts::show(&ctx, self.stage, &mut self.toasts) {
+            self.toast_action(action);
+        }
         // A widget that let go of its value this frame: its change becomes one edit.
         self.finish_gestures();
         if !self.dropped.is_empty() {
-            self.say("Drop pictures on a slot in the Slots tab (or type the path there).");
+            self.say("Drop pictures on a slot in the Slots drawer (or type the path there).");
             self.dropped.clear();
         }
         if !self.history.undo.is_empty() || self.status.is_some() {
