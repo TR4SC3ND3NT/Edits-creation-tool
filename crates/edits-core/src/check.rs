@@ -164,6 +164,25 @@ pub fn check(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> {
                             }
                         }
                         (SourceKind::None, None) => {}
+                        (SourceKind::Cube, None) => err(ep.clone(), format!("a {} effect needs \"source\"", e.kind), Some("path to a .cube file relative to the project")),
+                        (SourceKind::Cube, Some(src)) => {
+                            if let Some(dir) = base_dir {
+                                if let Err(msg) = crate::cube::load(&dir.join(src)) {
+                                    err(format!("{ep}.source"), format!("lookup table {src}: {msg}"), Some("a .cube file (LUT_3D_SIZE or LUT_1D_SIZE and rows of three numbers), relative to the project file"));
+                                }
+                            }
+                        }
+                        (SourceKind::Slot, None) => err(ep.clone(), format!("a {} effect needs \"source\"", e.kind), Some("\"slot:<name>\", a slot of this project")),
+                        (SourceKind::Slot, Some(src)) => match src.strip_prefix("slot:") {
+                            Some(name) if p.slots.contains_key(name) => {
+                                used_slots.insert(name.to_string());
+                            }
+                            Some(name) => {
+                                let names: Vec<&str> = p.slots.keys().map(String::as_str).collect();
+                                err(format!("{ep}.source"), format!("no slot \"{name}\""), Some(&format!("slots: {}", if names.is_empty() { "(none)".into() } else { names.join(", ") })));
+                            }
+                            None => err(format!("{ep}.source"), format!("\"{src}\" is not a slot"), Some("write \"slot:<name>\", naming a slot of this project")),
+                        },
                     }
                 }
             }
@@ -393,5 +412,45 @@ mod tests {
         assert!(says(7, "shader file not found", Severity::Error));
         assert!(says(8, "needs \"source\"", Severity::Error));
         assert!(says(9, "has no parameter \"center\"", Severity::Error) && at(9).len() == 1, "{:#?}", at(9));
+    }
+
+    #[test]
+    fn lookup_tables_and_map_slots_are_checked() {
+        let dir = std::env::temp_dir().join(format!("edits-check-cube-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ok.cube"), "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n").unwrap();
+        std::fs::write(dir.join("short.cube"), "LUT_3D_SIZE 2\n0 0 0\n").unwrap();
+        let p = Project::from_json(
+            r#"{"format":"edits.project/1",
+                "settings":{"width":64,"height":64,"fps":25,"duration":4},
+                "slots":{"map":{},"other":{}},
+                "layers":[{"id":"fx","kind":"adjustment","effects":[
+                  {"kind":"lut","source":"ok.cube"},
+                  {"kind":"lut","source":"short.cube"},
+                  {"kind":"lut","source":"missing.cube"},
+                  {"kind":"lut"},
+                  {"kind":"displacement_map","source":"slot:map"},
+                  {"kind":"displacement_map","source":"slot:nope"},
+                  {"kind":"displacement_map","source":"map.png"},
+                  {"kind":"displacement_map"},
+                  {"kind":"displacement_map","source":"slot:map","options":{"channel_x":"purple"}}
+                ]}]}"#,
+        )
+        .unwrap();
+        let f = check(&p, Some(&dir));
+        let at = |i: usize| -> Vec<&Finding> { f.iter().filter(|x| x.path.starts_with(&format!("layers[0:\"fx\"].effects[{i}]"))).collect() };
+        let says = |i: usize, needle: &str| at(i).iter().any(|x| x.message.contains(needle) && x.severity == Severity::Error);
+        assert!(at(0).is_empty() && at(4).is_empty(), "{f:#?}");
+        assert!(says(1, "ask for 8 rows"), "{f:#?}");
+        assert!(says(2, "cannot read"));
+        assert!(says(3, "needs \"source\""));
+        assert!(says(5, "no slot \"nope\"") && at(5)[0].hint.as_deref().unwrap().contains("map, other"));
+        assert!(says(6, "is not a slot"));
+        assert!(says(7, "needs \"source\""));
+        assert!(says(8, "\"purple\" is not a value"));
+        // A slot used only as a map is used.
+        assert!(!f.iter().any(|x| x.path == "slots.map" && x.message.contains("not used")));
+        assert!(f.iter().any(|x| x.path == "slots.other" && x.message.contains("not used")));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

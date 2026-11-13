@@ -1,6 +1,6 @@
 //! Distortions: each output pixel reads the picture somewhere else.
 
-use super::{fx, opt, p, EffectSpec};
+use super::{fx, opt, p, EffectSpec, SourceKind};
 
 const INF: f64 = f64::INFINITY;
 
@@ -21,4 +21,45 @@ pub(super) const EFFECTS: &[EffectSpec] = &[
          p!("rotation", [0.0], deg, "Turns the wedges, degrees."), p!("zoom", [1.0], x, 0.01, 100.0, "Magnification of the folded picture.")],
         options: &[opt!("mirror", ["on", "off"], "on: neighbouring wedges are mirror images; off: every wedge is the same copy.")],
         credit: "EffectCraft stylize2::kaleida, MIT OR Apache-2.0"),
+    fx!("distort", "wave_warp", "Waves across the picture: each line across the direction of travel is pushed sideways by a wave of `amplitude`.",
+        [p!("amplitude", [2.0], pct, "Push at the crest, % of height; negative flips the wave."), p!("wavelength", [10.0], pct, 0.01, INF, "Distance between crests, % of height."),
+         p!("direction", [90.0], deg, "Direction the waves travel, degrees: 90 travels right and pushes up and down, 0 travels up and pushes sideways."),
+         p!("speed", [0.0], time, "Waves per time unit passing a point; 0 holds still."), p!("phase", [0.0], deg, "Offset along the wave, degrees."),
+         p!("seed", [0.0], num, "Changes the levels of the noise shapes.")],
+        options: &[opt!("shape", ["sine", "square", "triangle", "sawtooth", "circle", "semicircle", "uncircle", "noise", "smooth_noise"], "Shape of the wave; noise is a random level per half wave, smooth_noise blends between them."),
+                   opt!("pin", ["none", "all", "center", "left", "top", "right", "bottom", "horizontal", "vertical"], "Where the push fades to nothing: the frame's edges (all, left, top, right, bottom; horizontal = top and bottom, vertical = left and right) or its centre.")],
+        reads_time: true, credit: "EffectCraft distort::wave_shape, wave_pin, wave_warp, MIT OR Apache-2.0"),
+    fx!("distort", "ripple", "Rings on water: circular waves around a centre push the picture toward and away from it, fading out at `radius`.",
+        [p!("amplitude", [1.0], pct, "Push at the centre, % of height; it falls linearly to 0 at `radius`."), p!("wavelength", [5.0], pct, 0.01, INF, "Distance between rings, % of height."),
+         p!("radius", [50.0], pct, 0.0, INF, "Radius of the rippled disc, % of height."), p!("center", [0.0, 0.0], pos, "Centre in composition units."),
+         p!("phase", [0.0], deg, "Offset of the rings, degrees."), p!("speed", [1.0], time, "Rings per time unit leaving the centre (negative: toward it).")],
+        reads_time: true, credit: "EffectCraft distort::ripple, MIT OR Apache-2.0"),
+    fx!("distort", "shockwave", "A ring that expands from a centre and bends the picture as it passes: key `progress` from 0 to 1 on a hit.",
+        [p!("progress", [0.5], num, 0.0, 1.0, "0 = the ring at the centre, 1 = at `radius` and gone; it fades as it grows."), p!("center", [0.0, 0.0], pos, "Centre in composition units."),
+         p!("radius", [60.0], pct, 0.0, INF, "Radius the ring reaches at progress 1, % of height."), p!("width", [5.0], pct, 0.0, INF, "Width of the ring, % of height."),
+         p!("strength", [3.0], pct, "Largest push, % of height; negative pulls inward.")]),
+    fx!("distort", "mirror", "Reflect one side of a line onto the other: the half the line's normal points to shows the other half mirrored.",
+        [p!("center", [0.0, 0.0], pos, "A point on the mirror line, composition units."), p!("angle", [0.0], deg, "Direction of the normal, degrees clockwise from right: 0 mirrors the left half onto the right, 90 the top onto the bottom.")],
+        credit: "EffectCraft distort::mirror, MIT OR Apache-2.0"),
+    fx!("distort", "tile", "Repeat the picture in a grid of smaller copies, mirrored or not.",
+        [p!("tiles", [2.0, 2.0], x, 0.01, 1000.0, "Copies across and down."), p!("mirror", [1.0], num, 0.0, 1.0, "1 = neighbouring copies are mirror images (seamless), 0 = plain repeats."),
+         p!("offset", [0.0, 0.0], pos, "Moves the grid, composition units.")]),
+    fx!("distort", "polar", "Polar coordinates: wrap the picture into a disc (tiny planet) or unroll a disc into a strip.",
+        [p!("amount", [1.0], num, 0.0, 1.0, "Mix between the plain picture (0) and the full mapping (1).")],
+        options: &[opt!("direction", ["to_polar", "to_rect"], "to_polar: the picture's width becomes the turn about the centre and its bottom edge the centre (a tiny planet); to_rect: the inverse.")],
+        credit: "EffectCraft distort::polar, MIT OR Apache-2.0"),
+    fx!("distort", "lens_distortion", "Barrel (positive) or pincushion (negative) lens distortion about a centre.",
+        [p!("amount", [0.2], num, -2.0, 2.0, "Distortion at the frame's corners: 0.2 reads 20% farther out there; negative pulls the corners in."),
+         p!("center", [0.0, 0.0], pos, "Centre of the lens, composition units."), p!("scale", [1.0], x, 0.01, 100.0, "Zoom applied after the distortion.")]),
+    fx!("distort", "displacement_map", "Push each pixel by the colour of a map picture (a slot), stretched over the frame: 50% grey does nothing, white pushes `amount`, black the other way.",
+        [p!("amount", [3.0, 3.0], pct, "Largest push across and down, % of height.")],
+        options: &[opt!("channel_x", ["red", "green", "blue", "alpha", "luminance", "off"], "Map channel that pushes across."),
+                   opt!("channel_y", ["green", "red", "blue", "alpha", "luminance", "off"], "Map channel that pushes down.")],
+        source: SourceKind::Slot, credit: "EffectCraft distort2 displacement map, MIT OR Apache-2.0"),
+    fx!("distort", "turbulent_displace", "Push the picture around with fractal noise: a liquid, smoky warp.",
+        [p!("amount", [2.0], pct, "Largest push, % of height."), p!("size", [10.0], pct, 0.01, INF, "Size of the largest swirls, % of height."),
+         p!("complexity", [3.0], count, 1.0, 8.0, "Octaves of noise: more adds finer detail."), p!("evolution", [0.0], deg, "Changes the noise smoothly; key it to animate (360 = one step)."),
+         p!("seed", [0.0], num, "A different noise.")],
+        options: &[opt!("mode", ["turbulent", "horizontal", "vertical", "twist", "bulge"], "turbulent pushes both ways by two noises; horizontal and vertical along one axis; twist swirls along the noise's contours; bulge pushes up its slopes.")],
+        credit: "EffectCraft distort2 turbulent displace (fbm), MIT OR Apache-2.0"),
 ];

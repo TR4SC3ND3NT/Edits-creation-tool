@@ -116,6 +116,10 @@ pub enum SourceKind {
     None,
     /// A WGSL file (the `custom` effect).
     Shader,
+    /// A `.cube` lookup table file (the `lut` effect).
+    Cube,
+    /// A picture slot of the project, written `slot:<name>` (a map).
+    Slot,
 }
 
 pub struct EffectSpec {

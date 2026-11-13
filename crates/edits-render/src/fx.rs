@@ -148,8 +148,8 @@ pub(crate) enum Step {
     RgbSplit([f32; 2]),
     /// 1 / scale, radians, mirror, offset in composition units.
     Transform(f32, f32, f32, [f32; 2]),
-    /// A built-in one-pass effect (`fxlib`) and its numbers.
-    Builtin(wgpu::RenderPipeline, crate::fxlib::Params),
+    /// A built-in one-pass effect (`fxlib`), its numbers and extra inputs.
+    Builtin(wgpu::RenderPipeline, crate::fxlib::Params, Box<crate::fxlib::Inputs>),
     Custom(wgpu::RenderPipeline, crate::fxlib::Params),
     /// Soft threshold (threshold, threshold - knee, 2 knee, 0.25 / knee),
     /// radius in pixels, colour x intensity.
@@ -183,12 +183,7 @@ impl Renderer {
                 continue;
             }
             if let Some(b) = crate::fxlib::builtin(&e.kind) {
-                let spec = edits_core::effects::spec(b.kind).ok_or_else(|| anyhow!("effect \"{}\" is not in the registry", b.kind))?;
-                if let Some(p) = (b.pack)(e, &crate::fxlib::Frame { h, aspect }) {
-                    let key = crate::fxlib::option_key(spec, e);
-                    let pipeline = self.builtin_pipeline(b, &key).map_err(|err| anyhow!("layer \"{layer}\": {err}"))?;
-                    steps.push(Step::Builtin(pipeline, p));
-                }
+                steps.extend(self.plan_builtin(layer, b, e, h)?);
                 continue;
             }
             let n = |name: &str| e.num(name) as f32;
@@ -430,7 +425,12 @@ impl Renderer {
                     self.pass(Pipe::Transform2d, &out, false, &s, None, &[[*inv, *radians, *mirror, aspect], [offset[0], offset[1], 0.0, 0.0]]);
                     out
                 }
-                Step::Builtin(pipeline, p) | Step::Custom(pipeline, p) => {
+                Step::Builtin(pipeline, p, inputs) => {
+                    let out = self.acquire(s.w, s.h);
+                    self.fx_pass(pipeline, &out, &s, inputs.aux.as_ref(), inputs.lut.as_ref(), p);
+                    out
+                }
+                Step::Custom(pipeline, p) => {
                     let out = self.acquire(s.w, s.h);
                     self.fx_pass(pipeline, &out, &s, None, None, p);
                     out

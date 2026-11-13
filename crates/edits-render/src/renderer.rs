@@ -144,6 +144,15 @@ pub(crate) struct Scene {
     pub clips: HashMap<String, Arc<Clip>>,
     /// Effect `source` -> key into `Renderer::custom`.
     pub custom: HashMap<String, String>,
+    /// Lookup tables of built-in effects (see `fxlib`).
+    pub loaded: crate::fxlib::Loaded,
+}
+
+impl Scene {
+    /// The picture of a slot the project uses (a layer's or an effect's map).
+    pub(crate) fn slot_texture(&self, name: &str) -> Option<Tex> {
+        self.slots.get(name).map(|p| p.tex.clone())
+    }
 }
 
 impl Scene {
@@ -542,6 +551,7 @@ impl Renderer {
                     clips.insert(v.slot.clone(), Arc::new(Clip::new(full, &key, info, trim, side)));
                 }
             }
+            used.extend(crate::fxlib::slots_used(l));
         }
         let mut slots = HashMap::new();
         let mut kept: Vec<String> = Vec::new();
@@ -613,7 +623,8 @@ impl Renderer {
         self.video_textures.retain(|((key, ..), _)| clip_keys.contains(&key.as_str()));
         self.binds.clear();
         self.fx_binds.clear();
-        self.scene = Some(Arc::new(Scene { project: project.clone(), slots, clips, custom }));
+        let loaded = self.load_fx_inputs(project, base_dir)?;
+        self.scene = Some(Arc::new(Scene { project: project.clone(), slots, clips, custom, loaded }));
         Ok(())
     }
 
@@ -691,7 +702,6 @@ impl Renderer {
 
     /// Upload a 3D lookup table of `size`^3 linear RGB entries, red varying
     /// fastest, then green, then blue (the order of a `.cube` file).
-    #[cfg_attr(not(test), allow(dead_code))] // the `lut` effect (WP4) will use it
     pub(crate) fn upload_lut(&mut self, size: u32, rgb: &[[f32; 3]]) -> Result<Lut> {
         if !(2..=256).contains(&size) || rgb.len() != (size * size * size) as usize {
             bail!("a 3D lookup table needs size^3 entries with a size of 2 to 256 (got {} entries for size {size})", rgb.len());
