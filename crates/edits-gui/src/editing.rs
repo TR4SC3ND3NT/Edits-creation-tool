@@ -684,6 +684,44 @@ pub fn ago(now: SystemTime, then: Option<SystemTime>) -> String {
     }
 }
 
+/// A history summary as a person reads it. The core's change lines
+/// (`~ /layers/@d/transform/rotation: [0, 0, 0] → [0, 0, 12]`) become
+/// `d: transform.rotation → [0, 0, 12]`; anything else is kept as it is.
+pub fn readable_summary(summary: &str) -> String {
+    let (line, more) = match summary.find(" (and ") {
+        Some(i) if summary.ends_with(')') => (&summary[..i], &summary[i..]),
+        _ => (summary, ""),
+    };
+    let Some((sign, rest)) = line.split_at_checked(2).filter(|(s, _)| matches!(*s, "~ " | "+ " | "- ")) else { return summary.to_string() };
+    if !rest.starts_with('/') {
+        return summary.to_string();
+    }
+    let (pointer, tail) = match rest.find(": ") {
+        Some(i) => (&rest[..i], &rest[i + 2..]),
+        None => (rest, ""),
+    };
+    let (pointer, reordered) = match pointer.strip_suffix(" reordered") {
+        Some(p) => (p, true),
+        None => (pointer, false),
+    };
+    let parts: Vec<&str> = pointer.split('/').filter(|p| !p.is_empty()).collect();
+    let place = match parts.as_slice() {
+        ["layers", id, rest @ ..] if id.starts_with('@') && !rest.is_empty() => format!("{}: {}", &id[1..], rest.join(".")),
+        ["layers", id] if id.starts_with('@') => format!("layer {}", &id[1..]),
+        [] => "project".to_string(),
+        all => all.join("."),
+    };
+    let new = tail.rsplit(" → ").next().unwrap_or(tail);
+    let text = match sign {
+        "+ " => format!("{place} added"),
+        "- " => format!("{place} removed"),
+        _ if reordered => format!("{place} reordered: {new}"),
+        _ if tail.is_empty() => format!("{place} changed"),
+        _ => format!("{place} → {new}"),
+    };
+    format!("{text}{more}")
+}
+
 /// How an actor is shown in the History list.
 pub fn actor_label(actor: &str) -> &str {
     match actor {
@@ -1014,5 +1052,16 @@ mod tests {
         fn to_json(self) -> Value {
             prop_json(&self)
         }
+    }
+
+    #[test]
+    fn summaries_read_like_sentences() {
+        assert_eq!(readable_summary("~ /layers/@d/transform/rotation: { \"keys\": [] } → [0, 0, 12]"), "d: transform.rotation → [0, 0, 12]");
+        assert_eq!(readable_summary("~ /settings/bpm: 123 → 130"), "settings.bpm → 130");
+        assert_eq!(readable_summary("+ /layers/@tex/effects/0: { \"kind\": \"glow\" } (and 2 more changes)"), "tex: effects.0 added (and 2 more changes)");
+        assert_eq!(readable_summary("- /layers/@a: { \"id\": \"a\" }"), "layer a removed");
+        assert_eq!(readable_summary("~ /layers reordered: a, b → b, a"), "layers reordered: b, a");
+        assert_eq!(readable_summary("opacity of tex = 0.33"), "opacity of tex = 0.33");
+        assert_eq!(readable_summary("reference_draft"), "reference_draft");
     }
 }

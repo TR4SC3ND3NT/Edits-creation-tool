@@ -67,21 +67,20 @@ const BLENDS: [Blend; 8] = [Blend::Normal, Blend::Add, Blend::Screen, Blend::Mul
 /// Height of a row of the inspector.
 const ROW: f32 = 26.0;
 /// Width of the unit column after the values.
-const UNIT: f32 = 26.0;
+const UNIT: f32 = 36.0;
 /// Width of the key button at the end of a row.
 const KEY: f32 = 20.0;
 
 /// A row: a label in the label column, then `add` in the rest. Returns
 /// whether the pointer is over the row.
-fn field_row(ui: &mut Ui, label: RichText, hover: &str, add: impl FnOnce(&mut Ui)) -> bool {
+fn field_row(ui: &mut Ui, label: &str, hover: &str, add: impl FnOnce(&mut Ui)) -> bool {
     let row = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), ROW));
     let hovered = ui.rect_contains_pointer(row);
     ui.allocate_ui_with_layout(row.size(), Layout::left_to_right(Align::Center), |ui| {
         ui.set_min_size(row.size());
         let (r, resp) = ui.allocate_exact_size(vec2(size::LABEL_COLUMN, ROW), Sense::hover());
-        let galley = ui.painter().layout_no_wrap(label.text().to_string(), theme::body(), color::TEXT_MUTED);
-        let _ = galley;
-        ui.put(r, egui::Label::new(label).truncate().selectable(false));
+        let galley = widgets::one_line(ui.painter(), label, theme::body(), color::TEXT_MUTED, r.width() - space::XS);
+        ui.painter().galley(pos2(r.left(), r.center().y - galley.size().y / 2.0), galley, color::TEXT_MUTED);
         if !hover.is_empty() {
             resp.on_hover_text(hover);
         }
@@ -100,7 +99,7 @@ fn faint(t: impl Into<String>) -> RichText {
 
 /// A read-only value row.
 fn info_row(ui: &mut Ui, name: &str, value: String) {
-    field_row(ui, label_text(name), "", |ui| {
+    field_row(ui, name, "", |ui| {
         ui.add(egui::Label::new(RichText::new(value).font(theme::mono()).color(color::TEXT)).truncate());
     });
 }
@@ -220,6 +219,11 @@ fn key_button(ui: &mut Ui, here: bool, animated: bool, row_hovered: bool) -> egu
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// The key strip shows for a property picked by hand, or an animated one.
+fn wants_strip(app: &App, cx: &Cx, r: &PropRef) -> bool {
+    app.picked_by_hand || !keys_of(r.get(cx.base, cx.base_layer())).is_empty()
+}
+
 fn short_name(r: &PropRef) -> String {
     match r {
         PropRef::Transform(n) | PropRef::Camera(n) => n.to_string(),
@@ -287,6 +291,7 @@ fn prop_row(app: &mut App, ui: &mut Ui, cx: &Cx, r: PropRef, speed: f64, range: 
         hover.push_str("Click to pick it: its keys show below, and double-clicking a timeline row keys it there.");
         if lresp.on_hover_text(hover).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             app.selected_prop = Some(r.clone());
+            app.picked_by_hand = true;
         }
 
         // ---- the key button and the unit, from the right ----
@@ -301,6 +306,7 @@ fn prop_row(app: &mut App, ui: &mut Ui, cx: &Cx, r: PropRef, speed: f64, range: 
             };
             if key_button(ui, here, animated, row_hovered).on_hover_text(key_tip).clicked() {
                 app.selected_prop = Some(r.clone());
+                app.picked_by_hand = true;
                 if let Some(prop) = with_key_here(cx.base, base_prop.as_ref(), &default, cx.t) {
                     app.commit(vec![set_prop(cx.id(), &r, &prop)], format!("key {} of {} at {} {}", r.label(), cx.id(), num(cx.t), cx.unit));
                 }
@@ -312,11 +318,15 @@ fn prop_row(app: &mut App, ui: &mut Ui, cx: &Cx, r: PropRef, speed: f64, range: 
             // ---- the values ----
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 3.0;
-                let n = value.len().max(1) as f32;
-                let each = ((ui.available_width() - 3.0 * (n - 1.0)) / n).clamp(36.0, 120.0);
+                // A grid of three slots: one or two values fill two, three fill three.
+                let n = value.len().max(1);
+                let slots = n.max(3) as f32;
+                let slot = (ui.available_width() - 3.0 * (slots - 1.0)) / slots;
+                let span = if n <= 2 { 2.0 * slot + 3.0 } else { n as f32 * slot + 3.0 * (n as f32 - 1.0) };
+                let each = ((span - 3.0 * (n as f32 - 1.0)) / n as f32).max(32.0);
                 for c in 0..value.len() {
                     let mut v = value[c];
-                    let mut dv = egui::DragValue::new(&mut v).speed(speed).max_decimals(4);
+                    let mut dv = egui::DragValue::new(&mut v).speed(speed).max_decimals(4).custom_formatter(|v, _| num(v));
                     if let Some(range) = &range {
                         dv = dv.range(range.clone()).clamp_existing_to_range(false);
                     }
@@ -374,7 +384,7 @@ fn key_strip(app: &mut App, ui: &mut Ui, cx: &Cx, r: &PropRef) {
                     let k = &keys[i];
                     ui.label(label_text("Ease")).on_hover_text(format!("How the value moves from the key at {} to the one at {}", num(k.t), num(keys[i + 1].t)));
                     let current = ease_name(&k.ease);
-                    egui::ComboBox::from_id_salt(("ease", r.label())).selected_text(RichText::new(&current).font(theme::mono())).width(116.0).show_ui(ui, |ui| {
+                    widgets::combo(("ease", r.label()), RichText::new(&current).font(theme::mono()), 116.0).show_ui(ui, |ui| {
                         for name in ease_choices() {
                             if ui.selectable_label(current == name, name).clicked() && current != name {
                                 if let Some(prop) = with_ease(base_prop.as_ref(), i, ease_from_choice(name, &k.ease)) {
@@ -461,7 +471,6 @@ fn props(app: &mut App, ui: &mut Ui, cx: &Cx, props: Vec<(PropRef, &'static str)
     for (r, doc) in props {
         let unit = match &r {
             PropRef::Transform("rotation") | PropRef::Camera("rotation") | PropRef::Camera("fov") => "°",
-            PropRef::Transform("scale") => "×",
             _ => editing::unit_of(doc),
         };
         let (speed, range) = speed_for(&r, unit, &r.default_value());
@@ -477,7 +486,7 @@ fn camera(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, t: f64, u
         (PropRef::Camera("rotation"), "Camera rotation in degrees (x, y, z)."),
     ];
     props(app, ui, &cx, list);
-    if let Some(r @ PropRef::Camera(_)) = app.selected_prop.clone() {
+    if let Some(r @ PropRef::Camera(_)) = app.selected_prop.clone().filter(|r| wants_strip(app, &cx, r)) {
         key_strip(app, ui, &cx, &r);
     }
 }
@@ -497,10 +506,10 @@ fn transform_doc(name: &str) -> &'static str {
 fn fixed_values(app: &mut App, ui: &mut Ui, id: &str, field: &'static str, shown: Vec<f64>, base: Vec<f64>, range: RangeInclusive<f64>, label: &str) {
     ui.spacing_mut().item_spacing.x = 3.0;
     let n = shown.len() as f32;
-    let each = ((ui.available_width() - UNIT - KEY - 6.0 - 3.0 * (n - 1.0)) / n).clamp(32.0, 120.0);
+    let each = ((ui.available_width() - UNIT - KEY - 6.0 - 3.0 * (n - 1.0)) / n).max(32.0);
     for c in 0..shown.len() {
         let mut v = shown[c];
-        let resp = stable_drag(ui, (id, field, c), each, egui::DragValue::new(&mut v).speed(0.005).range(range.clone()).max_decimals(3));
+        let resp = stable_drag(ui, (id, field, c), each, egui::DragValue::new(&mut v).speed(0.005).range(range.clone()).max_decimals(3).custom_formatter(|v, _| num(v)));
         if resp.changed() {
             let mut nv: Vec<f64> = base.iter().map(|x| tidy(*x)).collect();
             nv[c] = tidy(v);
@@ -527,9 +536,9 @@ fn layer(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, l: &Layer,
         match &l.kind {
             LayerKind::Image { slot } => {
                 let file = shown.slots.get(slot).and_then(|s| s.path.clone()).unwrap_or_else(|| "empty: a placeholder".into());
-                field_row(ui, label_text("Slot"), "The picture this layer shows. Change the slot's picture in the Slots drawer.", |ui| {
+                field_row(ui, "Slot", "The picture this layer shows. Change the slot's picture in the Slots drawer.", |ui| {
                     let names: Vec<String> = base.slots.keys().cloned().collect();
-                    egui::ComboBox::from_id_salt("layer-slot").selected_text(slot.as_str()).width(96.0).show_ui(ui, |ui| {
+                    widgets::combo("layer-slot", slot.as_str(), 96.0).show_ui(ui, |ui| {
                         for n in &names {
                             if ui.selectable_label(n == slot, n).clicked() && n != slot {
                                 app.commit(vec![editing::set_field(&id, "slot", json!(n))], format!("slot of {id}: {n}"));
@@ -544,7 +553,7 @@ fn layer(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, l: &Layer,
                     LayerKind::Solid { color } => *color,
                     _ => *c,
                 };
-                field_row(ui, label_text("Colour"), "Red, green, blue and alpha, from 0 to 1", |ui| {
+                field_row(ui, "Colour", "Red, green, blue and alpha, from 0 to 1", |ui| {
                     let (sw, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
                     let to8 = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u8;
                     ui.painter().rect(sw, radius::SMALL, Color32::from_rgba_unmultiplied(to8(c[0]), to8(c[1]), to8(c[2]), to8(c[3])), Stroke::new(1.0, color::LINE_STRONG), egui::StrokeKind::Inside);
@@ -557,21 +566,21 @@ fn layer(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, l: &Layer,
                     LayerKind::Cube { size, .. } => *size,
                     _ => *sz,
                 };
-                field_row(ui, label_text("Size"), "Width, height and depth of the cube", |ui| {
+                field_row(ui, "Size", "Width, height and depth of the cube", |ui| {
                     fixed_values(app, ui, &id, "size", sz.to_vec(), base_size.to_vec(), 0.001..=100.0, "w h d");
                 });
             }
             LayerKind::Adjustment => {
-                field_row(ui, label_text("Kind"), "", |ui| {
+                field_row(ui, "Kind", "", |ui| {
                     ui.label(faint("Applies its effects to the layers below"));
                 });
             }
         }
         for (field, value, label) in [("in", l.start, "In"), ("out", end, "Out")] {
-            field_row(ui, label_text(label), &format!("In {unit}. Or drag the edge of the bar in the timeline (snaps to quarter beats; Alt: frames)."), |ui| {
+            field_row(ui, label, &format!("In {unit}. Or drag the edge of the bar in the timeline (snaps to quarter beats; Alt: frames)."), |ui| {
                 ui.spacing_mut().item_spacing.x = 3.0;
                 let mut v = value;
-                let resp = stable_drag(ui, (&id, field), 86.0, egui::DragValue::new(&mut v).speed(0.02).max_decimals(4));
+                let resp = stable_drag(ui, (&id, field), 86.0, egui::DragValue::new(&mut v).speed(0.02).max_decimals(4).custom_formatter(|v, _| num(v)));
                 if resp.changed() {
                     app.edit_live(resp.id, vec![editing::set_field(&id, field, json!(tidy(v)))], format!("{field} of {id} = {}", num(v)));
                 }
@@ -585,8 +594,8 @@ fn layer(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, l: &Layer,
                 });
             });
         }
-        field_row(ui, label_text("Blend"), "How the layer mixes with what is under it", |ui| {
-            egui::ComboBox::from_id_salt("layer-blend").selected_text(blend_text(base_l.blend)).width(96.0).show_ui(ui, |ui| {
+        field_row(ui, "Blend", "How the layer mixes with what is under it", |ui| {
+            widgets::combo("layer-blend", blend_text(base_l.blend), 96.0).show_ui(ui, |ui| {
                 for b in BLENDS {
                     if ui.selectable_label(b == base_l.blend, blend_text(b)).clicked() && b != base_l.blend {
                         app.commit(vec![editing::set_field(&id, "blend", json!(blend_text(b)))], format!("blend of {id}: {}", blend_text(b)));
@@ -594,7 +603,7 @@ fn layer(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, l: &Layer,
                 }
             });
         });
-        field_row(ui, label_text("Now"), "Whether the layer is drawn at the playhead", |ui| {
+        field_row(ui, "Now", "Whether the layer is drawn at the playhead", |ui| {
             let (text, c) = if !l.enabled {
                 ("Disabled", color::WARN)
             } else if active {
@@ -613,7 +622,7 @@ fn layer(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, l: &Layer,
     widgets::section(ui, "transform", "Transform", true, |_| {}, |ui| {
         let list: Vec<(PropRef, &'static str)> = editing::TRANSFORM_PROPS.iter().map(|n| (PropRef::Transform(n), transform_doc(n))).collect();
         props(app, ui, &cx, list);
-        if let Some(r @ PropRef::Transform(_)) = app.selected_prop.clone() {
+        if let Some(r @ PropRef::Transform(_)) = app.selected_prop.clone().filter(|r| wants_strip(app, &cx, r)) {
             key_strip(app, ui, &cx, &r);
         }
     });
@@ -682,7 +691,7 @@ fn layer(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, l: &Layer,
                     None => e.params.keys().map(|k| (PropRef::Effect { index: i, kind: e.kind.clone(), param: k.clone() }, "")).collect(),
                 };
                 ui.scope(|ui| props(app, ui, &cx, list));
-                if let Some(r @ PropRef::Effect { index, .. }) = app.selected_prop.clone() {
+                if let Some(r @ PropRef::Effect { index, .. }) = app.selected_prop.clone().filter(|r| wants_strip(app, &cx, r)) {
                     if index == i && r.fits(l) {
                         key_strip(app, ui, &cx, &r);
                     }
@@ -723,7 +732,7 @@ fn header(app: &mut App, ui: &mut Ui, l: Option<&Layer>, at: &str) {
             let id = l.id.clone();
             let more = tip(widgets::small_icon_button(ui, Icon::Ellipsis), "More", &[]);
             egui::Popup::menu(&more).frame(widgets::popover_frame()).show(|ui| {
-                ui.set_min_width(200.0);
+                ui.set_width(200.0);
                 if widgets::menu_item(ui, Some(Icon::ArrowUp), "Move up", None).on_hover_text("One place up: towards the front").clicked() {
                     app.run(Cmd::MoveLayer(id.clone(), true));
                     ui.close();

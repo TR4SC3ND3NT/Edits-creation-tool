@@ -193,6 +193,13 @@ pub fn one_line(painter: &egui::Painter, text: &str, font: FontId, color: Color3
     painter.layout_job(job)
 }
 
+/// A drop-down with the window's chevron instead of egui's triangle.
+pub fn combo(id: impl std::hash::Hash + std::fmt::Debug, selected: impl Into<egui::WidgetText>, width: f32) -> egui::ComboBox<'static> {
+    egui::ComboBox::from_id_salt(id).selected_text(selected).width(width).icon(|ui, rect, _visuals, open| {
+        paint_icon(ui.painter(), rect.center(), if open { Icon::ChevronUp } else { Icon::ChevronDown }, 12.0, color::TEXT_FAINT);
+    })
+}
+
 /// A thin divider inside menus and panels.
 pub fn divider(ui: &mut Ui) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 9.0), Sense::hover());
@@ -263,7 +270,13 @@ pub fn empty_state(ui: &mut Ui, i: Icon, title: &str, body: &str, hints: &[(&str
             ui.horizontal(|ui| {
                 let left = ((ui.available_width() - 220.0) / 2.0).max(0.0);
                 ui.add_space(left);
-                ui.allocate_ui_with_layout(vec2(80.0, 18.0), egui::Layout::right_to_left(egui::Align::Center), |ui| shortcut(ui, keys));
+                ui.allocate_ui_with_layout(vec2(80.0, 18.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Right to left: the last key first.
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    for k in keys.split('+').rev() {
+                        kbd(ui, k);
+                    }
+                });
                 ui.add_space(space::M);
                 ui.label(RichText::new(*what).color(color::TEXT_MUTED));
             });
@@ -295,8 +308,9 @@ pub fn popover_frame() -> egui::Frame {
 pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T, &str)]) -> bool {
     let mut changed = false;
     let font = theme::mono();
-    let widths: Vec<f32> = options.iter().map(|(_, l)| ui.painter().layout_no_wrap(l.to_string(), font.clone(), color::TEXT).size().x + 16.0).collect();
-    let total: f32 = widths.iter().sum::<f32>() + 4.0;
+    // Equal parts across the width.
+    let total = ui.available_width();
+    let widths: Vec<f32> = vec![(total - 4.0) / options.len().max(1) as f32; options.len()];
     let (rect, _) = ui.allocate_exact_size(vec2(total, 24.0), Sense::hover());
     ui.painter().rect_filled(rect, radius::SMALL, color::CONTROL);
     let mut x = rect.left() + 2.0;

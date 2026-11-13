@@ -168,35 +168,32 @@ pub(crate) fn drawer(app: &mut App, ui: &mut Ui, d: Drawer) {
 
 /// Entries that add a layer: at the playhead, above the selected layer.
 pub(crate) fn add_layer_entries(app: &mut App, ui: &mut Ui) {
+    ui.set_width(240.0);
     let Some(p) = app.project().cloned() else {
         ui.label(RichText::new("No valid project yet.").color(color::TEXT_FAINT));
         return;
     };
-    ui.set_min_width(220.0);
-    ui.label(widgets::eyebrow("Add at the playhead"));
-    let slots: Vec<(String, String)> = p.slots.iter().map(|(n, s)| (n.clone(), s.path.clone().unwrap_or_else(|| "(empty)".into()))).collect();
     let mut chosen = None;
-    ui.menu_button(RichText::new(format!("{}   Image", widgets::glyph(Icon::Image))), |ui| {
-        if slots.is_empty() {
-            ui.label(RichText::new("No slots yet: add one in the Slots drawer.").color(color::TEXT_FAINT));
-        }
-        for (name, path) in &slots {
-            if widgets::menu_item(ui, None, name, None).on_hover_text(format!("A picture from slot \"{name}\": {path}")).clicked() {
-                chosen = Some(NewLayer::Image(name.clone()));
-            }
-        }
-    });
+    ui.label(widgets::eyebrow("Add at the playhead"));
     if widgets::menu_item(ui, Some(Icon::Square), "Solid", None).on_hover_text("A flat colour").clicked() {
         chosen = Some(NewLayer::Solid);
     }
     if widgets::menu_item(ui, Some(Icon::SlidersHorizontal), "Adjustment", None).on_hover_text("No picture: its effects apply to everything beneath it").clicked() {
         chosen = Some(NewLayer::Adjustment);
     }
-    ui.menu_button(RichText::new(format!("{}   Cube", widgets::glyph(Icon::Box))), |ui| {
-        ui.label(widgets::eyebrow("Picture on its faces"));
-        for (name, path) in &slots {
-            if widgets::menu_item(ui, None, name, None).on_hover_text(format!("Slot \"{name}\": {path}")).clicked() {
-                chosen = Some(NewLayer::Cube(name.clone()));
+    egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+        for (title, icon, cube) in [("Image from slot", Icon::Image, false), ("Cube with slot", Icon::Box, true)] {
+            widgets::divider(ui);
+            ui.label(widgets::eyebrow(title));
+            if p.slots.is_empty() {
+                ui.label(RichText::new("No slots yet: add one in the Slots drawer.").font(theme::small()).color(color::TEXT_FAINT));
+            }
+            for (name, slot) in &p.slots {
+                let path = slot.path.clone().unwrap_or_else(|| "empty".into());
+                let r = widgets::menu_item(ui, Some(icon), name, Some(&shorten(&path, 22)));
+                if r.on_hover_text(format!("Slot \"{name}\": {path}")).clicked() {
+                    chosen = Some(if cube { NewLayer::Cube(name.clone()) } else { NewLayer::Image(name.clone()) });
+                }
             }
         }
     });
@@ -209,7 +206,7 @@ pub(crate) fn add_layer_entries(app: &mut App, ui: &mut Ui) {
 /// One entry per effect of the registry, each with its one-line documentation:
 /// the kind chosen, if any.
 pub(crate) fn effect_menu(ui: &mut Ui) -> Option<&'static str> {
-    ui.set_min_width(220.0);
+    ui.set_width(220.0);
     let mut chosen = None;
     ui.label(widgets::eyebrow("Add effect"));
     egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
@@ -293,7 +290,7 @@ pub(crate) fn slots(app: &mut App, ui: &mut Ui) {
                 }
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Fit").color(color::TEXT_MUTED));
-                    egui::ComboBox::from_id_salt(("slot-fit", name)).selected_text(fit_text(slot.fit)).width(84.0).show_ui(ui, |ui| {
+                    widgets::combo(("slot-fit", name), fit_text(slot.fit), 84.0).show_ui(ui, |ui| {
                         for (f, sf) in [(Fit::Cover, SlotFit::Cover), (Fit::Contain, SlotFit::Contain), (Fit::Stretch, SlotFit::Stretch)] {
                             if ui.selectable_label(slot.fit == f, fit_text(f)).clicked() && slot.fit != f {
                                 app.commit(vec![EditOp::set_slot(name.clone(), None, Some(sf), None)], format!("fit of slot {name}: {}", fit_text(f)));
@@ -381,7 +378,7 @@ pub(crate) fn history(app: &mut App, ui: &mut Ui) {
         let badge = Rect::from_center_size(pos2(rect.left() + 14.0, rect.top() + 14.0), vec2(22.0, 22.0));
         ui.painter().rect_filled(badge, radius::NORMAL, color::CONTROL.gamma_multiply(alpha));
         widgets::paint_icon(ui.painter(), badge.center(), icon, 12.0, tint.gamma_multiply(alpha));
-        let summary = if e.summary.is_empty() { "(no description)".to_string() } else { e.summary.replace('→', "->") };
+        let summary = if e.summary.is_empty() { "(no description)".to_string() } else { editing::readable_summary(&e.summary) };
         let text_left = rect.left() + 34.0;
         let max_w = rect.right() - text_left - space::XS;
         let fg = if undone { color::TEXT_FAINT } else { color::TEXT };
@@ -389,7 +386,7 @@ pub(crate) fn history(app: &mut App, ui: &mut Ui) {
         ui.painter().galley(pos2(text_left, rect.top() + 6.0), galley, fg);
         let meta = format!("{} · {}{}", actor_label(&e.actor), ago(now, e.time), if undone { " · undone" } else if newest { " · Ctrl+Z undoes it" } else { "" });
         ui.painter().text(pos2(text_left, rect.top() + 23.0), Align2::LEFT_TOP, meta, theme::small(), color::TEXT_FAINT);
-        resp.on_hover_text(format!("{summary}\n{}{}", if undone { "Undone: Redo brings it back · " } else { "" }, ago(now, e.time)));
+        resp.on_hover_text(format!("{}\n{}{}", e.summary, if undone { "Undone: Redo brings it back · " } else { "" }, ago(now, e.time)));
     };
     egui::ScrollArea::vertical().id_salt("history-list").auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 2.0;

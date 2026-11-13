@@ -364,7 +364,7 @@ pub(crate) fn show(app: &mut App, ui: &mut Ui) {
                 let name_color = if is_selected { color::TEXT } else if row.enabled { color::TEXT_MUTED } else { color::TEXT_FAINT };
                 let name = gp.text(pos2(r.left() + space::L + 22.0, r.center().y), Align2::LEFT_CENTER, crate::app::shorten(&row.id, 16), theme::body(), name_color);
                 let kind = match row.layer {
-                    None => "camera".to_string(),
+                    None => String::new(),
                     Some(_) => row.kind.split(' ').next().unwrap_or("").to_string(),
                 };
                 if name.right() + 70.0 < time_left {

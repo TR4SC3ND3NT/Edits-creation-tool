@@ -6,6 +6,7 @@
 //! The bookkeeping and the reading of the shared history are pure and unit
 //! tested; `show` draws them.
 
+use crate::editing::{actor_label, readable_summary};
 use crate::theme::{self, color, radius, size, space, text};
 use crate::widgets::{self, Icon};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, CornerRadius, FontId, Rect, RichText, Sense, Stroke, Ui};
@@ -63,7 +64,7 @@ pub struct Toasts {
 impl Toasts {
     /// Add a toast; the same toast as the newest one counts up instead.
     pub fn push(&mut self, now: Instant, kind: Kind, title: impl Into<String>, body: impl Into<String>, action: Option<(String, Action)>) {
-        let (title, body) = (title.into().replace('→', "->"), body.into().replace('→', "->"));
+        let (title, body) = (title.into(), body.into());
         let ttl = if action.is_some() || kind == Kind::Error { LONG } else { SHORT };
         if let Some(last) = self.list.last_mut().filter(|t| t.kind == kind && t.title == title && t.body == body) {
             last.count += 1;
@@ -125,10 +126,10 @@ pub fn disk_change(before: &HistoryList, after: &HistoryList) -> DiskChange {
 /// The toast for a change on disk: kind, title, body, button.
 pub fn for_disk_change(change: &DiskChange, revision: u64) -> (Kind, String, String, Option<(String, Action)>) {
     match change {
-        DiskChange::Edit(e) if e.actor == AGENT => (Kind::Agent, "Agent edit".into(), e.summary.clone(), Some(("Undo".into(), Action::UndoEdit(e.clone())))),
-        DiskChange::Edit(e) => (Kind::Info, format!("Edit by {}", crate::editing::actor_label(&e.actor)), e.summary.clone(), None),
-        DiskChange::Undo(e) if e.actor == AGENT => (Kind::Agent, "Agent undid its edit".into(), e.summary.clone(), Some(("Redo".into(), Action::Redo))),
-        DiskChange::Undo(e) => (Kind::Agent, "Agent undid an edit".into(), format!("{} ({})", e.summary, crate::editing::actor_label(&e.actor)), Some(("Redo".into(), Action::Redo))),
+        DiskChange::Edit(e) if e.actor == AGENT => (Kind::Agent, "Agent edit".into(), readable_summary(&e.summary), Some(("Undo".into(), Action::UndoEdit(e.clone())))),
+        DiskChange::Edit(e) => (Kind::Info, format!("Edit by {}", actor_label(&e.actor)), readable_summary(&e.summary), None),
+        DiskChange::Undo(e) if e.actor == AGENT => (Kind::Agent, "Agent undid its edit".into(), readable_summary(&e.summary), Some(("Redo".into(), Action::Redo))),
+        DiskChange::Undo(e) => (Kind::Agent, "Agent undid an edit".into(), format!("{} ({})", readable_summary(&e.summary), actor_label(&e.actor)), Some(("Redo".into(), Action::Redo))),
         DiskChange::Plain => (Kind::Info, "Reloaded".into(), format!("The file changed on disk · revision {revision}"), None),
     }
 }

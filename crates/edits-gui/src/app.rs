@@ -243,6 +243,8 @@ pub(crate) struct App {
     // ---- editing ----
     /// The property double-clicking a timeline row keys, and the key strip shows.
     pub selected_prop: Option<PropRef>,
+    /// The property was picked by hand (not the default): its key strip shows even when it has no keys.
+    pub picked_by_hand: bool,
     pending: Option<Pending>,
     ghost: Option<Ghost>,
     ghost_serial: u64,
@@ -329,6 +331,7 @@ impl App {
             timeline_height: 240.0,
             ctx: ctx.clone(),
             selected_prop: Some(PropRef::Transform("scale")),
+            picked_by_hand: false,
             pending: None,
             ghost: None,
             ghost_serial: 0,
@@ -446,13 +449,12 @@ impl App {
 
     /// A message in the status bar.
     pub fn say(&mut self, text: impl Into<String>) {
-        // The bundled fonts have no arrow in every style; the core's change lines use one.
-        self.status = Some(Status { text: text.into().replace('→', "->"), detail: String::new(), error: false, at: Instant::now() });
+        self.status = Some(Status { text: text.into(), detail: String::new(), error: false, at: Instant::now() });
     }
 
     /// An error: a toast, and the status bar (`detail` goes into its tooltip).
     pub fn fail(&mut self, text: impl Into<String>, detail: impl Into<String>) {
-        let (text, detail) = (text.into().replace('→', "->"), detail.into().replace('→', "->"));
+        let (text, detail) = (text.into(), detail.into());
         // "Not applied (what): why" reads best as a title and a line.
         let (title, body) = match text.split_once(": ") {
             Some((t, b)) if t.len() < 60 => (t.to_string(), b.to_string()),
@@ -601,7 +603,7 @@ impl App {
             Ok(u) => {
                 self.take_report(reload::load(&self.path), Origin::Own);
                 self.say(format!("Undid {}: {}", who(&u.entry.actor), u.entry.summary));
-                self.toasts.push(Instant::now(), toasts::Kind::Info, format!("Undid {}", who(&u.entry.actor)), u.entry.summary.clone(), Some(("Redo".into(), toasts::Action::Redo)));
+                self.toasts.push(Instant::now(), toasts::Kind::Info, format!("Undid {}", who(&u.entry.actor)), editing::readable_summary(&u.entry.summary), Some(("Redo".into(), toasts::Action::Redo)));
             }
             Err(e) => self.fail(shorten(&e, 120), e),
         }
@@ -1123,7 +1125,7 @@ impl App {
         // ---- transport, centred under the picture when there is room ----
         let group_w = 4.0 * size::ICON_BUTTON + 36.0 + 4.0 * 2.0;
         let centred = row.center().x - group_w / 2.0;
-        let x0 = if centred > left.response.rect.right() + space::L { centred } else { left.response.rect.right() + space::L };
+        let x0 = if centred > left.response.rect.right() + space::XL { centred } else { left.response.rect.right() + space::XL };
         let group = Rect::from_min_size(pos2(x0, row.top()), vec2(group_w, row.height()));
         ui.scope_builder(egui::UiBuilder::new().max_rect(group).layout(egui::Layout::left_to_right(egui::Align::Center)), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
@@ -1509,16 +1511,21 @@ impl App {
                         col.label(widgets::eyebrow(*title));
                         col.add_space(space::XXS);
                         for (k, what) in *keys {
-                            col.horizontal(|ui| {
-                                ui.allocate_ui_with_layout(vec2(104.0, 20.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                    for (i, alt) in k.split(" / ").enumerate() {
+                            col.allocate_ui_with_layout(vec2(col.available_width(), 24.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                ui.label(RichText::new(*what).color(color::TEXT_MUTED));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.add_space(space::L);
+                                    ui.spacing_mut().item_spacing.x = 3.0;
+                                    // Right to left: the last alternative, and its last key, first.
+                                    for (i, alt) in k.split(" / ").collect::<Vec<_>>().into_iter().rev().enumerate() {
                                         if i > 0 {
                                             ui.label(RichText::new("/").font(theme::small()).color(color::TEXT_FAINT));
                                         }
-                                        widgets::shortcut(ui, alt);
+                                        for key in alt.split('+').rev() {
+                                            widgets::kbd(ui, key);
+                                        }
                                     }
                                 });
-                                ui.label(RichText::new(*what).color(color::TEXT_MUTED));
                             });
                         }
                         col.add_space(space::L);
