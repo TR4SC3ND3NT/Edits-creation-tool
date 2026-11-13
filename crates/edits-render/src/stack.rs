@@ -79,7 +79,7 @@ impl Renderer {
         if let LayerKind::Video(v) = &layer.kind {
             if let Some(clip) = scene.clips.get(&v.slot) {
                 if let Some(sf) = ev.source_frame(layer, v, t, clip.info()) {
-                    frame = Some(self.video_picture(clip, sf).with_context(|| format!("layer \"{}\"", layer.id))?);
+                    frame = Some(self.video_picture(clip, sf, v.frame_blend).with_context(|| format!("layer \"{}\"", layer.id))?);
                 }
             }
         }

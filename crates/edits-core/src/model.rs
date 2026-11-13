@@ -389,6 +389,10 @@ pub enum FrameBlend {
     None,
     /// A cross-fade of the two neighbouring source frames, in linear light.
     Mix,
+    /// Both neighbouring source frames warped along their optical flow to the
+    /// instant between them, then cross-faded (plainly where the flow is not
+    /// trusted).
+    Flow,
 }
 impl FrameBlend {
     fn is_none(&self) -> bool {

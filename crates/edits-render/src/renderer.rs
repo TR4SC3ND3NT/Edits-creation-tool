@@ -13,7 +13,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use bytemuck::{Pod, Zeroable};
 use crate::stack::stack_signature;
 use crate::video::{self, Clip, VideoInfo, VideoStats, Videos};
-use edits_core::{Blend, ClipInfo, Evaluator, Layer, LayerKind, Project, Slot, SourceFrame};
+use edits_core::{Blend, ClipInfo, Evaluator, FrameBlend, Layer, LayerKind, Project, Slot, SourceFrame};
 use image::RgbaImage;
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -121,8 +121,8 @@ pub(crate) struct Picture {
 /// neighbouring output frames often show the same source frame).
 const VIDEO_TEXTURES: usize = 6;
 
-/// A video frame on the GPU: clip key, the two source frames and the weight of the second.
-type VideoTexKey = (String, u64, u64, u64);
+/// A video frame on the GPU: clip key, the two source frames, the weight of the second and whether it is a flow in-between.
+type VideoTexKey = (String, u64, u64, u64, bool);
 
 /// One textured quad of a layer.
 pub(crate) struct Quad {
@@ -691,28 +691,20 @@ impl Renderer {
         self.videos.stats
     }
 
-    /// The picture of a video slot's source frames `at` (crossed in linear
-    /// light when `at.weight` is not 0), uploaded with mip levels. The last
-    /// few are kept on the GPU.
-    pub(crate) fn video_picture(&mut self, clip: &Clip, at: SourceFrame) -> Result<Picture> {
+    /// The picture of a video slot's source frames `at` (blended by `blend`
+    /// when `at.weight` is not 0), uploaded with mip levels. The last few are
+    /// kept on the GPU.
+    pub(crate) fn video_picture(&mut self, clip: &Clip, at: SourceFrame, blend: FrameBlend) -> Result<Picture> {
         // Keyed by source frames: two trims of one file share their frames.
-        let key: VideoTexKey = (clip.key.clone(), clip.first + at.frame, clip.first + at.next, at.weight.to_bits());
+        let key: VideoTexKey = (clip.key.clone(), clip.first + at.frame, clip.first + at.next, at.weight.to_bits(), blend == FrameBlend::Flow);
         if let Some(i) = self.video_textures.iter().position(|(k, _)| *k == key) {
             let entry = self.video_textures.remove(i);
             let pic = entry.1.clone();
             self.video_textures.push(entry);
             return Ok(pic);
         }
-        let a = self.videos.frame(clip, at.frame)?;
-        let mixed;
-        let img: &RgbaImage = if at.weight > 0.0 && at.next != at.frame {
-            let b = self.videos.frame(clip, at.next)?;
-            mixed = video::mix(&a, &b, at.weight);
-            &mixed
-        } else {
-            &a
-        };
-        let pic = Picture { aspect: img.width() as f64 / img.height() as f64, tex: self.upload_picture(img) };
+        let img = self.videos.picture(clip, at, blend)?;
+        let pic = Picture { aspect: img.width() as f64 / img.height() as f64, tex: self.upload_picture(&img) };
         self.video_textures.push((key, pic.clone()));
         if self.video_textures.len() > VIDEO_TEXTURES {
             let (_, old) = self.video_textures.remove(0);
