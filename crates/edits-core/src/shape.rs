@@ -65,6 +65,7 @@ pub struct Shape {
 
 /// The outline of a shape, centred on the shape's origin.
 #[derive(Serialize, Deserialize, Clone, Debug)]
+#[allow(clippy::large_enum_variant)] // a few per layer; boxing would only add noise
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Geometry {
     /// A rectangle `size` = `[width, height]` (or one number for a square)
@@ -579,7 +580,7 @@ impl Shapes {
                 paint.push("fill".to_string());
             }
             if let Some(s) = &sh.stroke {
-                paint.push(format!("stroke {}%", short(&s.width)));
+                paint.push(match &s.width { Prop::Anim(_) => "stroke keyed".to_string(), w => format!("stroke {}%", short(w)) });
             }
             let ops: Vec<String> = sh
                 .operators

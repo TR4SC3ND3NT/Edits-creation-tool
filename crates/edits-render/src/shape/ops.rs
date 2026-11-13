@@ -217,7 +217,7 @@ pub(crate) fn trim(p: &BezPath, start: f64, end: f64, offset: f64, individually:
 /// Round every sharp corner with an arc of radius `r` (less where a
 /// neighbouring segment is shorter than `2 r`).
 pub(crate) fn round_corners(p: &BezPath, r: f64) -> BezPath {
-    if !(r > 0.0) || !r.is_finite() {
+    if r <= 0.0 || !r.is_finite() {
         return p.clone();
     }
     let mut out = Vec::new();
@@ -476,7 +476,7 @@ mod tests {
         assert!((full - PI).abs() < 1e-3, "{full}");
         for (s, e, o) in [(0.0, 0.5, 0.0), (0.2, 0.3, 0.0), (0.0, 0.25, 0.9), (0.6, 0.1, 0.0)] {
             let t = trim(&circle, s, e, o, false);
-            let want = (e - s as f64).abs() * full;
+            let want = (e - s).abs() * full;
             assert!((length(&t) - want).abs() < 1e-6, "{s} {e} {o}: {} vs {want}", length(&t));
             // A wrapped range is still one piece.
             assert_eq!(subpaths(&t).len(), 1);

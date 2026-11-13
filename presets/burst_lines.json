@@ -1,0 +1,106 @@
+{
+  "format": "edits.preset/1",
+  "name": "burst_lines",
+  "description": "Manga focus lines on the beat: dark wedges closing in on a point from the edges of the frame, flickering, then fading.",
+  "tags": ["shape", "hit", "anime", "manga"],
+  "target": "project",
+  "variables": {
+    "count": {
+      "type": "integer",
+      "default": 80,
+      "min": 8,
+      "max": 400,
+      "doc": "How many lines."
+    },
+    "thickness": {
+      "type": "number",
+      "default": 1.6,
+      "min": 0.1,
+      "max": 10,
+      "unit": "% of height",
+      "doc": "Width of a line well outside the frame (it narrows to a point inside)."
+    },
+    "clear": {
+      "type": "number",
+      "default": 0.28,
+      "min": 0,
+      "max": 1,
+      "unit": "heights",
+      "doc": "Radius of the clear middle the lines point at."
+    },
+    "position": {
+      "type": "vector",
+      "default": [0, 0],
+      "doc": "The point the lines close in on, in frame heights from the centre (y down)."
+    },
+    "color": {
+      "type": "color",
+      "default": [0, 0, 0],
+      "doc": "Colour of the lines (sRGB, 0..1, or #rrggbb)."
+    },
+    "every": {
+      "type": "number",
+      "default": 0,
+      "min": 0,
+      "max": 4,
+      "unit": "beats",
+      "doc": "How often the lines are redrawn; 0 at every frame."
+    },
+    "length": {
+      "type": "number",
+      "default": 1,
+      "min": 0.125,
+      "max": 64,
+      "unit": "beats",
+      "doc": "How long the lines show; they fade over the second half."
+    },
+    "seed": {
+      "type": "integer",
+      "default": 1,
+      "doc": "Another number gives other lines."
+    }
+  },
+  "apply": [
+    {
+      "layer": {
+        "place": "top",
+        "layer": {
+          "id": "burst_lines",
+          "kind": "shape",
+          "in": "=at",
+          "out": "=min(end, at + $length * beat)",
+          "transform": {
+            "position": "$position",
+            "opacity": { "keys": [ { "t": "=at + $length * beat * 0.5", "v": 1, "ease": "in" }, { "t": "=at + $length * beat", "v": 0 } ] }
+          },
+          "shapes": [
+            {
+              "type": "path",
+              "points": [
+                ["=aspect + 0.8", "=0 - $thickness / 100"],
+                ["=aspect + 0.8", "=$thickness / 100"],
+                ["$clear", 0]
+              ],
+              "closed": true,
+              "fill": { "color": "$color" },
+              "operators": [
+                {
+                  "kind": "repeater",
+                  "copies": "$count",
+                  "rotation": "=360 / $count",
+                  "jitter": {
+                    "rotation": "=180 / $count",
+                    "scale": 0.3,
+                    "opacity": 0.3,
+                    "every": "=$every * beat",
+                    "seed": "$seed"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

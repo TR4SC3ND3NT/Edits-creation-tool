@@ -293,6 +293,22 @@ of height, speeds heights per second. Every frame is computed from the time
 alone, so frames and sheets anywhere are exact; see `docs/FORMAT.md`
 (Particle layers).
 
+**Shapes.** Speed lines, manga focus lines, rings on beats, panel borders and
+stars are a `shape` layer: a list of `shapes` (`rect`, `ellipse`, `polystar`,
+`path`, `line`) in composition units, each with a `fill` and/or a `stroke`
+(width in % of height, `cap`, `join`, `dash`) and `operators` applied in order:
+`trim` (key `end` 0 to 100 to draw a line on), `repeater` (copies, each moved,
+turned, scaled and faded a step further; `jitter` re-draws a random change per
+copy every frame or every `every` beats), `round_corners`, `offset_path`,
+`zigzag`, `wiggle_path`. Quickest: `edits apply p.json speed_lines --at drop
+--var mode=horizontal`, `burst_lines --at b16` (black wedges closing in on a
+point), `ring_pulse --at b16 --var position=0.2,0`. By hand: `{ "id": "ring",
+"kind": "shape", "in": 16, "out": 17, "shapes": [{ "type": "ellipse", "size":
+0.6, "stroke": { "width": 2 }, "operators": [{ "kind": "trim", "end": { "keys":
+[{ "t": 16, "v": 0, "ease": "out" }, { "t": 17, "v": 100 }] } }] }] }`. Shapes are
+rasterised at the output resolution, so they stay sharp at any `--scale`; see
+`docs/FORMAT.md` (Shape layers).
+
 **Sound effects.** Whooshes, impacts and risers on cuts go in the top-level
 `audio_clips` list, mixed over the song at render without lowering it:
 `{ "id": "whoosh1", "path": "sfx/whoosh.wav", "at": "drop-0.25s", "trim_in": 0, "trim_out": 0.6, "volume": 0.7, "fade_in": 0, "fade_out": 0.1 }`.

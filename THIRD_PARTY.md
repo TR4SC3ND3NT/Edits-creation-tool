@@ -71,6 +71,17 @@ postprocessing, ISF), no code was taken from it.
 
 The particle sprites in `crates/edits-render/src/shaders/particles.wgsl` are ours.
 
+## Shapes
+
+| Our file | Source | Licence | What was taken |
+| --- | --- | --- | --- |
+| `crates/edits-render/src/shape/ops.rs` (`trim`, `round_corners`, `zigzag`, `wiggle`) | EffectCraft, https://github.com/storytold/effectcraft, `crates/path/src/ops.rs` | MIT OR Apache-2.0 (used under MIT) | Written after a description of its operators, not from the code: trim intervals (start and end swapped when reversed, the offset added modulo 1, a wrapping interval split in two) cut by arc length; round corners at vertices whose turn is between 1e-3 and pi - 1e-3, cut at `min(radius, half of each neighbouring segment)` with the handle factor `4/3 tan(phi / 4) / tan(phi / 2)`; the zigzag as equal arc-length pieces per segment displaced alternately along the normal (the corner bisector at a vertex), smooth handles at 0.36 of a piece; the wiggle as value noise per resampled point. The arc-length cutting on kurbo, the join through the start of a closed path, the curved-segment tangents and the noise are ours. |
+| `crates/edits-render/src/shape/ops.rs` (`repeat`), `crates/edits-render/src/shape/geom.rs` (`polystar`) | Skottie, https://skia.googlesource.com/skia, `modules/skottie/src/layers/shapelayer/` (Repeater, Polystar), and Lottie's polystar | BSD-3-Clause (Skia) | After their semantics (those of After Effects): copy `i` transformed by `i + offset` times the repeater transform about its anchor, opacity from start to end; polystar vertices from the top, clockwise, with roundness handles along the circle of `roundness x 2 pi r / (4 n)` (polygon) or `/ (2 n)` (star). The jitter is ours. No code was copied. |
+
+Crates: kurbo (https://github.com/linebender/kurbo, MIT OR Apache-2.0) for
+bezier paths, arc lengths, stroking, dashing and `expand_path`; zeno
+(https://github.com/dfrg/zeno, MIT OR Apache-2.0) for coverage masks.
+
 ## Text animators
 
 | Our file | Source | Licence | What was taken |

@@ -1,0 +1,71 @@
+{
+  "format": "edits.preset/1",
+  "name": "ring_pulse",
+  "description": "A ring that bursts out from a point on the beat, thinning and fading as it grows.",
+  "tags": ["shape", "hit", "overlay"],
+  "target": "project",
+  "variables": {
+    "size": {
+      "type": "number",
+      "default": 1.2,
+      "min": 0.05,
+      "max": 4,
+      "unit": "heights",
+      "doc": "Diameter the ring grows to."
+    },
+    "width": {
+      "type": "number",
+      "default": 3,
+      "min": 0.1,
+      "max": 20,
+      "unit": "% of height",
+      "doc": "Thickness of the ring at the start."
+    },
+    "position": {
+      "type": "vector",
+      "default": [0, 0],
+      "doc": "Centre of the ring, in frame heights from the centre (y down)."
+    },
+    "color": {
+      "type": "color",
+      "default": [1, 1, 1],
+      "doc": "Colour of the ring (sRGB, 0..1, or #rrggbb)."
+    },
+    "length": {
+      "type": "number",
+      "default": 1,
+      "min": 0.125,
+      "max": 16,
+      "unit": "beats",
+      "doc": "How long the ring takes to grow and fade."
+    }
+  },
+  "apply": [
+    {
+      "layer": {
+        "place": "top",
+        "layer": {
+          "id": "ring_pulse",
+          "kind": "shape",
+          "in": "=at",
+          "out": "=min(end, at + $length * beat)",
+          "blend": "screen",
+          "transform": {
+            "position": "$position",
+            "opacity": { "keys": [ { "t": "=at", "v": 1, "ease": "in" }, { "t": "=at + $length * beat", "v": 0 } ] }
+          },
+          "shapes": [
+            {
+              "type": "ellipse",
+              "size": { "keys": [ { "t": "=at", "v": "=vec($size * 0.05, $size * 0.05)", "ease": "expo_out" }, { "t": "=at + $length * beat", "v": "=vec($size, $size)" } ] },
+              "stroke": {
+                "color": "$color",
+                "width": { "keys": [ { "t": "=at", "v": "$width", "ease": "quad_out" }, { "t": "=at + $length * beat", "v": "=$width * 0.1" } ] }
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
