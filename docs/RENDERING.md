@@ -449,6 +449,43 @@ back to the stack as one quad covering the frame, so the layer's effects,
 opacity, blend mode and transition apply as for any layer. Its signature
 includes its time, so every motion blur instant is rendered.
 
+## Shape layers
+
+A shape layer is drawn on the CPU and handed to the GPU as one picture.
+`edits_core::shape::resolve` reads every value of its shapes at the layer's
+time; `src/shape/geom.rs` makes kurbo bezier paths of the geometries;
+`src/shape/ops.rs` applies the operators in order (trim by arc length,
+cutting at `inv_arclen`; the repeater as one path per copy with its own
+opacity; round corners as a cubic arc with handles `4/3 tan(phi / 4) r`
+between points cut at `min(radius, half of each neighbouring segment)`;
+`offset_path` by kurbo's `expand_path`; zigzag and wiggle by resampling each
+segment at equal arc lengths and moving the points along the normal or by
+hashed value noise). Strokes, with their caps, joins and dashes, are
+expanded to outlines by kurbo in the shape's own space, so the shape's and
+the layer's scale scale them too.
+
+`src/shape/raster.rs` then carries every outline through the layer's matrix
+(through the camera) into output pixels. When that matrix has no
+perspective, the beziers map exactly (a 2D affine); under perspective they
+are flattened to a tenth of a pixel in layer space and the points projected.
+zeno rasterises each outline to 8-bit coverage over its bounding box clipped
+to the frame (nonzero, or even-odd for a fill that asks), and the colours
+are composited "over" in linear light, premultiplied, into a frame-sized
+picture uploaded as RGBA16Float. That picture comes back to the stack as a
+quad covering the frame, like a particles layer's, so effects, masks,
+matte, opacity, blend mode and transitions apply as usual.
+
+Shapes are drawn at the output size, so they are as sharp at `--scale 0.5`
+as at 4K. The last picture of each shape layer is kept with everything it
+depends on (the resolved values, the matrix, the output size; at most 8
+layers): a still shape on a still layer is rasterised once however many
+frames show it (`Renderer::shape_rasterisations` counts them). A layer's
+signature includes its resolved shapes, so keyed shapes, a moving wiggle
+and a jitter drawn every frame render at every motion blur instant, while
+still ones share one. zeno rather than tiny-skia: it was already in the
+build for glyphs, it only has to fill (kurbo strokes), and the colour stays
+in linear light like the rest of the renderer.
+
 ## Masks and track mattes
 
 Masks are not rasterised paths. Each is a signed distance evaluated per pixel

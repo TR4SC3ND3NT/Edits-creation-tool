@@ -603,6 +603,9 @@ fn layer(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, l: &Layer,
             LayerKind::Particles(p) => {
                 info_row(ui, "Particles", p.describe());
             }
+            LayerKind::Shape(s) => {
+                info_row(ui, "Shapes", s.describe());
+            }
             LayerKind::Comp(c) => {
                 let size = shown.comps.get(&c.comp).map(|k| format!("{} {unit}, {} layers", num(k.duration), k.layers.len())).unwrap_or_else(|| "not defined".into());
                 info_row(ui, "Comp", format!("{} ({size})", c.comp));

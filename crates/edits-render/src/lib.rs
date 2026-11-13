@@ -28,6 +28,7 @@ mod gpu;
 mod mask;
 mod particles;
 mod renderer;
+mod shape;
 mod stack;
 mod text;
 mod time;

@@ -54,6 +54,7 @@ and optionally `transition` (how it comes in; see [Transitions](#transitions)), 
 | `text` | `text`, optional `font`, `size`, `weight`, `align`, `line_height`, `tracking`, `fill`, `stroke`, `max_width`, `animators` | Lines of text in a font file (Inter when none is named), optionally animated letter by letter; see [Text layers](#text-layers) and [Text animators](#text-animators) |
 | `particles` | `emitter`, `rate`, `bursts`, `life`, `speed`, `direction`, `spread`, `gravity`, `sprite`, ... | Petals, sparkles, dust, a burst on a beat; see [Particle layers](#particle-layers) |
 | `comp` | `comp`, optional `offset`, `speed`, `time_remap`, `loop`, `reverse` | A group of layers from `comps`, drawn as one picture; see [Comps](#comps-precomps) |
+| `shape` | `shapes` | Vector shapes (rects, ellipses, stars, paths, lines) with fills, strokes and operators (trim, repeater, ...): speed lines, focus lines, rings, panel borders; see [Shape layers](#shape-layers) |
 
 `transform` has `position` `[x, y, z]`, `scale` (number, `[x, y]` or `[x, y, z]`),
 `rotation` `[x, y, z]`, `anchor` `[x, y]`, `opacity`.
@@ -524,6 +525,83 @@ at each sub-frame instant. `check` reports a negative `rate`, a `life` that
 is not positive, an unknown `sprite` and a sprite slot that does not exist.
 The presets `sakura`, `sparkles`, `dust` and `beat_burst` add ready-made
 particle layers.
+
+## Shape layers
+
+A `shape` layer draws vector shapes: a ring bursting out on a beat, manga
+focus lines, anime speed lines, a panel border, a star. `shapes` is a list,
+drawn in order (the first at the bottom). Each shape has a geometry (`type`),
+a transform of its own, a `fill` and/or a `stroke` (the stroke over the
+fill), and `operators` that change the geometry, in the order listed, before
+it is painted.
+
+```json
+{ "id": "ring", "kind": "shape", "in": "b16", "out": "b17", "blend": "screen",
+  "shapes": [
+    { "type": "ellipse", "size": { "keys": [ { "t": "b16", "v": [0.05, 0.05], "ease": "expo_out" },
+                                            { "t": "b17", "v": [1.2, 1.2] } ] },
+      "stroke": { "color": [1, 1, 1], "width": 3 } } ] }
+```
+
+```json
+{ "id": "spokes", "kind": "shape",
+  "shapes": [
+    { "type": "line", "from": [0.3, 0], "to": [1.4, 0],
+      "stroke": { "width": 0.35, "cap": "round" },
+      "operators": [
+        { "kind": "repeater", "copies": 60, "rotation": 6,
+          "jitter": { "rotation": 3, "scale": 0.2, "opacity": 0.7, "every": 0, "seed": 1 } } ] } ] }
+```
+
+Geometry (`type`), centred on the shape's origin, in composition units:
+
+| `type` | Fields (default) | What it is |
+| --- | --- | --- |
+| `rect` | `size` `[w, h]` or one number (`[0.5, 0.5]`), `roundness` (0: a corner radius) | A rectangle; the outline starts at the top-left corner |
+| `ellipse` | `size` (`[0.5, 0.5]`) | The ellipse inside that box; the outline starts at the top |
+| `polystar` | `points` (5), `outer_radius` (0.25), `inner_radius` (0.1), `outer_roundness`, `inner_roundness` (0, percent), `polygon` (false) | A star of `points` points, or with `polygon` a regular polygon; the first point is up |
+| `path` | `points`, `closed` (false) | Vertices `[x, y]` or `[x, y, in_x, in_y, out_x, out_y]` with bezier handles relative to the vertex (`in` towards the previous vertex). Each vertex can be keyed. At least 2 |
+| `line` | `from` (`[-0.25, 0]`), `to` (`[0.25, 0]`) | A straight line |
+
+Every shape also has `position` (`[0, 0]`), `rotation` (degrees,
+clockwise) and `scale` (a number or `[x, y]`; it scales the stroke too),
+applied after the operators, and `enabled`. Outlines run clockwise on screen.
+
+| Paint | Fields (default) |
+| --- | --- |
+| `fill` | `color` (`[1, 1, 1]`; straight sRGB `[r, g, b]` or `[r, g, b, a]`), `opacity` (1), `rule` (`nonzero` or `even_odd`) |
+| `stroke` | `color` (`[1, 1, 1]`), `opacity` (1), `width` (1, % of height), `cap` (`butt`, `round`, `square`), `join` (`miter`, `round`, `bevel`), `miter_limit` (4), `dash` (`[dash, gap, ...]` in % of height; none: solid), `dash_offset` (% of height) |
+
+| Operator (`kind`) | Fields (default) | What it does |
+| --- | --- | --- |
+| `trim` | `start` (0), `end` (100), `offset` (0), `individually` (false) | Keeps the part of each path from `start` to `end` percent of its length, moved along by `offset` percent (100 is a whole turn; it wraps on a closed path). Key `end` from 0 to 100 to draw a line on. `individually` trims all the shape's paths as one long path, one after another |
+| `repeater` | `copies` (3), `offset` (0), `anchor`, `position`, `rotation`, `scale` (1), `start_opacity`, `end_opacity` (1), `jitter` | Copies everything so far. Copy `i` (from 0) is moved by `i + offset` times the transform: `position` added, `rotation` added (degrees) and `scale` multiplied about `anchor`; its opacity goes from `start_opacity` (first) to `end_opacity` (last). The first copy is drawn at the bottom |
+| `round_corners` | `radius` | Rounds every sharp corner with an arc of `radius` (less where a neighbouring segment is shorter than twice the radius) |
+| `offset_path` | `amount`, `join` (`miter`), `miter_limit` (4) | Grows (positive) or shrinks (negative) the filled outline by `amount` |
+| `zigzag` | `size`, `ridges` (5), `smooth` (false) | Puts `ridges` zigzags of `size` on every segment (waves with `smooth`) |
+| `wiggle_path` | `size`, `detail` (6), `speed` (2), `seed` (0) | Moves `detail` points per segment about by up to `size`, `speed` times a second (0: a still, deformed outline), the same way every time for a `seed` |
+
+A repeater's `jitter` changes each copy at random: `position` `[x, y]` (up
+to that far), `rotation` (up to that many degrees), `scale` (0.3: 70 % to
+130 %), `opacity` (fades by up to that fraction), `seed`, and `every`: how
+often the random values are drawn again, in the project's time unit counted
+from the layer's `in` (0: at every frame, the flicker of speed lines;
+omitted: never). The values come from a hash of (`seed`, copy, time step),
+so a frame is the same however it is reached.
+
+Units: geometry, radii, `round_corners`, `offset_path`, `zigzag` and
+`wiggle_path` sizes in composition units; stroke `width` and `dash` in % of
+the height; angles in degrees; `trim` in percent. Every number field except
+`miter_limit`, `dash`, `speed` and the jitter can be keyed. The layer's
+`transform` moves, scales and turns the whole layer (in 3D too), and its
+masks, effects, matte, opacity, blend mode, transition and `fps` apply as
+for any layer. Shapes are rasterised at the output resolution, so they are
+sharp at any `--scale`. `check` reports a polystar with fewer than 3
+points, a negative stroke width or size, a path with fewer than 2 points,
+a colour that is not 3 or 4 numbers, a trim outside 0..100, more than 1000
+copies, ridges or wiggle points, and warns about a shape with neither fill
+nor stroke. The presets `speed_lines`, `burst_lines` and `ring_pulse` add
+ready-made shape layers.
 
 ## Text layers
 

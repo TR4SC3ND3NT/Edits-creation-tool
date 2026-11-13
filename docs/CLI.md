@@ -453,7 +453,9 @@ Built in: `flash`, `flash_burn`, `punch`, `zoom_out`, `push_in`, `shake`,
 `glow_pulse`, `vignette_pulse`, `overlay_texture`, `letterbox`, the masks
 `iris_in` (a circle opening on the picture) and `split_panels` (a slanted
 split-screen panel), the
-particle layers `sakura`, `sparkles`, `dust`, `beat_burst`, and the text
+particle layers `sakura`, `sparkles`, `dust`, `beat_burst`, the shape layers
+`speed_lines` (anime speed lines, radial or horizontal), `burst_lines` (manga
+focus lines on a beat) and `ring_pulse` (a ring bursting out), and the text
 animations `typewriter`, `pop_in`, `random_flicker`, `wave` (target: a text
 layer; `auto` takes the text layer on screen at `--at`). The file
 format is in [FORMAT.md](FORMAT.md#presets-editspreset1).

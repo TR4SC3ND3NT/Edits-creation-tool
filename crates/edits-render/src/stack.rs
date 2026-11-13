@@ -73,6 +73,9 @@ impl Renderer {
         if let LayerKind::Particles(ps) = &layer.kind {
             return self.particle_quads(&scene, ev, layer, ps, vp * geometry::model(&at.resolved), t).with_context(|| format!("layer \"{}\"", layer.id));
         }
+        if let LayerKind::Shape(s) = &layer.kind {
+            return self.shape_quads(ev, layer, s, vp * geometry::model(&at.resolved), t);
+        }
         let mut frame = None;
         if let LayerKind::Comp(c) = &layer.kind {
             frame = Some(self.comp_picture(ev, &scene, layer, c, t).with_context(|| format!("layer \"{}\"", layer.id))?);
@@ -422,6 +425,10 @@ fn signature(ev: &Evaluator, scene: &Scene, layer: &Layer, t: f64, depth: u32) -
     if let LayerKind::Particles(_) = &layer.kind {
         // Particles move at every instant.
         out.push(lt.to_bits());
+    }
+    if let LayerKind::Shape(s) = &layer.kind {
+        // Keyed shapes, a moving wiggle or jitter change between instants.
+        out.extend(edits_core::shape::ResolvedShape::bits(&edits_core::shape::resolve(ev, layer, s, lt)));
     }
     if let LayerKind::Text(text) = &layer.kind {
         // Animated letters change at every instant.
