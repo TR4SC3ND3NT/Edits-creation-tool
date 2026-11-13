@@ -173,7 +173,7 @@ fn title(ui: &mut Ui, icon: Icon, text_: &str) -> bool {
 /// A row of a form: a label column, then the controls.
 fn row(ui: &mut Ui, label: &str, hover: &str, add: impl FnOnce(&mut Ui)) {
     ui.horizontal(|ui| {
-        let (r, resp) = ui.allocate_exact_size(vec2(96.0, 24.0), egui::Sense::hover());
+        let (r, resp) = ui.allocate_exact_size(vec2(84.0, 24.0), egui::Sense::hover());
         ui.painter().text(pos2(r.left(), r.center().y), Align2::LEFT_CENTER, label, theme::body(), color::TEXT_MUTED);
         if !hover.is_empty() {
             resp.on_hover_text(hover);

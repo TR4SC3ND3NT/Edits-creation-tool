@@ -1169,7 +1169,8 @@ impl App {
                 self.palette.open();
             }
         }
-        if ctx.egui_wants_keyboard_input() || self.palette.open {
+        // A dialog takes the keys (Esc closes it, and must not also deselect).
+        if ctx.egui_wants_keyboard_input() || self.palette.open || self.dialog_open() {
             return;
         }
         // With Shift first: Ctrl+Z also matches when Shift is held.
@@ -1290,16 +1291,16 @@ impl App {
             Cmd::AnalyseSong => self.analyse_song(),
             Cmd::SongMarks(l) => self.song.toggles.flip(l),
             Cmd::CutDialog => {
-                self.modal_opened = self.ctx.cumulative_frame_nr();
+                self.close_dialogs();
                 self.open_cut();
             }
             Cmd::AccentDialog => {
-                self.modal_opened = self.ctx.cumulative_frame_nr();
+                self.close_dialogs();
                 self.open_accent(None);
             }
             Cmd::SyncSong => self.sync_song(),
             Cmd::NoteDialog => {
-                self.modal_opened = self.ctx.cumulative_frame_nr();
+                self.close_dialogs();
                 self.note_dialog = Some(self.note.as_ref().map(|n| n.text.clone()).unwrap_or_default());
             }
             Cmd::ClearNote => self.set_note(""),
@@ -1848,6 +1849,20 @@ impl App {
         } else if !(close || (resp.should_close() && !self.modal_is_new())) {
             self.note_dialog = Some(text);
         }
+    }
+
+    /// One dialog at a time: the one about to open replaces the others.
+    fn close_dialogs(&mut self) {
+        self.modal_opened = self.ctx.cumulative_frame_nr();
+        self.note_dialog = None;
+        self.cut_form = None;
+        self.accent_form = None;
+        self.export.open = false;
+    }
+
+    /// A modal dialog is open (the note, Cut on beats, Accent on, Export).
+    pub fn dialog_open(&self) -> bool {
+        self.note_dialog.is_some() || self.cut_form.is_some() || self.accent_form.is_some() || self.export.open
     }
 
     /// A dialog opened in this frame: a click outside it now is the click that opened it.
