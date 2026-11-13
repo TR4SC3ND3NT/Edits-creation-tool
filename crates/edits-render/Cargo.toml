@@ -8,7 +8,10 @@ license.workspace = true
 [dependencies]
 edits-core = { path = "../edits-core" }
 anyhow.workspace = true
+serde.workspace = true
 wgpu = "30"
+# The WGSL front end wgpu already uses, for checking custom effect shaders without a GPU.
+naga = { version = "30", features = ["wgsl-in"] }
 pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 glam = "0.30"

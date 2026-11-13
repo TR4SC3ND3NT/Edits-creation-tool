@@ -79,6 +79,9 @@ enum Command {
     /// Beat operations: cut pictures to the beat, accent beats and onsets with a preset
     #[command(subcommand)]
     Beats(beatcmd::BeatsCommand),
+    /// Custom effect shaders: `edits shader check <file.wgsl>` validates one without a GPU
+    #[command(subcommand)]
+    Shader(ShaderCommand),
     /// List every transition with its parameters
     Transitions {
         #[arg(long)]
@@ -99,6 +102,17 @@ enum Command {
         /// Arguments for edits-mcp, e.g. `--root <dir>` or `--tools`
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<std::ffi::OsString>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ShaderCommand {
+    /// Check a custom effect file against the custom-effect contract (fn effect(uv: vec2<f32>) -> vec4<f32>); exits 1 when it would not compile
+    Check {
+        /// The WGSL file
+        file: PathBuf,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -248,6 +262,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         Command::Apply(a) => beatcmd::apply(a),
         Command::SavePreset(a) => beatcmd::save_preset(a),
         Command::Beats(cmd) => beatcmd::beats(cmd),
+        Command::Shader(ShaderCommand::Check { file, json }) => shader_check(&file, json),
         Command::Transitions { json } => {
             beatcmd::transitions(json);
             Ok(ExitCode::SUCCESS)
@@ -336,6 +351,29 @@ fn list_effects(as_json: bool) {
             println!("    {:<12} default {:<16} {}", p.name, default, p.doc);
         }
     }
+}
+
+fn shader_check(file: &Path, as_json: bool) -> Result<ExitCode> {
+    let text = std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
+    let r = edits_render::shader::check_custom_effect(&text);
+    if as_json {
+        print_json(&json!({ "file": file, "ok": r.ok, "issues": r.issues, "params": r.params, "animated": r.animated }));
+    } else {
+        for i in &r.issues {
+            match (i.line, i.column) {
+                (Some(l), Some(c)) => println!("error: {}:{l}:{c}: {}", file.display(), i.message),
+                _ => println!("error: {}: {}", file.display(), i.message),
+            }
+            if let Some(code) = &i.code {
+                println!("    {code}");
+            }
+        }
+        if r.ok {
+            let params = if r.params.is_empty() { "no parameters".to_string() } else { format!("reads {}", r.params.join(", ")) };
+            println!("{}: ok ({params}{})", file.display(), if r.animated { ", changes with time" } else { "" });
+        }
+    }
+    Ok(if r.ok { ExitCode::SUCCESS } else { ExitCode::FAILURE })
 }
 
 // ---- rendering ---------------------------------------------------------------

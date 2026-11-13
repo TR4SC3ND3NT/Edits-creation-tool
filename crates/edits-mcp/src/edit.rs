@@ -64,6 +64,13 @@ pub fn edit_file(project: &Path, ops: &[EditOp], dry_run: bool, ws: Option<&Work
     }
 }
 
+/// Change the project file with a function of its current document, as the
+/// agent: presets and beat operations. See [`edits_core::edit::apply_with`].
+pub fn edit_with(project: &Path, label: &str, dry_run: bool, ws: &Workspace, change: &dyn Fn(&Value) -> Result<Value, String>) -> Result<EditOutcome, String> {
+    let confine = |doc: &Value, dir: &Path| outside_refs(doc, dir, ws);
+    core::apply_with(project, &EditOptions { dry_run, actor: AGENT, label: Some(label), extra: Some(&confine), ..Default::default() }, change)
+}
+
 /// Restore the newest version in the shared history, whoever made the edit
 /// after it. Repeated calls walk further back.
 pub fn undo_file(project: &Path) -> Result<UndoOutcome, String> {

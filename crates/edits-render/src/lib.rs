@@ -26,6 +26,7 @@ mod renderer;
 mod transitions;
 
 pub mod font;
+pub mod shader;
 
 pub use assets::placeholder;
 pub use gpu::{policy_from_env, AdapterInfo, AdapterPolicy};

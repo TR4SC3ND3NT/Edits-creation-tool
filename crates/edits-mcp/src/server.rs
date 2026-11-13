@@ -41,6 +41,50 @@ Every path must be inside the workspace root; relative paths start there. doctor
 
 // ---- arguments -------------------------------------------------------------
 
+/// A time: a number in the project's time base, or text such as "b12.5",
+/// "bar 4", "4:3", "2.5s", "f60", a marker ("drop") or "drop+2b".
+#[derive(Deserialize, Clone, Debug)]
+#[serde(untagged)]
+pub enum TimeArg {
+    Num(f64),
+    Text(String),
+}
+
+impl JsonSchema for TimeArg {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Time".into()
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": ["number", "string"],
+            "description": "Project time (beats for a beats project, else seconds), or text: \"b12.5\" (beat), \"bar 4\", \"4:3\" (bar 4 beat 3), \"2.5s\", \"f60\" (frame), a marker such as \"drop\", with offsets like \"drop+2b\"."
+        })
+    }
+}
+
+impl TimeArg {
+    /// As a command-line argument.
+    fn text(&self, name: &str) -> Result<String, String> {
+        match self {
+            TimeArg::Num(v) if !v.is_finite() => Err(format!("`{name}` must be a finite number")),
+            TimeArg::Num(v) => Ok(v.to_string()),
+            TimeArg::Text(t) if t.trim().is_empty() => Err(format!("`{name}` is empty")),
+            TimeArg::Text(t) => Ok(t.trim().to_string()),
+        }
+    }
+    /// In project time.
+    fn resolve(&self, tc: &edits_core::time::TimeCtx, name: &str) -> Result<f64, String> {
+        match self {
+            TimeArg::Num(v) if v.is_finite() => Ok(*v),
+            other => tc.resolve(&other.text(name)?).map_err(|e| format!("`{name}`: {e}")),
+        }
+    }
+}
+
+fn time_text(t: &Option<TimeArg>, name: &str) -> Result<Option<String>, String> {
+    t.as_ref().map(|t| t.text(name)).transpose()
+}
+
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectArgs {
@@ -80,8 +124,8 @@ pub struct EffectsArgs {
 pub struct FrameArgs {
     /// Project file (.json).
     pub project: String,
-    /// Project time (beats for a beats project, else seconds); the frame containing it is rendered. Default: frame 0.
-    pub at: Option<f64>,
+    /// When: project time or text such as "b12.5", "bar 4", "drop"; the frame containing it is rendered. Default: frame 0.
+    pub at: Option<TimeArg>,
     /// Frame number from 0, instead of `at`.
     pub frame: Option<u64>,
     /// Fraction of the project resolution. Default: long edge about 540 px.
@@ -95,10 +139,10 @@ pub struct FrameArgs {
 pub struct SheetArgs {
     /// Project file (.json).
     pub project: String,
-    /// Start of the range in project time. Default: the start.
-    pub from: Option<f64>,
-    /// End of the range in project time. Default: the end.
-    pub to: Option<f64>,
+    /// Start of the range (project time, or "b8", "bar 2", "drop"...). Default: the start.
+    pub from: Option<TimeArg>,
+    /// End of the range, written the same way. Default: the end.
+    pub to: Option<TimeArg>,
     /// Frames spread evenly over the range (default 16, at most 64).
     pub count: Option<u32>,
     /// Every frame of the range instead of `count` (at most 64 frames): use it around a hit.
@@ -118,10 +162,10 @@ pub struct VideoArgs {
     pub project: String,
     /// Output file (.mp4). Overwritten if it exists.
     pub output: String,
-    /// Start of the range in project time. Default: the start.
-    pub from: Option<f64>,
-    /// End of the range in project time. Default: the end.
-    pub to: Option<f64>,
+    /// Start of the range (project time, or "b8", "bar 2", "drop"...). Default: the start.
+    pub from: Option<TimeArg>,
+    /// End of the range, written the same way. Default: the end.
+    pub to: Option<TimeArg>,
     /// Fraction of the project resolution (default 1; 0.5 for a quick preview).
     pub scale: Option<f64>,
     /// Motion blur samples (1 = off). Default: the project's.
@@ -658,7 +702,7 @@ impl EditsServer {
 
     async fn frame(&self, a: FrameArgs) -> Out {
         let project = self.ws.file(&a.project, "project")?;
-        let at = finite(a.at, "at")?;
+        let at = time_text(&a.at, "at")?;
         if at.is_some() && a.frame.is_some() {
             return Err("give `at` (project time) or `frame` (frame number), not both".into());
         }
@@ -682,7 +726,7 @@ impl EditsServer {
         let tmp = self.preview_path(&project, "frame")?;
         let mut args: Vec<OsString> = vec!["frame".into(), project.clone().into(), "-o".into(), tmp.clone().into(), "--scale".into(), format!("{scale:.5}").into()];
         if let Some(t) = at {
-            args.extend(os(&["--at", &t.to_string()]));
+            args.push(format!("--at={t}").into());
         }
         if let Some(n) = a.frame {
             args.extend(os(&["--frame", &n.to_string()]));
@@ -712,7 +756,7 @@ impl EditsServer {
 
     async fn sheet(&self, a: SheetArgs) -> Out {
         let project = self.ws.file(&a.project, "project")?;
-        let (from, to, scale) = (finite(a.from, "from")?, finite(a.to, "to")?, finite(a.scale, "scale")?);
+        let scale = finite(a.scale, "scale")?;
         let every = a.every_frame.unwrap_or(false);
         if every && a.count.is_some() {
             return Err("give `count` or `every_frame`, not both".into());
@@ -722,6 +766,9 @@ impl EditsServer {
         }
         let (doc, parsed) = self.load(&project)?;
         self.confine_refs(&doc, &project)?;
+        let tc = edits_core::time::TimeCtx::from_doc(&doc);
+        let from = a.from.as_ref().map(|t| t.resolve(&tc, "from")).transpose()?;
+        let to = a.to.as_ref().map(|t| t.resolve(&tc, "to")).transpose()?;
         if let (true, Some(p)) = (every, &parsed) {
             // The same frame arithmetic as `edits sheet`: frames whose start lies in [from, to).
             let index = |t: f64| (p.to_seconds(t) * p.settings.fps - 1e-6).ceil().max(0.0) as u64;
@@ -739,7 +786,7 @@ impl EditsServer {
         let mut args: Vec<OsString> = vec!["sheet".into(), project.clone().into(), "-o".into(), tmp.clone().into(), "-q".into()];
         for (flag, value) in [("--from", from), ("--to", to), ("--scale", scale)] {
             if let Some(v) = value {
-                args.extend(os(&[flag, &v.to_string()]));
+                args.push(format!("{flag}={v}").into());
             }
         }
         if every {
@@ -778,7 +825,7 @@ impl EditsServer {
         if output.is_dir() {
             return Err(format!("output: {} is a folder; give a file name ending in .mp4", self.ws.show(&output)));
         }
-        let (from, to, scale) = (finite(a.from, "from")?, finite(a.to, "to")?, finite(a.scale, "scale")?);
+        let (from, to, scale) = (time_text(&a.from, "from")?, time_text(&a.to, "to")?, finite(a.scale, "scale")?);
         // Fail now, with findings, rather than in a job the agent has to poll to learn about.
         let (doc, _) = self.load(&project)?;
         let findings = edit::validate(&doc, &dir_of(&project), Some(&self.ws));
@@ -788,9 +835,9 @@ impl EditsServer {
         }
         let bin = self.bin(Tool::Edits)?;
         let mut args: Vec<OsString> = vec!["render".into(), project.clone().into(), "-o".into(), output.clone().into()];
-        for (flag, value) in [("--from", from), ("--to", to), ("--scale", scale)] {
+        for (flag, value) in [("--from", from), ("--to", to), ("--scale", scale.map(|v| v.to_string()))] {
             if let Some(v) = value {
-                args.extend(os(&[flag, &v.to_string()]));
+                args.push(format!("{flag}={v}").into());
             }
         }
         if let Some(n) = a.samples {

@@ -19,6 +19,7 @@ pub mod preset;
 pub mod beatops;
 pub mod song;
 pub mod time;
+pub mod ui;
 
 pub use eval::{Evaluator, ResolvedCamera, ResolvedEffect, ResolvedLayer, ResolvedTransition};
 pub use model::*;
