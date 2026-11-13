@@ -73,6 +73,8 @@ fn every_registered_effect_renders_and_changes_the_picture() {
     gpu!(r);
     let shader = dir().join("registry.wgsl");
     std::fs::write(&shader, "fn effect(uv: vec2<f32>) -> vec4<f32> { return src(vec2<f32>(1.0 - uv.x, uv.y)); }").unwrap();
+    // A lookup table that swaps red and blue.
+    std::fs::write(dir().join("registry.cube"), "LUT_3D_SIZE 2\n0 0 0\n0 0 1\n0 1 0\n0 1 1\n1 0 0\n1 0 1\n1 1 0\n1 1 1\n").unwrap();
     let q = quadrants("quad.png", 64, 64);
     let with = |effect: &str| project("", &format!(r#""slots":{{"a":{{"path":"{q}"}}}},"layers":[{{"id":"a","kind":"image","slot":"a","transform":{{"scale":0.8}},"effects":[{effect}]}}]"#));
     let plain = render(r, &with(""), 0);
@@ -103,14 +105,51 @@ fn every_registered_effect_renders_and_changes_the_picture() {
             "pixelate" => r#"{"size":10}"#,
             "halftone" => r#"{"size":8}"#,
             "chromatic_aberration" => r#"{"amount":10}"#,
+            "wave_warp" => r#"{"amplitude":5}"#,
+            "ripple" => r#"{"amplitude":3,"wavelength":10}"#,
+            "shockwave" => r#"{"progress":0.3,"strength":8}"#,
+            "mirror" => r#"{}"#,
+            "tile" => r#"{}"#,
+            "polar" => r#"{}"#,
+            "lens_distortion" => r#"{"amount":0.5}"#,
+            "displacement_map" => r#"{"amount":[10,10]}"#,
+            "turbulent_displace" => r#"{"amount":5}"#,
+            "screentone" => r#"{"size":3}"#,
+            "edge_detect" => r#"{}"#,
+            "ink" => r#"{}"#,
+            "toon" => r#"{"levels":3}"#,
+            "kuwahara" => r#"{"radius":3}"#,
+            "emboss" => r#"{}"#,
+            "sharpen" => r#"{"amount":1}"#,
+            "glitch" => r#"{"amount":1}"#,
+            "scanlines" => r#"{"count":16,"amount":0.8}"#,
+            "vhs" => r#"{"noise":0.5,"bleed":3}"#,
+            "film_damage" => r#"{"scratches":1,"dust":1,"flicker":0.5}"#,
+            "film_burn" => r#"{"amount":0.6}"#,
+            "lut" => r#"{}"#,
+            "gradient_map" => r#"{"shadows":[0,0,0.3],"highlights":[1,0.9,0.5]}"#,
+            "levels" => r#"{"gamma":2}"#,
+            "vibrance" => r#"{"amount":-0.5}"#,
+            "fractal_noise" => r#"{"amount":0.5}"#,
+            "gradient_ramp" => r#"{"amount":0.5}"#,
             other => panic!("the registry has an effect this test does not cover: {other}"),
         };
-        let source = if spec.kind == "custom" { r#","source":"registry.wgsl""# } else { "" };
-        let img = render(r, &with(&format!(r#"{{"kind":"{}","params":{params}{source}}}"#, spec.kind)), 0);
-        assert!(img != plain, "{} did not change the picture", spec.kind);
+        let source = match spec.kind {
+            "custom" => r#","source":"registry.wgsl""#,
+            "lut" => r#","source":"registry.cube""#,
+            "displacement_map" => r#","source":"slot:a""#,
+            _ => "",
+        };
+        // Sharpening leaves hard 0-to-1 edges alone (no halo): give it a soft picture.
+        let (before, base) = match spec.kind {
+            "sharpen" => (r#"{"kind":"gaussian_blur","params":{"radius":1}},"#, render(r, &with(r#"{"kind":"gaussian_blur","params":{"radius":1}}"#), 0)),
+            _ => ("", plain.clone()),
+        };
+        let img = render(r, &with(&format!(r#"{before}{{"kind":"{}","params":{params}{source}}}"#, spec.kind)), 0);
+        assert!(img != base, "{} did not change the picture", spec.kind);
         // Defaults must render too.
         if spec.kind != "custom" {
-            render(r, &with(&format!(r#"{{"kind":"{}"}}"#, spec.kind)), 0);
+            render(r, &with(&format!(r#"{{"kind":"{}"{source}}}"#, spec.kind)), 0);
         }
     }
 }

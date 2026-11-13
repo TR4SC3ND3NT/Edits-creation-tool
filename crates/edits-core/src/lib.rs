@@ -7,6 +7,7 @@
 //! evaluation runs in the renderer, the CLI, the MCP server and tests.
 
 pub mod check;
+pub mod cube;
 pub mod describe;
 pub mod ease;
 pub mod edit;
