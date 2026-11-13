@@ -84,6 +84,8 @@ fn field_row(ui: &mut Ui, label: &str, hover: &str, add: impl FnOnce(&mut Ui)) -
         if !hover.is_empty() {
             resp.on_hover_text(hover);
         }
+        // The same gap as the value rows, so the columns line up.
+        ui.spacing_mut().item_spacing.x = 3.0;
         add(ui);
     });
     hovered
@@ -124,7 +126,7 @@ fn problems(app: &App, ui: &mut Ui) {
             } else {
                 "The file has never been valid, so there is nothing to show yet.".to_string()
             };
-            ui.label(RichText::new(what).color(color::ERROR_TEXT));
+            ui.label(RichText::new(what).color(color::TEXT_MUTED));
             ui.add_space(space::XS);
         }
         for p in &app.state.problems {
@@ -427,7 +429,7 @@ fn key_strip(app: &mut App, ui: &mut Ui, cx: &Cx, r: &PropRef) {
                 ui.horizontal(|ui| {
                     ui.label(label_text("Rate"));
                     let mut rate = args.get("rate").copied().unwrap_or(0.4);
-                    let resp = stable_drag(ui, ("rate", cx.id(), r.label()), 64.0, egui::DragValue::new(&mut rate).speed(0.005).range(0.01..=0.99).max_decimals(3))
+                    let resp = stable_drag(ui, ("rate", cx.id(), r.label()), 64.0, egui::DragValue::new(&mut rate).speed(0.005).range(0.01..=0.99).max_decimals(3).custom_formatter(|v, _| num(v)))
                         .on_hover_text("Fraction of the remaining distance covered per frame (0.39 = a step ratio of 0.61)");
                     let mut args = args.clone();
                     args.insert("rate".into(), tidy(rate));
@@ -442,7 +444,7 @@ fn key_strip(app: &mut App, ui: &mut Ui, cx: &Cx, r: &PropRef) {
                     for c in 0..4 {
                         let mut x = b[c];
                         let range = if c % 2 == 0 { 0.0..=1.0 } else { -2.0..=3.0 };
-                        let resp = stable_drag(ui, ("bezier", cx.id(), r.label(), c), each, egui::DragValue::new(&mut x).speed(0.005).range(range).max_decimals(3)).on_hover_text("CSS cubic bezier x1, y1, x2, y2");
+                        let resp = stable_drag(ui, ("bezier", cx.id(), r.label(), c), each, egui::DragValue::new(&mut x).speed(0.005).range(range).max_decimals(3).custom_formatter(|v, _| num(v))).on_hover_text("CSS cubic bezier x1, y1, x2, y2");
                         let mut nb = *b;
                         nb[c] = tidy(x);
                         live(app, &resp, Ease::Bezier(nb), &format!("bezier {}", vector(&nb)));
@@ -502,8 +504,7 @@ fn transform_doc(name: &str) -> &'static str {
 }
 
 /// A value field for a component of a non-animated layer field (colour, size).
-#[allow(clippy::too_many_arguments)]
-fn fixed_values(app: &mut App, ui: &mut Ui, id: &str, field: &'static str, shown: Vec<f64>, base: Vec<f64>, range: RangeInclusive<f64>, label: &str) {
+fn fixed_values(app: &mut App, ui: &mut Ui, id: &str, field: &'static str, shown: Vec<f64>, base: Vec<f64>, range: RangeInclusive<f64>) {
     ui.spacing_mut().item_spacing.x = 3.0;
     let n = shown.len() as f32;
     let each = ((ui.available_width() - UNIT - KEY - 6.0 - 3.0 * (n - 1.0)) / n).max(32.0);
@@ -519,7 +520,6 @@ fn fixed_values(app: &mut App, ui: &mut Ui, id: &str, field: &'static str, shown
             app.keep_live(resp.id);
         }
     }
-    let _ = label;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -557,7 +557,7 @@ fn layer(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, l: &Layer,
                     let (sw, _) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::hover());
                     let to8 = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u8;
                     ui.painter().rect(sw, radius::SMALL, Color32::from_rgba_unmultiplied(to8(c[0]), to8(c[1]), to8(c[2]), to8(c[3])), Stroke::new(1.0, color::LINE_STRONG), egui::StrokeKind::Inside);
-                    fixed_values(app, ui, &id, "color", c.iter().map(|x| *x as f64).collect(), base_color.iter().map(|x| *x as f64).collect(), 0.0..=1.0, "r g b a");
+                    fixed_values(app, ui, &id, "color", c.iter().map(|x| *x as f64).collect(), base_color.iter().map(|x| *x as f64).collect(), 0.0..=1.0);
                 });
             }
             LayerKind::Cube { faces, size: sz } => {
@@ -567,7 +567,7 @@ fn layer(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, l: &Layer,
                     _ => *sz,
                 };
                 field_row(ui, "Size", "Width, height and depth of the cube", |ui| {
-                    fixed_values(app, ui, &id, "size", sz.to_vec(), base_size.to_vec(), 0.001..=100.0, "w h d");
+                    fixed_values(app, ui, &id, "size", sz.to_vec(), base_size.to_vec(), 0.001..=100.0);
                 });
             }
             LayerKind::Adjustment => {
@@ -797,7 +797,7 @@ fn inspect(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, t: f64, 
 
 pub(crate) fn show(app: &mut App, ui: &mut Ui) {
     egui::ScrollArea::vertical().id_salt("inspector").auto_shrink([false, false]).show(ui, |ui| {
-        egui::Frame::new().inner_margin(egui::Margin { left: space::L as i8, right: space::L as i8, top: 0, bottom: space::L as i8 }).show(ui, |ui| {
+        egui::Frame::new().inner_margin(egui::Margin { left: space::L as i8, right: space::L as i8, top: space::XS as i8, bottom: space::L as i8 }).show(ui, |ui| {
             ui.set_width(ui.available_width());
             problems(app, ui);
             let (Some(tm), Some(base), Some(shown)) = (app.tm, app.project().cloned(), app.shown_project()) else {

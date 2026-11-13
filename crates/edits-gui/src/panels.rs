@@ -5,7 +5,7 @@
 
 use crate::app::{shorten, App, Cmd, Drawer};
 use crate::editing::{self, actor_label, ago, NewLayer};
-use crate::theme::{self, color, radius, size, space, text};
+use crate::theme::{self, color, radius, space, text};
 use crate::widgets::{self, tip, Icon};
 use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, CornerRadius, FontId, Layout, Rect, RichText, Sense, Stroke, StrokeKind, Ui};
 use edits_core::edit::{EditOp, SlotFit, AGENT, WINDOW};
@@ -278,7 +278,7 @@ pub(crate) fn slots(app: &mut App, ui: &mut Ui) {
                     *text = current.clone();
                 }
                 let r = ui
-                    .add(egui::TextEdit::singleline(text).id(id).font(theme::mono()).hint_text("empty: a placeholder").desired_width(ui.available_width()).margin(egui::Margin::symmetric(6, 4)))
+                    .add(egui::TextEdit::singleline(text).id(id).font(theme::mono()).hint_text("empty: a placeholder").desired_width(f32::INFINITY).margin(egui::Margin::symmetric(6, 4)))
                     .on_hover_text(DROP_HINT);
                 if r.lost_focus() && text.trim() != current {
                     let typed = text.trim().to_string();
@@ -304,7 +304,7 @@ pub(crate) fn slots(app: &mut App, ui: &mut Ui) {
                     ui.spacing_mut().item_spacing.x = 3.0;
                     for c in 0..2 {
                         let mut v = focus[c];
-                        let r = crate::inspector::stable_drag(ui, ("focus", name, c), 46.0, egui::DragValue::new(&mut v).speed(0.005).range(0.0..=1.0).max_decimals(3));
+                        let r = crate::inspector::stable_drag(ui, ("focus", name, c), 46.0, egui::DragValue::new(&mut v).speed(0.005).range(0.0..=1.0).max_decimals(3).custom_formatter(|v, _| crate::inspector::num(v)));
                         if r.changed() {
                             let mut f = base_focus;
                             f[c] = editing::tidy(v);
@@ -334,12 +334,13 @@ pub(crate) fn slots(app: &mut App, ui: &mut Ui) {
         }
         ui.add_space(space::S);
         ui.label(widgets::eyebrow("New slot"));
-        ui.horizontal(|ui| {
-            let r = ui.add(egui::TextEdit::singleline(&mut app.new_slot).hint_text("name").desired_width((ui.available_width() - 70.0).max(80.0)).margin(egui::Margin::symmetric(6, 4)));
+        ui.allocate_ui_with_layout(vec2(ui.available_width(), 28.0), Layout::right_to_left(Align::Center), |ui| {
+            // Right to left: the button first, the field takes the rest.
             let name = app.new_slot.trim().to_string();
             let taken = base.slots.contains_key(&name);
             let ok = !name.is_empty() && !taken && !name.contains('/');
             let add = ui.add_enabled_ui(ok, |ui| widgets::button(ui, Some(Icon::Plus), "Add", false)).inner.on_disabled_hover_text(if taken { "A slot has that name" } else { "Type a name" });
+            let r = ui.add(egui::TextEdit::singleline(&mut app.new_slot).hint_text("name").desired_width(f32::INFINITY).margin(egui::Margin::symmetric(6, 4)));
             if add.clicked() || (ok && r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
                 app.commit(vec![EditOp::set_slot(name.clone(), None, Some(SlotFit::Cover), None)], format!("add slot {name}"));
                 app.new_slot.clear();
@@ -409,6 +410,5 @@ pub(crate) fn history(app: &mut App, ui: &mut Ui) {
         if undo.len() > 30 {
             ui.label(RichText::new(format!("… {} older", undo.len() - 30)).font(theme::small()).color(color::TEXT_FAINT));
         }
-        let _ = size::ROW;
     });
 }

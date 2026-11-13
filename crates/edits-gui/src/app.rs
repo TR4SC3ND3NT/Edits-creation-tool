@@ -421,7 +421,7 @@ impl App {
             Applied::Rejected => {
                 if origin == Origin::Disk {
                     let n = self.state.errors();
-                    let body = if self.state.current.is_some() { format!("Still showing revision {}. The problems are listed in the inspector.", self.state.revision) } else { "The problems are listed in the inspector.".to_string() };
+                    let body = if self.state.current.is_some() { format!("Showing revision {} until it is fixed", self.state.revision) } else { "See Problems in the inspector".to_string() };
                     self.toasts.push(Instant::now(), toasts::Kind::Error, format!("The file has {n} error{}", if n == 1 { "" } else { "s" }), body, None);
                 }
             }
@@ -602,7 +602,7 @@ impl App {
         match core_edit::undo(&self.path) {
             Ok(u) => {
                 self.take_report(reload::load(&self.path), Origin::Own);
-                self.say(format!("Undid {}: {}", who(&u.entry.actor), u.entry.summary));
+                self.say(format!("Undid {}: {}", who(&u.entry.actor), editing::readable_summary(&u.entry.summary)));
                 self.toasts.push(Instant::now(), toasts::Kind::Info, format!("Undid {}", who(&u.entry.actor)), editing::readable_summary(&u.entry.summary), Some(("Redo".into(), toasts::Action::Redo)));
             }
             Err(e) => self.fail(shorten(&e, 120), e),
@@ -615,7 +615,7 @@ impl App {
         match core_edit::redo(&self.path) {
             Ok(u) => {
                 self.take_report(reload::load(&self.path), Origin::Own);
-                self.say(format!("Redid {}: {}", who(&u.entry.actor), u.entry.summary));
+                self.say(format!("Redid {}: {}", who(&u.entry.actor), editing::readable_summary(&u.entry.summary)));
             }
             Err(e) => self.fail(shorten(&e, 120), e),
         }
@@ -1103,7 +1103,7 @@ impl App {
     /// Timecode on the left, the transport in the middle, loop and preview quality on the right.
     fn transport(&mut self, ui: &mut Ui) {
         let Some(tm) = self.tm else {
-            ui.label(RichText::new("Waiting for a valid project").color(color::TEXT_FAINT));
+            // Nothing to play yet: the stage says why.
             return;
         };
         let row = ui.max_rect();
@@ -1208,7 +1208,8 @@ impl App {
         if self.state.rejected {
             dot(ui, color::ERROR);
             let shown = if self.state.current.is_some() { format!("showing revision {}", self.state.revision) } else { "nothing to show yet".to_string() };
-            ui.label(small(format!("{} error(s) in the file · {shown}", self.state.errors()), color::ERROR_TEXT));
+            let n = self.state.errors();
+            ui.label(small(format!("{n} error{} in the file · {shown}", if n == 1 { "" } else { "s" }), color::ERROR_TEXT));
         } else if self.reloaded_at.is_some_and(|t| t.elapsed() < FLASH) {
             dot(ui, color::OK);
             ui.label(small(format!("Reloaded · revision {}", self.state.revision), color::OK_TEXT));
@@ -1332,7 +1333,8 @@ impl App {
             top = r.bottom() + space::XS;
         };
         if self.state.rejected {
-            banner(&format!("The file has {} error(s). Showing revision {}, the last version without errors.", self.state.errors(), self.state.revision));
+            let n = self.state.errors();
+            banner(&format!("The file has {n} error{}. Showing revision {}, the last version without errors.", if n == 1 { "" } else { "s" }, self.state.revision));
         }
         if let Some(e) = &self.no_adapter {
             banner(&shorten(e, 140));
@@ -1495,7 +1497,7 @@ impl App {
         );
         let mut close = false;
         let resp = modal.show(ctx, |ui| {
-            ui.set_width(560.0);
+            ui.set_width(700.0);
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Keyboard shortcuts").font(FontId::new(text::HEADLINE, theme::strong())).color(color::TEXT));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
