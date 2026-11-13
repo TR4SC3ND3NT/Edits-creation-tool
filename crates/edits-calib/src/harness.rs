@@ -116,7 +116,6 @@ pub fn roundtrip(stage: &mut Stage, case: &Case, first: &Analyzed, dir: &Path) -
         samples: true,
         whole: false,
         range: Some((a.ingest.analysed_f0, a.ingest.analysed_f1)),
-        ..Default::default()
     };
     let second = analyze_frames(&frames, None, source_of(&frames, "draft", false), &opts);
     if keep() {

@@ -61,6 +61,36 @@ fn main() -> Result<()> {
             }
             print!("{}", edits_calib::fit::summary(&report));
         }
+        Some("blur") => {
+            // Measured Gaussian blur against the renderer's radius, per picture kind, optionally through H.264.
+            let height = num("--height", 320)? as u32;
+            let kbps = value("--degrade").map(|v| v.parse::<u32>()).transpose()?;
+            let radii = [0.0, 0.3, 0.6, 1.0, 1.5, 2.0, 3.0, 4.0];
+            let dir = PathBuf::from(value("--out").unwrap_or_else(|| "calib".into())).join("blurprobe");
+            std::fs::create_dir_all(dir.join("img"))?;
+            let mut stage = edits_calib::Stage::new()?;
+            for kind in edits_calib::pictures::KINDS {
+                for seed in 1..=num("--seeds", 3)? {
+                    edits_calib::pictures::generate(kind, seed * 7919, height * 5 / 4).save(dir.join("img/p.png"))?;
+                    let keys: Vec<serde_json::Value> = radii.iter().enumerate().map(|(i, r)| serde_json::json!({ "t": i as f64 / 25.0, "v": r, "ease": "hold" })).collect();
+                    let project = serde_json::json!({
+                        "format": "edits.project/1",
+                        "settings": { "width": height, "height": height, "fps": 25, "duration": radii.len() as f64 / 25.0, "time_base": "seconds" },
+                        "slots": { "a": { "path": "img/p.png" } },
+                        "layers": [ { "id": "a", "kind": "image", "slot": "a", "effects": [ { "kind": "gaussian_blur", "params": { "radius": { "keys": keys } } } ] } ]
+                    });
+                    let p = edits_core::Project::from_json(&project.to_string())?;
+                    let mut frames = stage.render(&p, &dir, 1.0, None)?;
+                    if let Some(k) = kbps {
+                        frames = edits_calib::render::degrade(&frames, &edits_calib::Degrade { kbps: k, scale: 1.0 }, &dir.join("d.mp4"))?;
+                    }
+                    let lin = |i: usize| edits_analyze::measure::linear_luma_image(frames.rgb(i), frames.w, frames.h);
+                    let r0 = lin(0);
+                    let got: Vec<String> = (1..radii.len()).map(|i| format!("{:.2}->{:.2}", radii[i], 100.0 * edits_analyze::blur::measure(&lin(i), &r0).sigma_px / frames.h as f64)).collect();
+                    println!("{:8} seed {seed}: {}", kind.name(), got.join("  "));
+                }
+            }
+        }
         Some("sig") => {
             // Reference and candidate signatures side by side, shot by shot (the candidate analysed as `compare` does).
             let (Some(r), Some(v)) = (args.get(1), args.get(2)) else { bail!("usage: calib sig <reference_analysis.json> <video>") };

@@ -6,6 +6,11 @@
 //! - `dark`: a near-black picture with fine dim detail;
 //! - `photo`: smooth multi-scale texture with soft colour, like a photograph.
 
+// Angle ranges are written 3.14 and 6.28: they are arbitrary ranges for
+// random strokes, and changing them would change every generated picture
+// (and so the calibration baseline).
+#![allow(clippy::approx_constant)]
+
 use crate::rng::Rng;
 use image::{Rgb, RgbImage};
 use serde::{Deserialize, Serialize};

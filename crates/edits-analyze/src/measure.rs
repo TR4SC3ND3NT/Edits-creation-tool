@@ -51,6 +51,8 @@ pub struct Pair<'a> {
     pub mask: Vec<bool>,
     /// Pixels of the warped reference frame that hold picture: covered, and not an overlay stroke of the reference frame.
     pub ref_ok: Vec<bool>,
+    /// Pixels the warped reference frame covers at all (overlay or not).
+    pub covered: Vec<bool>,
     /// The reference frame was registered to this frame (pixels correspond).
     pub aligned: bool,
     /// Share of the central region covered by the warped reference.
@@ -66,7 +68,7 @@ impl<'a> Pair<'a> {
     }
     /// The same pair with another picture standing in for the warped reference frame.
     pub fn with_reference(&self, refw: Vec<u8>) -> Pair<'a> {
-        Pair { w: self.w, h: self.h, cur: self.cur, refw, mask: self.mask.clone(), ref_ok: self.ref_ok.clone(), aligned: self.aligned, coverage: self.coverage, flat: self.flat }
+        Pair { w: self.w, h: self.h, cur: self.cur, refw, mask: self.mask.clone(), ref_ok: self.ref_ok.clone(), covered: self.covered.clone(), aligned: self.aligned, coverage: self.coverage, flat: self.flat }
     }
     /// The warped reference frame under a Gaussian blur of `sigma` pixels, as
     /// the renderer blurs: each channel in linear light, edges repeated.
@@ -112,6 +114,7 @@ pub fn make_pair<'a>(frames: &'a Frames, ref_frame: usize, cur_frame: usize, sim
     let (mx, my) = ((w as f64 * BORDER) as usize, (h as f64 * BORDER) as usize);
     let mut mask = vec![false; w * h];
     let mut ref_ok = vec![false; w * h];
+    let mut covered_px = vec![false; w * h];
     let mut refw = vec![0u8; w * h * 3];
     let mut central = 0usize;
     let mut covered = 0usize;
@@ -119,6 +122,7 @@ pub fn make_pair<'a>(frames: &'a Frames, ref_frame: usize, cur_frame: usize, sim
         None => {
             refw.copy_from_slice(src);
             ref_ok.copy_from_slice(usable);
+            covered_px.iter_mut().for_each(|c| *c = true);
             for y in my..h - my {
                 for x in mx..w - mx {
                     central += 1;
@@ -140,6 +144,7 @@ pub fn make_pair<'a>(frames: &'a Frames, ref_frame: usize, cur_frame: usize, sim
                         continue;
                     }
                     covered += is_central as usize;
+                    covered_px[y * w + x] = true;
                     let (x0, y0) = ((sx as usize).min(w - 2), (sy as usize).min(h - 2));
                     let (fx, fy) = ((sx - x0 as f64) as f32, (sy - y0 as f64) as f32);
                     let i = (y0 * w + x0) * 3;
@@ -156,7 +161,7 @@ pub fn make_pair<'a>(frames: &'a Frames, ref_frame: usize, cur_frame: usize, sim
             }
         }
     }
-    Pair { w, h, cur, refw, mask, ref_ok, aligned: sim.is_some(), coverage: covered as f64 / central.max(1) as f64, flat: None }
+    Pair { w, h, cur, refw, mask, ref_ok, covered: covered_px, aligned: sim.is_some(), coverage: covered as f64 / central.max(1) as f64, flat: None }
 }
 
 /// Luma (0..1, gamma encoded) of an RGB8 buffer.

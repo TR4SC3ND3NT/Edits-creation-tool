@@ -232,7 +232,12 @@ pub fn measure_frame(frames: &Frames, ref_frame: usize, i: usize, sim: Option<&S
         // the analysis window (a zoom changes the spectrum by itself).
         let (fw, fh) = (frames.w, frames.h);
         let cur = blur::fill_masked(&linear_luma_image(frames.rgb(i), fw, fh), usable);
-        let warped = pair.aligned && blur::window_share(&pair.ref_ok, fw, fh) > 0.9;
+        // Whether the warp covers the analysis window; overlay strokes do not
+        // count against it (they are filled in). Counting them, as this did
+        // before, turned the warp and every refinement below off in any edit
+        // with an overlay plate (`edits calib`: blur read 0.2% for a true
+        // 1.35% on a punch-in under a flash).
+        let warped = pair.aligned && blur::window_share(&pair.covered, fw, fh) > 0.9;
         let reference = if warped { blur::fill_masked(&linear_luma_image(&pair.refw, fw, fh), &pair.ref_ok) } else { blur::fill_masked(&linear_luma_image(frames.rgb(ref_frame), fw, fh), usable) };
         let (mut s2, first) = blur::measure_signed(&cur, &reference);
         blur = first;
