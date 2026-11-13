@@ -23,6 +23,18 @@ the gl-transitions collection; their authors and licence (MIT) are listed in
 The interface of these effects (a `fn effect(uv)` per file and the shared
 prelude in `shaders/fx/prelude.wgsl`) is ours.
 
+## Multi-pass light effects and blend modes
+
+| Our file | Source | Licence | What was taken |
+| --- | --- | --- | --- |
+| `crates/edits-render/src/shaders/passes.wgsl` (`fs_bloom_*`), `crates/edits-render/src/fx.rs` (`bloom`) | Bevy, https://github.com/bevyengine/bevy, `crates/bevy_post_process/src/bloom/bloom.wesl` and `mod.rs` | MIT OR Apache-2.0 (used under MIT) | The 13-tap downsample (Call of Duty: Advanced Warfare, Jimenez 2014) and its weights, Karis' average on the first level, the soft threshold and its precomputed constants, the 3x3 tent upsample. The threshold applied per pixel before the chain, the level weights by size in % of height (instead of Bevy's blend constants) and the add with coverage are ours. |
+| `crates/edits-render/src/shaders/passes.wgsl` (`fs_rays_mix`), `crates/edits-render/src/fx.rs` (`light_rays`) | EffectCraft, https://github.com/storytold/effectcraft, `crates/effects/src/generate2.rs` (`light_rays`) and `crates/gpu/src/shaders/fx_light.wgsl` (`flt_rays`) | MIT OR Apache-2.0 (used under MIT) | Rays as samples of the picture scaled toward the centre (from 1 down to 1 - length), and the add, screen and lighten transfer modes. The bright pass, the half-size multi-pass streak and the screen kept from darkening above 1 are ours. |
+| `crates/edits-render/src/shaders/passes.wgsl` (`fs_lens_flare`), `crates/edits-render/src/fx.rs` (`flare_lens`) | EffectCraft, `crates/effects/src/generate2.rs` (`lens_flare`, `flare_ghosts`) | MIT OR Apache-2.0 (used under MIT) | The core, streak and halo formulas and the three tables of ghosts (position, radius, colour, strength, ring). Measured on the frame in composition units instead of the layer, with a `size` factor. |
+| `crates/edits-render/src/shaders/passes.wgsl` (`fs_tilt`) | glfx.js, https://github.com/evanw/glfx.js, `src/filters/blur/tiltshift.js` | MIT | Two passes of a triangle filter whose radius grows by smoothstep with the distance from a line, and the jittered sample positions. The sharp band of its own width, the tap count from the radius, and the jitter from a hash of the pixel (instead of a random number) are ours. |
+| `crates/edits-render/src/compose.rs` (blend modes) | EffectCraft, `crates/color/src/blend.rs`; the formulas of W3C "Compositing and Blending Level 1" | MIT OR Apache-2.0 (used under MIT) | The list of modes, the burn, dodge, soft light, vivid light, pin light, hard mix and divide formulas with their edge cases, and SetLum / SetSat / ClipColor. Rec. 709 luminance, and the rules that keep each mode sensible above 1 (clamped product terms, the backdrop's excess added back, scaling for the component modes), are ours. |
+
+`outline` (jump flooding after Rong and Tan, 2006) and `drop_shadow` are ours.
+
 ## Licence texts
 
 ### EffectCraft (MIT)

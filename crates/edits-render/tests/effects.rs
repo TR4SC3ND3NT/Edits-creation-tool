@@ -103,6 +103,12 @@ fn every_registered_effect_renders_and_changes_the_picture() {
             "pixelate" => r#"{"size":10}"#,
             "halftone" => r#"{"size":8}"#,
             "chromatic_aberration" => r#"{"amount":10}"#,
+            "bloom" => r#"{"threshold":0.1,"radius":10}"#,
+            "light_rays" => r#"{"threshold":0.1,"length":0.5}"#,
+            "lens_flare" => r#"{"brightness":1}"#,
+            "outline" => r#"{"width":4,"color":[1,0,1]}"#,
+            "drop_shadow" => r#"{"offset":[0.05,0.05],"softness":1,"color":[1,1,1],"opacity":1}"#,
+            "tilt_shift" => r#"{"width":5,"blur":5}"#,
             other => panic!("the registry has an effect this test does not cover: {other}"),
         };
         let source = if spec.kind == "custom" { r#","source":"registry.wgsl""# } else { "" };

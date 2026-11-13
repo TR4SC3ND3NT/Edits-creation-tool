@@ -50,7 +50,11 @@ and optionally `transition` (how it comes in; see [Transitions](#transitions)).
 `transform` has `position` `[x, y, z]`, `scale` (number, `[x, y]` or `[x, y, z]`),
 `rotation` `[x, y, z]`, `anchor` `[x, y]`, `opacity`.
 
-`blend`: `normal`, `add`, `screen`, `multiply`, `overlay`, `lighten`, `darken`, `difference`.
+`blend`: `normal`, `add`, `screen`, `multiply`, `overlay`, `lighten`, `darken`, `difference`,
+`color_burn`, `linear_burn`, `darker_color`, `color_dodge`, `linear_dodge` (the same as `add`),
+`lighter_color`, `soft_light`, `hard_light`, `vivid_light`, `linear_light`, `pin_light`,
+`hard_mix`, `exclusion`, `subtract`, `divide`, `hue`, `saturation`, `color`, `luminosity`.
+They work in linear light and stay sensible above 1; `docs/RENDERING.md` has the formulas.
 
 ## Animatable values
 

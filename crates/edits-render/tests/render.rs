@@ -549,3 +549,164 @@ fn render_stack_matches_frame() {
     assert!(r.render_layer(&solid.layers[0], 0.5, 1.0).unwrap().is_none(), "not visible before its in");
     assert!(r.render_layer(&solid.layers[1], 2.0, 1.0).unwrap().is_none(), "an adjustment layer has no picture");
 }
+
+// ---- blend modes against CPU formulas -----------------------------------------
+// The definitions in `docs/RENDERING.md` (and `compose.rs`), in linear light.
+
+type Rgb = [f64; 3];
+
+fn c01(v: f64) -> f64 {
+    v.clamp(0.0, 1.0)
+}
+fn per(b: Rgb, s: Rgb, f: impl Fn(f64, f64) -> f64) -> Rgb {
+    [f(b[0], s[0]), f(b[1], s[1]), f(b[2], s[2])]
+}
+/// For modes made for 0..1: run on clamped values, then add back the backdrop above 1.
+fn clamped(b: Rgb, s: Rgb, f: impl Fn(f64, f64) -> f64) -> Rgb {
+    per(b, s, |b, s| f(c01(b), c01(s)) + (b - 1.0).max(0.0))
+}
+fn screen(a: f64, b: f64) -> f64 {
+    a + b - c01(a) * c01(b)
+}
+fn burn(b: f64, s: f64) -> f64 {
+    if b >= 1.0 {
+        1.0
+    } else if s <= 0.0 {
+        0.0
+    } else {
+        1.0 - ((1.0 - b) / s).min(1.0)
+    }
+}
+fn dodge(b: f64, s: f64) -> f64 {
+    if b <= 0.0 {
+        0.0
+    } else if s >= 1.0 {
+        1.0
+    } else {
+        (b / (1.0 - s)).min(1.0)
+    }
+}
+fn soft(b: f64, s: f64) -> f64 {
+    if s <= 0.5 {
+        b - (1.0 - 2.0 * s) * b * (1.0 - b)
+    } else {
+        let d = if b <= 0.25 { ((16.0 * b - 12.0) * b + 4.0) * b } else { b.sqrt() };
+        b + (2.0 * s - 1.0) * (d - b)
+    }
+}
+fn lum(c: Rgb) -> f64 {
+    0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+}
+fn clip(c: Rgb) -> Rgb {
+    let l = lum(c);
+    let n = c[0].min(c[1]).min(c[2]);
+    let x = c[0].max(c[1]).max(c[2]);
+    let mut o = c;
+    if n < 0.0 {
+        o = o.map(|v| l + (v - l) * l / (l - n));
+    }
+    if x > 1.0 {
+        o = o.map(|v| l + (v - l) * (1.0 - l) / (x - l));
+    }
+    o
+}
+fn set_lum(c: Rgb, l: f64) -> Rgb {
+    let d = l - lum(c);
+    clip(c.map(|v| v + d))
+}
+fn sat(c: Rgb) -> f64 {
+    c[0].max(c[1]).max(c[2]) - c[0].min(c[1]).min(c[2])
+}
+fn set_sat(c: Rgb, s: f64) -> Rgb {
+    let mn = c[0].min(c[1]).min(c[2]);
+    let range = sat(c);
+    if range <= 1e-6 {
+        [0.0; 3]
+    } else {
+        c.map(|v| (v - mn) * s / range)
+    }
+}
+/// Component modes: on both colours divided by their brightest component above 1.
+fn component(b: Rgb, s: Rgb, f: impl Fn(Rgb, Rgb) -> Rgb) -> Rgb {
+    let m = b.iter().chain(&s).fold(1.0f64, |a, v| a.max(*v));
+    f(b.map(|v| v / m), s.map(|v| v / m)).map(|v| v * m)
+}
+
+fn blend_cpu(mode: &str, b: Rgb, s: Rgb) -> Rgb {
+    match mode {
+        "normal" => s,
+        "add" | "linear_dodge" => per(b, s, |b, s| b + s),
+        "screen" => per(b, s, screen),
+        "multiply" => per(b, s, |b, s| b * s),
+        "overlay" => per(b, s, |b, s| if b <= 0.5 { 2.0 * b * s } else { screen(s, 2.0 * b - 1.0) }),
+        "lighten" => per(b, s, f64::max),
+        "darken" => per(b, s, f64::min),
+        "difference" => per(b, s, |b, s| (b - s).abs()),
+        "color_burn" => clamped(b, s, burn),
+        "linear_burn" => per(b, s, |b, s| (b + s - 1.0).max(0.0)),
+        "darker_color" => if lum(s) < lum(b) { s } else { b },
+        "color_dodge" => clamped(b, s, dodge),
+        "lighter_color" => if lum(s) > lum(b) { s } else { b },
+        "soft_light" => clamped(b, s, soft),
+        "hard_light" => per(b, s, |b, s| if s <= 0.5 { 2.0 * b * s } else { screen(b, 2.0 * s - 1.0) }),
+        "vivid_light" => clamped(b, s, |b, s| if s <= 0.5 { burn(b, 2.0 * s) } else { dodge(b, 2.0 * s - 1.0) }),
+        "linear_light" => per(b, s, |b, s| (b + 2.0 * s - 1.0).max(0.0)),
+        "pin_light" => per(b, s, |b, s| if s <= 0.5 { b.min(2.0 * s) } else { b.max(2.0 * s - 1.0) }),
+        "hard_mix" => clamped(b, s, |b, s| if b + s >= 1.0 { 1.0 } else { 0.0 }),
+        "exclusion" => per(b, s, |b, s| b + s - 2.0 * c01(b) * c01(s)),
+        "subtract" => per(b, s, |b, s| (b - s).max(0.0)),
+        "divide" => clamped(b, s, |b, s| (b / s.max(1e-6)).min(1.0)),
+        "hue" => component(b, s, |b, s| set_lum(set_sat(s, sat(b)), lum(b))),
+        "saturation" => component(b, s, |b, s| set_lum(set_sat(b, sat(s)), lum(b))),
+        "color" => component(b, s, |b, s| set_lum(s, lum(b))),
+        "luminosity" => component(b, s, |b, s| set_lum(b, lum(s))),
+        other => panic!("no CPU formula for blend mode {other}"),
+    }
+}
+
+#[test]
+fn every_blend_mode_matches_its_formula_above_one_too() {
+    gpu!(r);
+    // A 2x2 grid: backdrops on the left and right halves, layers on the top
+    // and bottom halves, each pair with one value at most 1 and one above
+    // (made with +3 stops of exposure). An adjustment layer takes the result
+    // down 3 stops so that it can be read back from 8 bits.
+    let backdrops: [Rgb; 2] = [[0.55, 0.3, 0.08], [2.6, 1.3, 0.45]];
+    let layers: [Rgb; 2] = [[0.2, 0.62, 0.45], [1.7, 0.35, 3.2]];
+    let solid = |id: &str, c: Rgb, scale: [f64; 2], position: [f64; 2], blend: &str, opacity: f64| {
+        let srgb = c.map(|v| to_srgb(v / 8.0));
+        format!(
+            r#"{{"id":"{id}","kind":"solid","color":[{},{},{},1],"blend":"{blend}","transform":{{"scale":{scale:?},"position":[{},{},0],"opacity":{opacity}}},"effects":[{{"kind":"exposure","params":{{"stops":3}}}}]}}"#,
+            srgb[0], srgb[1], srgb[2], position[0], position[1]
+        )
+    };
+    let names: Vec<&str> = edits_core::Blend::ALL.iter().map(|b| b.name()).collect();
+    assert_eq!(names.len(), 27);
+    for name in names {
+        for opacity in [1.0, 0.5] {
+            let p = project(
+                "",
+                &format!(
+                    r#""layers":[{}, {}, {}, {}, {{"id":"down","kind":"adjustment","effects":[{{"kind":"exposure","params":{{"stops":-3}}}}]}}]"#,
+                    solid("b0", backdrops[0], [0.5, 1.0], [-0.25, 0.0], "normal", 1.0),
+                    solid("b1", backdrops[1], [0.5, 1.0], [0.25, 0.0], "normal", 1.0),
+                    solid("s0", layers[0], [1.0, 0.5], [0.0, -0.25], name, opacity),
+                    solid("s1", layers[1], [1.0, 0.5], [0.0, 0.25], name, opacity),
+                ),
+            );
+            let img = render(r, &p, 0);
+            for (row, s) in layers.iter().enumerate() {
+                for (col, b) in backdrops.iter().enumerate() {
+                    let f = blend_cpu(name, *b, *s);
+                    let want = [0, 1, 2].map(|i| byte((b[i] + (f[i] - b[i]) * opacity) / 8.0));
+                    let (x, y) = (16 + 32 * col as u32, 16 + 32 * row as u32);
+                    let got = px(&img, x, y);
+                    assert!(
+                        (0..3).all(|i| (got[i] as i32 - want[i] as i32).abs() <= 2),
+                        "{name} at opacity {opacity}, backdrop {b:?}, layer {s:?}: got {got:?}, expected {want:?} (linear {f:?})"
+                    );
+                }
+            }
+        }
+    }
+}

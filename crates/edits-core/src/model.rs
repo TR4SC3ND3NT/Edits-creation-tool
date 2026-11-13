@@ -215,7 +215,10 @@ impl Default for Transform {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// How a layer combines with the image beneath it. The formulas are in
+/// `docs/RENDERING.md` (and `edits-render/src/compose.rs`); they work on
+/// linear light and stay sensible for values above 1.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum Blend {
     #[default]
@@ -227,6 +230,97 @@ pub enum Blend {
     Lighten,
     Darken,
     Difference,
+    // Darkening.
+    ColorBurn,
+    LinearBurn,
+    DarkerColor,
+    // Lightening.
+    ColorDodge,
+    /// The same as `add`.
+    LinearDodge,
+    LighterColor,
+    // Contrast.
+    SoftLight,
+    HardLight,
+    VividLight,
+    LinearLight,
+    PinLight,
+    HardMix,
+    // Inversion and cancellation.
+    Exclusion,
+    Subtract,
+    Divide,
+    // Component (non-separable).
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
+}
+
+impl Blend {
+    /// Every mode, `normal` first.
+    pub const ALL: [Blend; 27] = [
+        Blend::Normal,
+        Blend::Add,
+        Blend::Screen,
+        Blend::Multiply,
+        Blend::Overlay,
+        Blend::Lighten,
+        Blend::Darken,
+        Blend::Difference,
+        Blend::ColorBurn,
+        Blend::LinearBurn,
+        Blend::DarkerColor,
+        Blend::ColorDodge,
+        Blend::LinearDodge,
+        Blend::LighterColor,
+        Blend::SoftLight,
+        Blend::HardLight,
+        Blend::VividLight,
+        Blend::LinearLight,
+        Blend::PinLight,
+        Blend::HardMix,
+        Blend::Exclusion,
+        Blend::Subtract,
+        Blend::Divide,
+        Blend::Hue,
+        Blend::Saturation,
+        Blend::Color,
+        Blend::Luminosity,
+    ];
+
+    /// The name used in project files, e.g. `soft_light`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Blend::Normal => "normal",
+            Blend::Add => "add",
+            Blend::Screen => "screen",
+            Blend::Multiply => "multiply",
+            Blend::Overlay => "overlay",
+            Blend::Lighten => "lighten",
+            Blend::Darken => "darken",
+            Blend::Difference => "difference",
+            Blend::ColorBurn => "color_burn",
+            Blend::LinearBurn => "linear_burn",
+            Blend::DarkerColor => "darker_color",
+            Blend::ColorDodge => "color_dodge",
+            Blend::LinearDodge => "linear_dodge",
+            Blend::LighterColor => "lighter_color",
+            Blend::SoftLight => "soft_light",
+            Blend::HardLight => "hard_light",
+            Blend::VividLight => "vivid_light",
+            Blend::LinearLight => "linear_light",
+            Blend::PinLight => "pin_light",
+            Blend::HardMix => "hard_mix",
+            Blend::Exclusion => "exclusion",
+            Blend::Subtract => "subtract",
+            Blend::Divide => "divide",
+            Blend::Hue => "hue",
+            Blend::Saturation => "saturation",
+            Blend::Color => "color",
+            Blend::Luminosity => "luminosity",
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
