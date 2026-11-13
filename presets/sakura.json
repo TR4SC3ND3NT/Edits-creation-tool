@@ -1,0 +1,87 @@
+{
+  "format": "edits.preset/1",
+  "name": "sakura",
+  "description": "Cherry blossom petals drifting down across the frame, tumbling in a light wind.",
+  "tags": [
+    "particles",
+    "overlay",
+    "anime"
+  ],
+  "target": "project",
+  "variables": {
+    "density": {
+      "type": "number",
+      "default": 3,
+      "min": 0.1,
+      "max": 40,
+      "unit": "petals per beat",
+      "doc": "How many petals appear each beat."
+    },
+    "size": {
+      "type": "number",
+      "default": 3,
+      "min": 0.3,
+      "max": 15,
+      "unit": "% of height",
+      "doc": "Length of a petal."
+    },
+    "wind": {
+      "type": "number",
+      "default": 15,
+      "min": -60,
+      "max": 60,
+      "unit": "degrees",
+      "doc": "Slant of the fall: positive drifts right, negative left."
+    },
+    "color": {
+      "type": "color",
+      "default": [1, 0.5, 0.6],
+      "doc": "Petal colour (linear RGB)."
+    },
+    "length": {
+      "type": "number",
+      "default": 16,
+      "min": 0.5,
+      "max": 256,
+      "unit": "beats",
+      "doc": "How long the petals fall (they stop at the end of the project)."
+    },
+    "seed": {
+      "type": "integer",
+      "default": 1,
+      "doc": "Another number gives other petals."
+    }
+  },
+  "apply": [
+    {
+      "layer": {
+        "place": "top",
+        "layer": {
+          "id": "sakura",
+          "kind": "particles",
+          "in": "=at",
+          "out": "=min(end, at + $length * beat)",
+          "sprite": "petal",
+          "emitter": { "shape": "rect", "position": [0, -0.62], "size": ["=aspect + 0.4", 0.05] },
+          "rate": "=$density / beat",
+          "life": "=10 * beat",
+          "prewarm": true,
+          "speed": 0.24,
+          "speed_random": 0.3,
+          "direction": "=90 - $wind",
+          "spread": 20,
+          "gravity": 0.01,
+          "turbulence": { "amount": 6, "scale": 25, "speed": 0.4 },
+          "size": "$size",
+          "size_random": 0.3,
+          "color": "$color",
+          "fade_in": 0.04,
+          "fade_out": 0.08,
+          "spin": 40,
+          "spin_random": 80,
+          "seed": "$seed"
+        }
+      }
+    }
+  ]
+}

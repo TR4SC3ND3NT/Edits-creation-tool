@@ -83,6 +83,7 @@ pub fn check(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> {
                 }
             }
             LayerKind::Solid { .. } | LayerKind::Adjustment | LayerKind::Text(_) => {}
+            LayerKind::Particles(ps) => crate::particles::check(ps, p, &lp, &mut err, &mut warn, &mut used_slots),
             LayerKind::Video(v) => {
                 refs.push((&v.slot, "slot"));
                 video_slots.insert(v.slot.clone());

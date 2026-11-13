@@ -1,0 +1,78 @@
+{
+  "format": "edits.preset/1",
+  "name": "dust",
+  "description": "Soft specks of dust floating and swirling slowly in the light.",
+  "tags": [
+    "particles",
+    "overlay",
+    "atmosphere"
+  ],
+  "target": "project",
+  "variables": {
+    "density": {
+      "type": "number",
+      "default": 10,
+      "min": 0.5,
+      "max": 100,
+      "unit": "specks per beat",
+      "doc": "How many specks appear each beat."
+    },
+    "size": {
+      "type": "number",
+      "default": 0.8,
+      "min": 0.1,
+      "max": 5,
+      "unit": "% of height",
+      "doc": "Diameter of a speck."
+    },
+    "opacity": {
+      "type": "number",
+      "default": 0.7,
+      "min": 0,
+      "max": 1,
+      "doc": "Brightness of the specks."
+    },
+    "length": {
+      "type": "number",
+      "default": 16,
+      "min": 0.5,
+      "max": 256,
+      "unit": "beats",
+      "doc": "How long the dust stays (it stops at the end of the project)."
+    },
+    "seed": {
+      "type": "integer",
+      "default": 1,
+      "doc": "Another number gives other specks."
+    }
+  },
+  "apply": [
+    {
+      "layer": {
+        "place": "top",
+        "layer": {
+          "id": "dust",
+          "kind": "particles",
+          "in": "=at",
+          "out": "=min(end, at + $length * beat)",
+          "blend": "screen",
+          "sprite": "dot",
+          "emitter": { "shape": "rect", "size": ["=aspect", 1] },
+          "rate": "=$density / beat",
+          "life": "=6 * beat",
+          "prewarm": true,
+          "speed": 0.015,
+          "direction": -90,
+          "turbulence": { "amount": 4, "scale": 30, "speed": 0.25 },
+          "size": "$size",
+          "size_random": 0.6,
+          "color": [1, 0.95, 0.85],
+          "opacity": "$opacity",
+          "fade_in": 0.3,
+          "fade_out": 0.3,
+          "seed": "$seed"
+        }
+      }
+    }
+  ]
+}

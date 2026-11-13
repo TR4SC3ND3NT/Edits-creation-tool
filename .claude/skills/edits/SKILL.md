@@ -253,6 +253,19 @@ picture and motion for two frames at 24 fps, the choppy anime look. `edits
 check` flags a missing clip, a negative speed and a bad trim; see
 `docs/FORMAT.md` (Video layers).
 
+**Particles.** Sakura petals, sparkles, dust and sparks on a hit are a
+`particles` layer; the quickest way in is a preset with target `project`:
+`edits apply p.json sakura --at 0 --var length=32`, `sparkles`, `dust`, or
+`beat_burst --at drop` (sparks flying out on that beat; `--var position=0.3,-0.1`
+moves it). By hand: `{ "id": "hit", "kind": "particles", "sprite": "spark",
+"bursts": [{ "t": "b16", "count": 60 }], "life": 2, "speed": 1.2, "drag": 2.5,
+"gravity": 0.4, "blend": "add", "in": 16, "out": 18 }`; `rate` (per beat) emits
+continuously, `"prewarm": true` starts full, `sprite` is `dot`, `spark`,
+`star`, `petal` or `slot:<name>`, and `seed` gives other particles. Sizes are %
+of height, speeds heights per second. Every frame is computed from the time
+alone, so frames and sheets anywhere are exact; see `docs/FORMAT.md`
+(Particle layers).
+
 **Sound effects.** Whooshes, impacts and risers on cuts go in the top-level
 `audio_clips` list, mixed over the song at render without lowering it:
 `{ "id": "whoosh1", "path": "sfx/whoosh.wav", "at": "drop-0.25s", "trim_in": 0, "trim_out": 0.6, "volume": 0.7, "fade_in": 0, "fade_out": 0.1 }`.

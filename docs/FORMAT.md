@@ -50,6 +50,7 @@ and optionally `transition` (how it comes in; see [Transitions](#transitions)) a
 | `adjustment` | none | Its effects apply to everything beneath it |
 | `video` | `slot`, optional `speed`, `time_remap`, `loop`, `reverse`, `frame_blend`, `volume` | A clip from a slot, decoded by ffmpeg; see [Video layers](#video-layers-and-layer-time) |
 | `text` | `text`, optional `font`, `size`, `weight`, `align`, `line_height`, `tracking`, `fill`, `stroke`, `max_width` | Lines of text in a font file (Inter when none is named); see [Text layers](#text-layers) |
+| `particles` | `emitter`, `rate`, `bursts`, `life`, `speed`, `direction`, `spread`, `gravity`, `sprite`, ... | Petals, sparkles, dust, a burst on a beat; see [Particle layers](#particle-layers) |
 
 `transform` has `position` `[x, y, z]`, `scale` (number, `[x, y]` or `[x, y, z]`),
 `rotation` `[x, y, z]`, `anchor` `[x, y]`, `opacity`.
@@ -166,8 +167,8 @@ against the project (and a song analysis, when the command is given one with
 
 Bars have 4 beats and bar 1 starts at beat 0, unless a song analysis says
 where its downbeats are. In `project_edit` and the other edit commands, a
-layer's `in` / `out`, a key's `t`, a marker's `t`, an audio clip's `at` and
-a transition's `duration` (`"2b"`, `"0.5s"`) may be written this way; they are stored as
+layer's `in` / `out`, a key's `t`, a marker's `t`, an audio clip's `at`, a
+particle burst's `t` and a transition's `duration` (`"2b"`, `"0.5s"`) may be written this way; they are stored as
 numbers. Markers come from `"markers": [{ "t": 16, "label": "drop" }]`;
 `edits audio <song> --project <project>` writes the song's drop and
 sections there.
@@ -239,7 +240,8 @@ them.
 ```
 
 - **`target`**: `layer` (default) changes the layer it is applied to; `project`
-  adds layers of its own (`letterbox`, `overlay_texture`) and needs none.
+  adds layers of its own (`letterbox`, `overlay_texture`, and the particle
+  layers `sakura`, `sparkles`, `dust` and `beat_burst`) and needs none.
 - **`variables`**: `type` is `number`, `integer`, `boolean`, `color` (`[r, g, b]`
   in 0..1, `"r,g,b"` or `"#rrggbb"`), `vector`, `enum` or `string`, with a
   `default`, optional `min` / `max` / `unit`, and a `doc`. An `enum`'s
@@ -316,6 +318,70 @@ its `in` (`floor((t - in) x fps) / fps`), so `"fps": 12` in a 24 fps project
 holds every picture for two frames ("on twos"). Motion blur samples inside a
 step are one picture. The layer still comes in and goes out at its own `in`
 and `out`, and its transition runs at the project's rate.
+
+## Particle layers
+
+A `particles` layer draws many small sprites: falling sakura petals,
+twinkles, floating dust, sparks flying out on a hit. Nothing is simulated
+frame by frame: each particle's birth time follows from `rate` and `bursts`,
+its random numbers from `seed`, and its state at any instant is a formula of
+its age, so any frame renders on its own and looks the same however it was
+reached.
+
+```json
+{ "id": "petals", "kind": "particles", "in": 0, "out": 32,
+  "sprite": "petal", "prewarm": true,
+  "emitter": { "shape": "rect", "position": [0, -0.62], "size": [2.2, 0.05] },
+  "rate": 3, "life": 10, "speed": 0.24, "speed_random": 0.3,
+  "direction": 75, "spread": 20, "gravity": 0.01,
+  "turbulence": { "amount": 6, "scale": 25, "speed": 0.4 },
+  "size": 3, "size_random": 0.3, "color": [1, 0.5, 0.6],
+  "fade_in": 0.04, "fade_out": 0.08, "spin": 40, "spin_random": 80, "seed": 1 }
+```
+
+```json
+{ "id": "hit", "kind": "particles", "in": "b16", "out": "b18", "blend": "add",
+  "sprite": "spark", "bursts": [ { "t": "b16", "count": 60 } ],
+  "life": 2, "speed": 1.2, "speed_random": 0.6, "drag": 2.5, "gravity": 0.4,
+  "size": 0.8, "color": [1, 0.75, 0.35], "color_end": [1, 0.3, 0.1], "fade_out": 0.5 }
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `emitter.shape` | `point` | `point`, `line` (along x, `size[0]` long), `rect` (fills `size`) or `circle` (fills the ellipse inside `size`). |
+| `emitter.position` | `[0, 0]` | Centre of the emitter in layer space (composition heights from the centre, y down). Can be keyed: each particle is born where the emitter is at its birth. |
+| `emitter.size` | `[0, 0]` | `[width, height]` in composition heights. |
+| `emitter.angle`, `emitter.edge` | 0, false | Turn of the shape in degrees; `edge` emits from the outline only (a rect's border, a circle's ring). |
+| `rate` | 0 | Particles per project time unit (per beat in a beats project), evenly spaced from `in`. Can be keyed; it is integrated. |
+| `bursts` | none | `[{ "t", "count" }]`: `count` particles born at `t`. `t` accepts text times (`"b12"`, `"drop"`). A burst at beat `b` shows from the frame at `b`, not a frame before. |
+| `life` | 2 | How long each particle lives, in project time units. `life_random` (0..1) shortens each life by up to that fraction. |
+| `prewarm` | false | Start emitting one `life` before `in`, so the layer starts full. |
+| `speed` | 0.2 | Initial speed in composition heights per second; `speed_random` (0..1) varies it by up to that fraction. |
+| `direction`, `spread` | -90, 360 | Direction of the initial velocity in degrees (0 right, 90 down, -90 up) and the width of the cone around it. |
+| `gravity` | 0 | Constant acceleration in heights per second squared: a number pulls down (negative: up), `[x, y]` also pushes sideways (wind). |
+| `drag` | 0 | Velocity decays as `e^(-drag t)` towards `gravity / drag`. |
+| `turbulence` | off | `{ "amount", "scale", "speed" }`: a swirling drift of about `amount` % of the height, from curl noise with eddies `scale` % of the height across, changing `speed` times a second. |
+| `size` | 1 | Diameter in % of the height; `size_end` is the size at the end of life (linear), `size_random` (0..1) varies each one. |
+| `color`, `color_end` | `[1, 1, 1]`, none | Linear RGB at birth and at the end of life. |
+| `opacity`, `opacity_end` | 1, none | Opacity at birth and at the end of life; `fade_in` and `fade_out` are fractions of the life spent fading from and to transparent. |
+| `spin`, `spin_random` | 0, 0 | Turning speed and its random part, in degrees per second. Each particle also starts at a random angle. |
+| `sprite` | `dot` | `dot`, `spark` (a streak along the velocity, `streak` seconds of travel long, default 0.05), `star` (a four-point twinkle), `petal` (a sakura petal that tumbles about its long axis) or `slot:<name>` (a slot's picture, upright at angle 0, tinted by `color`). |
+| `seed` | 0 | Another number gives other particles. |
+| `max` | 10000 | Most particles drawn at once (the oldest beyond it are left out). |
+
+Values that can be keyed (`rate`, `emitter.position`, `speed`, `direction`,
+`spread`, `size`, `color`, `opacity`) are read at each particle's birth, so a
+particle keeps them for its life; the others are plain numbers. Lengths and
+positions are in composition heights and sizes in % of the height, so a
+layer looks the same at any resolution. Times (`rate`, `bursts`, `life`) are
+in the project's time base; motion (`speed`, `gravity`, `drag`, `spin`,
+`turbulence`) is per second. The layer's `transform` moves, scales and turns
+the whole system (in 3D too), its `blend` mode and `opacity` apply to it as
+a whole, its `fps` posterizes it, and motion blur samples see the particles
+at each sub-frame instant. `check` reports a negative `rate`, a `life` that
+is not positive, an unknown `sprite` and a sprite slot that does not exist.
+The presets `sakura`, `sparkles`, `dust` and `beat_burst` add ready-made
+particle layers.
 
 ## Text layers
 

@@ -62,6 +62,10 @@ impl Renderer {
     fn quads_at(&mut self, ev: &Evaluator, layer: &Layer, at: &LayerAt, t: f64) -> Result<(Vec<Quad>, bool)> {
         let scene = self.scene.clone().ok_or_else(|| anyhow!("no project prepared: call prepare() first"))?;
         let aspect = self.ctx.time[3] as f64;
+        let vp = geometry::view_projection(&ev.camera(t), aspect);
+        if let LayerKind::Particles(ps) = &layer.kind {
+            return self.particle_quads(&scene, ev, layer, ps, vp * geometry::model(&at.resolved), t).with_context(|| format!("layer \"{}\"", layer.id));
+        }
         let mut frame = None;
         if let LayerKind::Video(v) = &layer.kind {
             if let Some(clip) = scene.clips.get(&v.slot) {
@@ -265,6 +269,10 @@ pub(crate) fn layer_signature(ev: &Evaluator, scene: &Scene, layer: &Layer, t: f
         if let Some(sf) = scene.clip_info(&v.slot).and_then(|clip| ev.source_frame(layer, v, t, clip)) {
             out.extend([sf.frame, sf.next, sf.weight.to_bits()]);
         }
+    }
+    if let LayerKind::Particles(_) = &layer.kind {
+        // Particles move at every instant.
+        out.push(lt.to_bits());
     }
     for e in layer.effects.iter().filter(|e| e.enabled) {
         if effect_reads_time(&e.kind) {

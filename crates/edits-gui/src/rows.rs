@@ -128,6 +128,7 @@ pub fn kind_text(kind: &LayerKind) -> String {
             let words: String = t.text.chars().take(24).map(|c| if c == '\n' { ' ' } else { c }).collect();
             format!("text \"{words}\"")
         }
+        LayerKind::Particles(p) => format!("particles {}", p.sprite),
     }
 }
 
