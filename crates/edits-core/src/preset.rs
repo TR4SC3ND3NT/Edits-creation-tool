@@ -841,7 +841,9 @@ impl Run<'_> {
                 Some(d) => subst(d, &env, &self.vars)?.as_f64().ok_or("\"dt\" must be a number")?,
                 None => 0.0,
             };
-            let t = self.at + dt;
+            // Rounded to a millionth of a beat or second: `at + dt` in floating
+            // point leaves noise like 5.665999999 in the written project.
+            let t = ((self.at + dt) * 1e6).round() / 1e6;
             let orig = self.orig(prop, t);
             env.insert("orig".into(), orig.clone());
             for (c, x) in orig.iter().enumerate() {
