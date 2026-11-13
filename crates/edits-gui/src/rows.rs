@@ -1,7 +1,28 @@
 //! What the timeline draws for each layer: its span, its effects and the
 //! times of every keyframe. Built once per accepted project, not per frame.
 
-use edits_core::{Blend, Layer, LayerKind, Modifier, Project, Prop};
+use edits_core::{Blend, Ease, Layer, LayerKind, Modifier, Project, Prop};
+
+/// How a key is drawn: its shape says how the value leaves it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyShape {
+    /// `linear`: a diamond.
+    Linear,
+    /// `hold`: a square.
+    Hold,
+    /// Any other ease (curves, `decay`, `bezier`): a circle.
+    Eased,
+}
+
+impl KeyShape {
+    pub fn of(ease: &Ease) -> Self {
+        match ease {
+            Ease::Name(n) if n == "linear" => KeyShape::Linear,
+            Ease::Name(n) if n == "hold" => KeyShape::Hold,
+            _ => KeyShape::Eased,
+        }
+    }
+}
 
 /// One keyframe of one property.
 #[derive(Clone, Debug, PartialEq)]
@@ -12,6 +33,8 @@ pub struct KeyMark {
     pub what: String,
     /// The key belongs to an effect parameter (otherwise to the transform or camera).
     pub effect: bool,
+    /// The ease of the segment that starts at this key.
+    pub shape: KeyShape,
 }
 
 /// One row of the timeline.
@@ -35,14 +58,20 @@ pub struct Row {
 /// The key times of an animatable value, in file order. The keys of a
 /// keyframed shake amplitude (an envelope) count too.
 pub fn prop_key_times(prop: &Prop) -> Vec<f64> {
+    prop_keys(prop).into_iter().map(|(t, _)| t).collect()
+}
+
+/// The keys of an animatable value with their shapes, in file order (the
+/// keys of a keyframed shake amplitude too).
+pub fn prop_keys(prop: &Prop) -> Vec<(f64, KeyShape)> {
     let mut out = Vec::new();
     collect(prop, &mut out);
     out
 }
 
-fn collect(prop: &Prop, out: &mut Vec<f64>) {
+fn collect(prop: &Prop, out: &mut Vec<(f64, KeyShape)>) {
     let Prop::Anim(anim) = prop else { return };
-    out.extend(anim.keys.iter().map(|k| k.t));
+    out.extend(anim.keys.iter().map(|k| (k.t, KeyShape::of(&k.ease))));
     for m in &anim.modifiers {
         if let Modifier::Shake { amplitude, .. } = m {
             collect(amplitude, out);
@@ -51,9 +80,9 @@ fn collect(prop: &Prop, out: &mut Vec<f64>) {
 }
 
 fn push_marks(marks: &mut Vec<KeyMark>, prop: &Prop, what: &str, effect: bool) {
-    for t in prop_key_times(prop) {
+    for (t, shape) in prop_keys(prop) {
         if t.is_finite() {
-            marks.push(KeyMark { t, what: what.to_string(), effect });
+            marks.push(KeyMark { t, what: what.to_string(), effect, shape });
         }
     }
 }
@@ -142,6 +171,8 @@ pub struct MarkGroup {
     pub effect: bool,
     /// The properties keyed at this time, without repeats.
     pub what: Vec<String>,
+    /// The shape of its keys; a diamond when they differ.
+    pub shape: KeyShape,
 }
 
 /// Marks at the same time (within `tolerance`) become one group, so a time
@@ -156,8 +187,11 @@ pub fn group_marks(marks: &[KeyMark], tolerance: f64) -> Vec<MarkGroup> {
                 if !g.what.contains(&m.what) {
                     g.what.push(m.what.clone());
                 }
+                if g.shape != m.shape {
+                    g.shape = KeyShape::Linear;
+                }
             }
-            _ => out.push(MarkGroup { t: m.t, transform: !m.effect, effect: m.effect, what: vec![m.what.clone()] }),
+            _ => out.push(MarkGroup { t: m.t, transform: !m.effect, effect: m.effect, what: vec![m.what.clone()], shape: m.shape }),
         }
     }
     out
@@ -262,5 +296,21 @@ mod tests {
         let coarse = group_marks(&layer_marks(&p.layers[1]), 0.6);
         assert_eq!(coarse.len(), 5);
         assert_eq!(coarse[0].what, vec!["position", "scale", "glow.radius"]);
+    }
+
+    #[test]
+    fn keys_are_shaped_by_their_ease() {
+        let prop: Prop = serde_json::from_str(r#"{"keys":[{"t":0,"v":1},{"t":1,"v":2,"ease":"hold"},{"t":2,"v":0,"ease":"quad_out"},{"t":3,"v":1,"ease":[0.2,0,0.4,1]},{"t":4,"v":1,"ease":{"name":"decay","rate":0.4}}]}"#).unwrap();
+        let shapes: Vec<KeyShape> = prop_keys(&prop).into_iter().map(|(_, s)| s).collect();
+        assert_eq!(shapes, vec![KeyShape::Linear, KeyShape::Hold, KeyShape::Eased, KeyShape::Eased, KeyShape::Eased]);
+        // One group of keys with different shapes is drawn as a diamond.
+        let marks = vec![
+            KeyMark { t: 1.0, what: "scale".into(), effect: false, shape: KeyShape::Hold },
+            KeyMark { t: 1.0, what: "opacity".into(), effect: false, shape: KeyShape::Eased },
+            KeyMark { t: 2.0, what: "scale".into(), effect: false, shape: KeyShape::Hold },
+        ];
+        let groups = group_marks(&marks, 1e-6);
+        assert_eq!(groups[0].shape, KeyShape::Linear);
+        assert_eq!(groups[1].shape, KeyShape::Hold);
     }
 }
