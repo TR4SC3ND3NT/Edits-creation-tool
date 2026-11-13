@@ -88,6 +88,14 @@ layer's `volume`, looped or reversed like the picture and at its constant
 stays silent, with a warning on stderr; `"volume": 0` mutes one. `clip_audio`
 in the output counts the layers heard.
 
+So are the project's sound effects (`audio_clips`, see
+[FORMAT.md](FORMAT.md#sound-effects-audio_clips)): each is cut to
+`trim_in`..`trim_out` (`atrim`), faded (`afade`), set to its `volume` and
+delayed to its `at` (`adelay`), then added to the mix at full level, so the
+song does not get quieter. ffprobe gives the length of a clip without
+`trim_out`. `audio_clips` in the output counts the clips heard in the
+rendered range; a disabled or muted clip is not one.
+
 `--samples N` overrides `settings.motion_blur.samples`; `--samples 1` is the
 fast way to preview without motion blur. `-q` silences the progress lines.
 
@@ -99,6 +107,7 @@ frame 24/24 (100%)  161 ms/frame  0 s left
   "adapter": { "backend": "Vulkan", "driver": "llvmpipe Mesa 25.2.8-0ubuntu0.24.04.4 (LLVM 20.1.2)",
                "name": "llvmpipe (LLVM 20.1.2, 256 bits)", "software": true, "type": "Cpu" },
   "audio": true,
+  "audio_clips": 0,
   "clip_audio": 0,
   "duration_seconds": 0.96,
   "encoder": "libx264",
@@ -183,9 +192,9 @@ it waits for the GPU after every pass, so the totals are higher than normal.
 edits describe <project.json>
 ```
 
-Prints `edits_core::describe`: size, length, slots, and one block per layer
-with its keys and effects, in a few hundred tokens. Read this before editing a
-project.
+Prints `edits_core::describe`: size, length, slots, one block per layer
+with its keys and effects, the markers and the sound effects, in a few
+hundred tokens. Read this before editing a project.
 
 ## check
 
@@ -194,7 +203,8 @@ edits check <project.json> [--json]
 ```
 
 Validates the project with its own folder as the base for relative paths, so
-missing pictures, shaders and audio are found. Exit code 1 when there is at
+missing pictures, shaders and audio are found (sound effects too, with their
+trims and fades). Exit code 1 when there is at
 least one error; warnings alone exit 0. A file that is not valid JSON is
 reported the same way.
 

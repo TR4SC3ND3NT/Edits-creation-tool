@@ -397,6 +397,15 @@ pub fn file_refs(doc: &Value) -> Vec<(String, String)> {
     if let Some(p) = doc.pointer("/audio/path").and_then(Value::as_str) {
         out.push(("/audio/path".to_string(), p.to_string()));
     }
+    for (i, clip) in doc.get("audio_clips").and_then(Value::as_array).into_iter().flatten().enumerate() {
+        if let Some(p) = clip.get("path").and_then(Value::as_str) {
+            let at = match clip.get("id").and_then(Value::as_str) {
+                Some(id) => format!("/audio_clips/@{}", pointer::escape(id)),
+                None => format!("/audio_clips/{i}"),
+            };
+            out.push((format!("{at}/path"), p.to_string()));
+        }
+    }
     if let Some(slots) = doc.get("slots").and_then(Value::as_object) {
         for (name, slot) in slots {
             if let Some(p) = slot.get("path").and_then(Value::as_str) {
@@ -1300,6 +1309,9 @@ mod tests {
         let out = apply(&t.project(), &[EditOp::set_slot("a", Some("x.png".into()), None, None)], &opts).unwrap();
         assert!(!out.ok);
         assert!(out.findings.iter().any(|f| f.path == "/slots/a/path" && f.message.contains("not allowed")));
+        let clip = serde_json::json!([{ "id": "hit", "path": "../hit.wav", "at": "end-1s" }]);
+        let out = apply(&t.project(), &[EditOp::set("/audio_clips", clip)], &opts).unwrap();
+        assert!(!out.ok && out.findings.iter().any(|f| f.path == "/audio_clips/@hit/path" && f.message.contains("not allowed")), "{:?}", out.findings);
     }
 
     #[test]

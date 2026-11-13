@@ -29,6 +29,7 @@ is the short version.
                 "background": [0, 0, 0],
                 "motion_blur": { "samples": 8, "shutter": 0.5 } },
   "audio": { "path": "ref.mp4", "offset": 0.48 },
+  "audio_clips": [ { "id": "whoosh1", "path": "sfx/whoosh.wav", "at": 15.5 } ],
   "slots": { "a": { "path": "img/a.png", "fit": "cover", "focus": [0.5, 0.4] } },
   "camera": { "fov": 39.6, "position": [0, 0, 0], "rotation": [0, 0, 0] },
   "layers": [ ... ]
@@ -164,11 +165,46 @@ against the project (and a song analysis, when the command is given one with
 
 Bars have 4 beats and bar 1 starts at beat 0, unless a song analysis says
 where its downbeats are. In `project_edit` and the other edit commands, a
-layer's `in` / `out`, a key's `t`, a marker's `t` and a transition's
-`duration` (`"2b"`, `"0.5s"`) may be written this way; they are stored as
+layer's `in` / `out`, a key's `t`, a marker's `t`, an audio clip's `at` and
+a transition's `duration` (`"2b"`, `"0.5s"`) may be written this way; they are stored as
 numbers. Markers come from `"markers": [{ "t": 16, "label": "drop" }]`;
 `edits audio <song> --project <project>` writes the song's drop and
 sections there.
+
+## Sound effects (`audio_clips`)
+
+`audio_clips` lists sounds mixed over the song by `edits render`: whooshes
+into a cut, impacts on a hit, a riser before the drop. Each clip plays once,
+from project time `at`, at the level the file has times `volume`. The song
+keeps its level (the mix adds, it does not average), so keep effects below
+the song or lower their `volume`.
+
+```json
+"audio_clips": [
+  { "id": "whoosh1", "path": "sfx/whoosh.wav", "at": 15.5, "trim_in": 0.1, "fade_out": 0.2 },
+  { "id": "riser", "path": "sfx/riser.wav", "at": 12, "trim_out": 4, "volume": 0.5, "fade_in": 1 }
+]
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `id` | (required) | A unique name, used by edits: `/audio_clips/@whoosh1/volume`. |
+| `path` | (required) | Any file with sound that ffmpeg reads (WAV, MP3, FLAC, OGG, M4A, a video), relative to the project. |
+| `at` | (required) | When the clip starts, in project time. Edits may write it as text (`"drop-1b"`, `"bar 5"`, `"12.5s"`); see [Times as text](#times-as-text). |
+| `trim_in` | 0 | Seconds into the file where the clip starts. |
+| `trim_out` | end of the file | Seconds into the file where it stops. |
+| `volume` | 1 | **Linear** gain, like a video layer's `volume`: 1 keeps the file's level, 0.5 is about -6 dB, 2 about +6 dB, 0 mutes. |
+| `fade_in`, `fade_out` | 0 | Seconds of fade from and to silence at the two ends of the trimmed clip. |
+| `enabled` | true | `false` keeps the clip in the file but leaves it out of the render. |
+
+`trim_*` and `fade_*` are seconds of the sound, not project time, so a clip
+sounds the same at any tempo. A clip that runs past the end of the project is
+cut there; one that starts before 0 (or before a `--from`) plays from where
+the render starts. `edits check` reports a missing file, a duplicate id,
+`trim_out` before `trim_in`, negative values, and fades longer than a trimmed
+clip; without a `trim_out` the render shortens fades that do not fit the
+file. To start a sound a little before a cut, subtract from the cut's time
+(`"drop-0.25s"`). The preview window and `edits frame` do not play them.
 
 ## Presets (`edits.preset/1`)
 

@@ -437,6 +437,7 @@ pub fn draft(a: &Analysis, opts: &DraftOpts) -> Project {
             motion_blur: MotionBlur::default(),
         },
         audio: if a.source.has_audio { Some(Audio { path: rel(Path::new(&a.source.path)), offset: 0.0, gain: 1.0 }) } else { None },
+        audio_clips: Vec::new(),
         slots,
         camera: Camera::default(),
         layers,

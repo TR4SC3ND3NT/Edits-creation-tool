@@ -257,8 +257,60 @@ pub fn check(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> {
             err("audio.path".into(), format!("audio file not found: {}", a.path), None);
         }
     }
+    check_audio_clips(p, base_dir, &mut err, &mut warn);
     out.extend(warn);
     out
+}
+
+/// Sound effects: the file is there, the times are in range and the fades fit.
+fn check_audio_clips(p: &Project, base_dir: Option<&Path>, err: &mut impl FnMut(String, String, Option<&str>), warn: &mut Vec<Finding>) {
+    let s = &p.settings;
+    let mut ids = BTreeSet::new();
+    for (i, c) in p.audio_clips.iter().enumerate() {
+        let cp = format!("audio_clips[{i}:\"{}\"]", c.id);
+        let mut warning = |path: String, message: String, hint: Option<&str>| warn.push(Finding { severity: Severity::Warning, path, message, hint: hint.map(str::to_string) });
+        if c.id.is_empty() {
+            err(cp.clone(), "an audio clip needs an \"id\"".into(), Some("e.g. \"whoosh1\""));
+        } else if !ids.insert(c.id.clone()) {
+            err(cp.clone(), format!("duplicate audio clip id \"{}\"", c.id), Some("audio clip ids must be unique"));
+        }
+        if let Some(dir) = base_dir {
+            if !dir.join(&c.path).is_file() {
+                err(format!("{cp}.path"), format!("audio file not found: {}", c.path), Some("paths are relative to the project file"));
+            }
+        }
+        if !c.at.is_finite() {
+            err(format!("{cp}.at"), format!("at must be a number, got {}", c.at), None);
+        } else if c.at >= s.duration {
+            warning(format!("{cp}.at"), format!("the clip starts at {} but the project ends at {}: it is not heard", c.at, s.duration), None);
+        } else if p.to_seconds(c.at) < 0.0 {
+            warning(format!("{cp}.at"), format!("the clip starts {:.3} s before the project: that part is not heard", -p.to_seconds(c.at)), None);
+        }
+        if !c.trim_in.is_finite() || c.trim_in < 0.0 {
+            err(format!("{cp}.trim_in"), format!("trim_in must be 0 or more seconds, got {}", c.trim_in), None);
+        }
+        let length = match c.trim_out {
+            Some(b) if b.is_nan() || b <= c.trim_in => {
+                err(format!("{cp}.trim_out"), format!("trim_out ({b}) must be after trim_in ({})", c.trim_in), Some("seconds of the file; remove trim_out to play to its end"));
+                None
+            }
+            Some(b) if b.is_finite() => Some(b - c.trim_in),
+            _ => None,
+        };
+        if !c.volume.is_finite() || c.volume < 0.0 {
+            err(format!("{cp}.volume"), format!("volume must be 0 or more, got {}", c.volume), Some("a linear gain: 0 mutes the clip, 1 keeps its level, 2 is about +6 dB"));
+        }
+        for (name, v) in [("fade_in", c.fade_in), ("fade_out", c.fade_out)] {
+            if !v.is_finite() || v < 0.0 {
+                err(format!("{cp}.{name}"), format!("{name} must be 0 or more seconds, got {v}"), None);
+            }
+        }
+        if let Some(len) = length {
+            if c.fade_in + c.fade_out > len + 1e-9 {
+                err(cp.clone(), format!("the fades ({} s in + {} s out) are longer than the clip ({len} s)", c.fade_in, c.fade_out), Some("shorten the fades or move trim_out"));
+            }
+        }
+    }
 }
 
 fn check_prop(prop: &Prop, path: &str, err: &mut impl FnMut(String, String, Option<&str>)) {
@@ -452,5 +504,43 @@ mod tests {
         assert!(!f.iter().any(|x| x.path == "slots.map" && x.message.contains("not used")));
         assert!(f.iter().any(|x| x.path == "slots.other" && x.message.contains("not used")));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn audio_clips_are_checked() {
+        let dir = std::env::temp_dir().join(format!("edits-check-sfx-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("hit.wav"), b"").unwrap();
+        let p = Project::from_json(
+            r#"{"format":"edits.project/1",
+                "settings":{"width":64,"height":64,"fps":25,"duration":8,"time_base":"beats","bpm":120,"beat_offset":0.5},
+                "layers":[],
+                "audio_clips":[
+                  {"id":"ok","path":"hit.wav","at":2,"trim_in":0.1,"trim_out":0.6,"volume":0.5,"fade_in":0.1,"fade_out":0.3},
+                  {"id":"ok","path":"gone.wav","at":9},
+                  {"id":"b","path":"hit.wav","at":-2,"trim_in":-1,"volume":-1,"fade_out":-0.5},
+                  {"id":"c","path":"hit.wav","at":1,"trim_in":1,"trim_out":0.5},
+                  {"id":"d","path":"hit.wav","at":1,"trim_out":0.5,"fade_in":0.3,"fade_out":0.3},
+                  {"id":"","path":"hit.wav","at":0,"fade_in":4}
+                ]}"#,
+        )
+        .unwrap();
+        let f = check(&p, Some(&dir));
+        std::fs::remove_dir_all(&dir).ok();
+        let says = |path: &str, needle: &str, sev: Severity| f.iter().any(|x| x.path == path && x.message.contains(needle) && x.severity == sev);
+        assert!(!f.iter().any(|x| x.path.starts_with("audio_clips[0:")), "{f:#?}");
+        assert!(says("audio_clips[1:\"ok\"]", "duplicate audio clip id", Severity::Error), "{f:#?}");
+        assert!(says("audio_clips[1:\"ok\"].path", "audio file not found: gone.wav", Severity::Error));
+        assert!(says("audio_clips[1:\"ok\"].at", "it is not heard", Severity::Warning));
+        assert!(says("audio_clips[2:\"b\"].at", "0.500 s before the project", Severity::Warning), "{f:#?}");
+        assert!(says("audio_clips[2:\"b\"].trim_in", "trim_in must be 0 or more", Severity::Error));
+        assert!(says("audio_clips[2:\"b\"].volume", "volume must be 0 or more", Severity::Error));
+        assert!(says("audio_clips[2:\"b\"].fade_out", "fade_out must be 0 or more", Severity::Error));
+        assert!(says("audio_clips[3:\"c\"].trim_out", "must be after trim_in", Severity::Error));
+        assert!(says("audio_clips[4:\"d\"]", "longer than the clip (0.5 s)", Severity::Error));
+        assert!(says("audio_clips[5:\"\"]", "needs an \"id\"", Severity::Error));
+        // Without trim_out the file's length is not known here: the render clamps the fades.
+        assert!(!f.iter().any(|x| x.path == "audio_clips[5:\"\"]" && x.message.contains("fades")), "{f:#?}");
+        assert_eq!(crate::pointer::from_check_path("audio_clips[1:\"ok\"].path").as_deref(), Some("/audio_clips/@ok/path"));
     }
 }

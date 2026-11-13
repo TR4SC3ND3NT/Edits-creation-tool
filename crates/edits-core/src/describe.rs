@@ -102,6 +102,25 @@ pub fn describe(p: &Project) -> String {
     for m in &p.markers {
         let _ = writeln!(o, "marker {:.2}: {}", m.t, m.label);
     }
+    if !p.audio_clips.is_empty() {
+        let _ = writeln!(o, "audio clips (sound effects):");
+    }
+    for c in &p.audio_clips {
+        let mut parts = vec![c.path.clone()];
+        if c.trim_in != 0.0 || c.trim_out.is_some() {
+            parts.push(format!("trim {}..{} s", c.trim_in, c.trim_out.map(|b| b.to_string()).unwrap_or_else(|| "end".into())));
+        }
+        if c.volume != 1.0 {
+            parts.push(if c.volume == 0.0 { "muted".to_string() } else { format!("volume {}", c.volume) });
+        }
+        if c.fade_in > 0.0 {
+            parts.push(format!("fade in {} s", c.fade_in));
+        }
+        if c.fade_out > 0.0 {
+            parts.push(format!("fade out {} s", c.fade_out));
+        }
+        let _ = writeln!(o, "  {:<14} at {:>7.2} {}{}", c.id, c.at, parts.join(", "), if c.enabled { "" } else { " (disabled)" });
+    }
     o
 }
 
@@ -167,5 +186,19 @@ mod tests {
         let d = describe(&p);
         assert!(d.contains("op: op.mp4 [Cover] trim 1.5..4 s"), "{d}");
         assert!(d.contains("video op speed 0→1, 2→0.25 loop mix muted fps=12"), "{d}");
+    }
+
+    #[test]
+    fn audio_clips_are_listed() {
+        let p = Project::from_json(
+            r#"{"format":"edits.project/1","settings":{"width":64,"height":64,"fps":25,"duration":4},"layers":[],
+                "audio_clips":[{"id":"whoosh","path":"sfx/whoosh.wav","at":1.5,"trim_in":0.2,"volume":0.5,"fade_out":0.25},
+                               {"id":"hit","path":"hit.wav","at":2,"enabled":false}]}"#,
+        )
+        .unwrap();
+        let d = describe(&p);
+        assert!(d.contains("audio clips (sound effects):"), "{d}");
+        assert!(d.contains("  whoosh         at    1.50 sfx/whoosh.wav, trim 0.2..end s, volume 0.5, fade out 0.25 s\n"), "{d}");
+        assert!(d.contains("  hit            at    2.00 hit.wav (disabled)\n"), "{d}");
     }
 }

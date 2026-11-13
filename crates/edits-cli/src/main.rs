@@ -548,6 +548,52 @@ fn clip_audio(project: &Project, dir: &Path, start: f64) -> Vec<encode::ClipAudi
     out
 }
 
+/// Seconds of sound in a file, from ffprobe; `None` when it cannot tell.
+fn sound_seconds(path: &Path) -> Option<f64> {
+    let out = std::process::Command::new(edits_render::video::ffprobe_program())
+        .args(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=duration:format=duration", "-of", "default=noprint_wrappers=1:nokey=1"])
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    // The stream's duration first, then the container's.
+    String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.trim().parse::<f64>().ok()).find(|d| d.is_finite() && *d > 0.0)
+}
+
+/// The project's sound effects (`audio_clips`), for a render that starts
+/// `start` seconds into the project. A clip is heard when it is enabled and
+/// its volume is above 0. Its end is `trim_out`, or the end of the file.
+fn sound_clips(project: &Project, dir: &Path, start: f64) -> Vec<encode::SoundClip> {
+    let mut out = Vec::new();
+    for c in project.audio_clips.iter().filter(|c| c.enabled && c.volume > 0.0) {
+        let path = dir.join(&c.path);
+        let file = sound_seconds(&path);
+        if file.is_none() {
+            eprintln!("warning: audio clip \"{}\": ffprobe cannot tell how long {} is; it plays to its end without a fade out", c.id, path.display());
+        }
+        let end = match (c.trim_out, file) {
+            (Some(b), Some(f)) => b.min(f),
+            (Some(b), None) => b,
+            (None, Some(f)) => f,
+            (None, None) => f64::INFINITY,
+        };
+        if end <= c.trim_in {
+            eprintln!("warning: audio clip \"{}\": nothing of {} is left after trim_in {} s; it is not heard", c.id, path.display(), c.trim_in);
+            continue;
+        }
+        out.push(encode::SoundClip {
+            path,
+            source: [c.trim_in, end],
+            at: project.to_seconds(c.at) - start,
+            volume: c.volume,
+            fade_in: c.fade_in,
+            fade_out: c.fade_out,
+        });
+    }
+    out
+}
+
 fn render(a: RenderArgs, adapter: Option<AdapterPolicy>) -> Result<ExitCode> {
     check_scale(a.scale)?;
     let (project, dir) = load(&a.project)?;
@@ -566,13 +612,17 @@ fn render(a: RenderArgs, adapter: Option<AdapterPolicy>) -> Result<ExitCode> {
         _ => None,
     };
     let clips = if a.no_audio || ffmpeg.aac.is_empty() { Vec::new() } else { clip_audio(&project, &dir, first as f64 / project.settings.fps) };
-    let has_audio = audio.is_some() || !clips.is_empty();
+    let fps = project.settings.fps;
+    let mut sounds = if a.no_audio || ffmpeg.aac.is_empty() { Vec::new() } else { sound_clips(&project, &dir, first as f64 / fps) };
+    sounds.retain(|s| s.heard((end - first) as f64 / fps));
+    let has_audio = audio.is_some() || !clips.is_empty() || !sounds.is_empty();
     let clip_count = clips.len();
+    let sound_count = sounds.len();
     let (mut renderer, startup_ms) = open(&project, &dir, adapter, a.samples)?;
     let (width, height) = renderer.output_size(a.scale)?;
     ensure_parent(&a.output)?;
     let frames = end - first;
-    let job = encode::EncodeJob { output: &a.output, width, height, fps: project.settings.fps, frames, crf: a.crf, encoder: &encoder, audio, clips, aac: ffmpeg.aac.first().map(String::as_str) };
+    let job = encode::EncodeJob { output: &a.output, width, height, fps: project.settings.fps, frames, crf: a.crf, encoder: &encoder, audio, clips, sounds, aac: ffmpeg.aac.first().map(String::as_str) };
     let mut enc = encode::Encoder::start(&job)?;
 
     let started = Instant::now();
@@ -610,6 +660,7 @@ fn render(a: RenderArgs, adapter: Option<AdapterPolicy>) -> Result<ExitCode> {
         "encoder": encoder,
         "audio": has_audio,
         "clip_audio": clip_count,
+        "audio_clips": sound_count,
     }));
     Ok(ExitCode::SUCCESS)
 }

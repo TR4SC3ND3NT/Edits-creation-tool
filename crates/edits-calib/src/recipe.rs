@@ -225,6 +225,7 @@ pub fn generate(spec: &CaseSpec) -> Case {
         format: FORMAT.into(),
         settings: Settings { width, height, fps, duration, time_base: TimeBase::Beats, bpm: Some(bpm), beat_offset, background: [0.0; 3], motion_blur: MotionBlur::default() },
         audio: None,
+        audio_clips: Vec::new(),
         slots: BTreeMap::new(),
         camera: Camera::default(),
         layers: vec![],
