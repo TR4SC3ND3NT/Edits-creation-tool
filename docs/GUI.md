@@ -30,6 +30,50 @@ errors opens a window that lists them and waits for the file to change.
 Other programs can open the same window with
 `edits_gui::run(project: PathBuf, options: edits_gui::Options) -> anyhow::Result<()>`.
 
+## Layout
+
+```
+┌ top bar ───────────────────────────────────────────────────────────────────────┐
+│ ▣ demo / project.json  rev 3  agent   [ Search or run a command…  Ctrl K ]  ↶ ↷  Export │
+├────┬───────────────────────────────────────────────────────┬────────────────────┤
+│rail│ preview on its stage (the picture at its true aspect) │ inspector          │
+│    │                                                       │  (the selection)   │
+│    │                                        toasts here ▸  │  ▾ Layer           │
+│    │ 00:01.48 / 00:03.88  B 3.03  F 37    ⏮ ‹ ▶ › ⟳   0.5× │  ▾ Transform       │
+├────┴───────────────────────────────────────────────────────┴────────────────────┤
+│ + Layer   ¼ beat   5 layers · 8 beats · 123 BPM · 25 fps              − + fit  │
+│ overview of the whole edit                                                      │
+│ ruler · markers · audio waveform · one track per layer                          │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│ ● Revision 3   last action               adapter · ms/frame · cache · audio     │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+What a screenshot of the demo at 1600 × 1000 shows, with layer `d`
+selected: a near-black window (greys from `#080808` behind the picture to
+`#191919` for raised surfaces) whose brightest thing is the preview. The top
+bar reads `demo / project.json` next to a small `rev 1` pill; a search field
+sits in the middle with `Ctrl` `K` key caps, and undo and redo icons and a
+violet `Export` button are on the right. The inspector opens with a blue
+image badge, `d` and `image d`, and the line `Values at frame 37 · 3.034
+beats` in a mono font; below it the *Layer* and *Transform* sections, each
+row a grey label and mono value fields (`0 0 0`, `1.35`), the row of the
+picked property tinted violet. Under the picture the transport reads
+`00:01.48 / 00:03.88  B 3.03  F 37`, with the play button and the lit loop
+toggle centred. The timeline draws each track as a dark fill of its kind's
+colour (blue for pictures, plum for the cube, teal for the adjustment layer,
+violet for the camera) with a thin bright stripe on top, effect names in
+small mono type, white key glyphs, and a thin white playhead with a violet
+cap on the ruler.
+
+The window is dark, with one accent colour (violet) for selection, focus and
+the primary button; green, amber and red appear only for status. Text is
+Inter; every number (values, timecode, frame numbers) is JetBrains Mono, so
+digits do not dance while they change; icons are Lucide. The fonts are
+embedded in the program (`crates/edits-gui/assets/fonts/README.md` says
+where they come from and under which licence). Colours, sizes and spacing
+are design tokens in `crates/edits-gui/src/theme.rs`.
+
 ## Keys
 
 | Key | What it does |
@@ -41,86 +85,174 @@ Other programs can open the same window with
 | L | Loop on or off |
 | Ctrl+Z | Undo the newest edit in the project's history, yours or the agent's |
 | Ctrl+Shift+Z, Ctrl+Y | Redo |
+| Ctrl+K, Ctrl+Shift+P | Command palette (also from inside a text field) |
+| Ctrl+D | Duplicate the selected layer |
+| Delete, Backspace | Delete the selected layer (Ctrl+Z brings it back) |
+| Ctrl+E | Export video |
+| Ctrl+1 / Ctrl+2 | Show or hide the Slots / History drawer |
+| Esc | Close the shortcut sheet; else deselect; else close the drawer |
+| ? | The sheet of keyboard shortcuts |
 | Ctrl + wheel over the timeline | Zoom about the pointer |
 | Shift + wheel over the timeline | Scroll sideways (so does a sideways swipe) |
 | Alt while dragging on the timeline | Snap to frames instead of quarter beats |
 
 Keys are ignored while a text field or a value being typed has the focus
-(there, Ctrl+Z undoes typing, and Enter finishes the value).
+(there, Ctrl+Z undoes typing, and Enter finishes the value), except Ctrl+K.
+Every button's tooltip names its action and its keys.
+
+## Command palette
+
+Ctrl+K (or the search field in the top bar, or the ⌘ icon at the bottom of
+the rail) opens a list of everything the window can do, built from what it
+shows at that moment:
+
+- **Playback**: play or pause, start, last frame, a frame or a beat back or
+  forward, loop.
+- **Edit**: undo and redo, naming the edit they would take back or bring
+  back and whose it was.
+- **Add layer**: a solid, an adjustment layer, an image layer from each
+  slot, a cube with each slot.
+- **Layer** (with a layer selected): enable or disable, duplicate, move up
+  or down, delete; **Add effect**: every effect of the registry.
+- **Select**: every layer by id, the camera, deselect. **Go to**: every marker.
+- **View**: the drawers, the preview size, motion blur while paused or
+  playing, fit and zoom the timeline, the shortcut sheet. **File**: export, quit.
+
+Type to narrow the list: the letters must appear in order, and a match at
+the start of the name or of a word ranks first (`add gl` finds *Add glow to
+tex* and *Add gaussian_blur to tex*; `tex` finds *Select tex*). Up and Down
+move, Enter runs, Esc or a click outside closes. A screenshot of it shows a
+raised panel with rounded corners over the dimmed window: the search line,
+then rows with an icon, the command, its group in small grey type
+(`Add glow to tex  Add effect`), key caps on the right of commands that have
+keys, and a footer `↑ ↓ move · Enter run · Esc close · 8 commands`.
+
+## Toasts
+
+Short notes appear in the bottom-right corner of the preview for things that
+happen while you look elsewhere. At most three are shown; the same note
+again counts up (`×2`) instead of stacking; hovering one keeps it.
+
+| Toast | When | Button |
+| --- | --- | --- |
+| *Agent edit* (robot icon) and what changed, e.g. `d: transform.rotation → [0, 0, 12]` | the agent's `project_edit` changed the file | **Undo**: undoes that edit if it is still the newest in the history; otherwise it says newer edits came after it |
+| *Agent undid its edit* | the agent's `project_undo` | **Redo** |
+| *Edit by …* | another program wrote through the shared history | – |
+| *Reloaded* · `The file changed on disk · revision 4` | the file changed without a history entry (a text editor, a script) | – |
+| *The file has N errors* · `Showing revision 3 until it is fixed` (red) | the file on disk stopped being valid | – |
+| *Undid the agent's edit* / *Undid your edit* | Ctrl+Z, or an Undo button | **Redo** |
+| *Not applied* and why (red) | an edit of yours was refused (the check found an error, or the agent wrote meanwhile) | – |
+| *Export finished* (green) / *Export failed* (red) / *Export cancelled* | an export ended, also when its dialog is closed | **Show** (failed) opens the dialog |
+
+Your own edits do not make toasts: what they did is in the status bar.
+Toasts last 4 seconds, 8 with a button or for an error.
 
 ## What each part shows
 
-**Transport** (top). Start, step back, play/pause, step forward, Loop, and the
-position three ways: frame number, seconds, and beats when the project counts
-in beats. Under it, a scrub bar over the whole project. Then the preview
-quality: the scale (0.25, 0.5 or 1.0 of the project's resolution) and whether
-the preview uses the project's motion blur, separately for *paused* (on by
-default) and *playing* (off by default, because motion blur multiplies the
-cost of a frame). `Export…` is at the end of the row.
+**Top bar.** The project's folder and file name; a `rev N` pill (a counter
+of loaded versions), or a red `N errors` pill while the file on disk has
+errors; an `agent` pill for a minute after the agent's last edit (hover it
+for what it did). In the middle, the field that opens the command palette.
+On the right, undo and redo (their tooltips name the edit and who made it)
+and **Export**.
+
+**Rail** (left edge). Icons for the drawers, all closed at start: **Slots**
+(Ctrl+1) and **History** (Ctrl+2); at the bottom the command palette and the
+shortcut sheet. A drawer opens beside the rail and can be resized; its title
+row has its own close button (and undo and redo, for History).
 
 **Preview** (centre). The frame under the playhead, rendered by
-`edits-render` exactly as `edits frame` would render it at that scale. When
-the picture on screen is not the frame the transport reads (a slow renderer
-during playback, or a frame still rendering after a scrub), a note in the
-corner says which frame it is. A red banner appears when the file on disk has
-errors (see *Live reload*), and a green frame flashes when a change has been
+`edits-render` exactly as `edits frame` would render it at that scale, on a
+near-black stage. When the picture on screen is not the frame the transport
+reads (a slow renderer during playback, or a frame still rendering after a
+scrub), a note in its corner says which frame it is. Problems appear as a
+slim red banner along the top of the stage while the last good frame stays,
+and a thin green outline fades around the picture when a change has been
 loaded.
+
+**Transport** (the row under the preview). On the left the position: the
+time as `00:01.48 / 00:03.88` (minutes, seconds, hundredths, then the whole
+length), `B` the beat (in a beats project) and `F` the frame. In the middle:
+start, a frame back, play/pause, a frame forward, loop (lit when on). On the
+right the preview quality, `0.5×`: its popover chooses the size (0.25, 0.5
+or 1 of the project's resolution) and whether the preview uses the project's
+motion blur, separately while *paused* (on by default) and while *playing*
+(off by default, because motion blur multiplies the cost of a frame).
 
 **Timeline** (bottom).
 
-- A ruler in the project's time base. In a beats project it counts beats from
-  0, with a strong line every four beats (the format has no time signature;
-  the grid assumes 4/4) and lines on half and quarter beats when zoomed in.
-  In a seconds project it counts seconds.
-- The project's `markers`, as orange flags with their labels.
-- The waveform of `audio`, placed by `audio.offset`.
-- One row per layer, the top of the picture first (the last layer in the file
-  is the first row). Each row has the layer's id and kind, a bar from `in` to
-  `out`, the names of its effects (and its blend mode when it is not
-  `normal`), and its keyframes: a yellow diamond where a transform property
-  has a key, a cyan dot where an effect parameter has one. Hover a keyframe to
-  read its time and the properties keyed there. A `camera` row appears above
-  the layers when the camera is animated. Disabled layers are dimmed.
-- The playhead, in red.
+- A toolbar: **+ Layer** (add a layer at the playhead), what drags snap to
+  (`¼ beat`, or `frames` while Alt is held; hover it for how to drag and
+  what the key shapes mean), the size of the edit, and zoom out, zoom in
+  and fit.
+- The **overview**: the whole edit in one strip, each layer a thin line in
+  its kind's colour, the markers, the playhead and, when zoomed in, the part
+  the tracks show as a violet box. Click or drag it to move the playhead.
+- A ruler in the project's time base. In a beats project it counts beats
+  from 0, with a stronger line every four beats (the format has no time
+  signature; the grid assumes 4/4) and lines on half and quarter beats when
+  zoomed in. In a seconds project it counts seconds.
+- The project's `markers`, as amber flags with their labels.
+- The waveform of `audio`, placed by `audio.offset`; the part before the
+  playhead is lighter.
+- One track per layer, the top of the picture first (the last layer in the
+  file is the first track). The header column has the kind's icon, the id
+  and the kind, and on hover an eye that disables or enables the layer
+  (always shown while it is disabled). The bar runs from `in` to `out`: a
+  muted fill of the kind's colour (image blue, cube plum, solid grey,
+  adjustment teal, camera violet) with a thin bright stripe on top, the
+  names of its effects (and its blend mode when it is not `normal`) in small
+  mono type, and its keyframes as white glyphs whose shape says the ease of
+  the segment that starts there: a diamond for `linear`, a square for
+  `hold`, a circle for any other ease (keys of several properties at one
+  time with different eases show a diamond). Hover a keyframe to read its
+  time and the properties keyed there. A `camera` track appears above the
+  layers when the camera is animated. Disabled layers are dimmed. The
+  selected layer's header has a violet edge and its bar a violet outline.
+- The playhead: a thin white line with a violet cap on the ruler.
 
 Click or drag on the ruler (or the marker and waveform lanes) to move the
-playhead. `−`, `+` and `Fit` zoom; when zoomed in, the bar at the bottom
-scrolls, and the view follows the playhead during playback. Drag the top edge
-of the panel to resize it.
+playhead. Drag the top edge of the panel to resize it.
 
-**Menu bar** (top). *File*: Export…, Quit. *Edit*: Undo and Redo, each
-naming the edit it would take back or bring back and who made it. *Layer*:
-add a layer, and for the selected layer Disable/Enable, Duplicate, Move
-up/down, Add effect ▸, Delete.
+**Inspector** (right). Click a layer's track to see and edit what it
+evaluates to at the playhead. Its title shows the kind, the id, and buttons
+to enable or disable, duplicate, a `…` menu (move up, move down, delete) and
+deselect. Then collapsible sections:
 
-**Inspector** (right). Click a layer's row to see and edit what it evaluates
-to at the playhead: slot (image), colour (solid) or faces and size (cube),
-`in` and `out` (also in frames), blend, whether it is visible now; position,
-scale, rotation, anchor and opacity; and for each effect every parameter of
-its spec, with its unit, and the ones the file does not set marked `default`
-(hover a name for its documentation and default). Animated values say how
-(`3 keys`, `shake`, `loop`). The numbers change as the playhead moves. With
-no layer selected it shows the project's settings and the camera (whose fov,
-position and rotation are editable too). See [Editing](#editing).
+- *Layer*: slot (image), colour with a swatch (solid) or faces and size
+  (cube), `in` and `out` with their frames, blend, and whether it is
+  visible now.
+- *Transform*: position, scale, rotation, anchor and opacity.
+- *Effects*: for each effect a switch (on or off), its name (hover it for
+  its documentation), move up, move down and remove; then every parameter of
+  its spec, with its unit. The `+` in the section's title adds one.
 
-**Slots** (a second page of the right panel). Every slot with its picture,
-the layers that use it, its fit and focus; and a field to add a slot.
+A property's name is dim grey when the file does not set it (the default
+applies) and lighter when it does; a small icon after it marks a `shake` or
+a `loop`; hover it for its documentation, its default and how it is
+animated. The numbers change as the playhead moves. With no layer selected
+the inspector says how to select one and shows the project's settings and
+(folded) the camera, whose fov, position and rotation are editable too. See
+[Editing](#editing).
 
-**History** (bottom of the right panel). The newest edits first, each tagged
-`you` (made in this window) or `agent` (made through the MCP server), with
-what it did and how long ago; above a line, the edits that were undone and
-can be redone. Undo and Redo buttons. Drag the panel's top edge to resize it.
+**Problems** (top of the inspector, only when there are some). The findings
+of `edits check` for the file as it is on disk: errors and warnings, each
+with the path into the document, the message and the hint. Warnings alone
+stay folded.
 
-**Problems** (top of the right panel). The findings of `edits check` for the
-file as it is on disk: errors and warnings, each with the path into the
-document, the message and the hint. Warnings alone stay folded.
+**Slots** (drawer). Every slot with its picture's path, how many layers use
+it (hover for which), its fit and focus; and a field to add a slot.
 
-**Status bar** (bottom edge). The revision (a counter of loaded versions) or
-`reloaded` just after someone else's change; what your last edit did, or in
-red why it was not applied (hover it for every error); the renderer's adapter
-and whether it is a hardware GPU or a software rasteriser; the time the last
-frame took to render; the frame cache; the state of the audio; the progress
-of an export.
+**History** (drawer). The newest edits first, each with a badge for who made
+it (a person for `you`, a robot for `agent`), what it did written plainly
+(`d: transform.rotation → [0, 0, 12]`; hover for the raw change line) and
+how long ago; above a line, the edits that were undone and can be redone.
+
+**Status bar** (bottom edge). On the left the revision, `Reloaded` (green)
+just after someone else's change, or the errors in the file (red); then what
+your last edit did. On the right the renderer's adapter and whether it is a
+`GPU` or `software`, the time the last frame took to render, the frame
+cache, the state of the audio, the progress of an export.
 
 ## Editing
 
@@ -129,8 +261,8 @@ renderer would ignore), and only a project without errors is written. The
 file is replaced atomically (as stable, readable JSON, the same text the
 agent's edits produce) and the version before it is saved under
 `<project folder>/.edits/history/`. When an edit would leave an error, the
-file is not touched and the status bar says why, for example
-`Not applied (slot b = img/nope.png): error /slots/b: image not found`.
+file is not touched, and a red toast (and the status bar) says why, for
+example `Not applied (slot b = img/nope.png)` · `error /slots/b: image not found`.
 
 **Values in the inspector.** Drag a number sideways, or click it and type
 (Enter or clicking elsewhere finishes). The preview follows while you drag or
@@ -144,38 +276,46 @@ the change is written once, so a drag is one undo step however long it was.
 - An effect parameter the file does not set is written as a constant.
 - A shaken property: the value under the shake changes, the shake stays.
 
-The diamond after a property is **Key here**: it turns a constant into
-keyframes with one key at the playhead, or adds a key holding the value the
-property has there. It is filled when a key is at the playhead. Click a
-property's name to *pick* it: the **key strip** under its group then lists
-its keys, removes the key at the playhead (*Remove key*; with no keys left the
-property is a constant again), and sets the ease of the segment the playhead
-is in: any name of `edits_core::ease::NAMES`, `decay` with its rate, or
-`bezier` with its four numbers.
+The diamond at the end of a property's row is **Key here**: it turns a
+constant into keyframes with one key at the playhead, or adds a key holding
+the value the property has there. It is filled when a key is at the
+playhead, outlined when the property is animated, and appears only when the
+pointer is over the row otherwise. Click a property's name to *pick* it (its
+row turns violet): the **Keys** card under its section then lists its key
+times (the one at the playhead lit), removes the key at the playhead
+(*Remove key*; with no keys left the property is a constant again), and sets
+the ease of the segment the playhead is in: any name of
+`edits_core::ease::NAMES`, `decay` with its rate, or `bezier` with its four
+numbers. An animated property that is picked shows the card too; `scale`
+is picked at start (it is what double-clicking a track keys) but shows its
+card only once it is animated or picked by hand.
 
-**Effects.** *+ Add effect* (in the inspector, or Layer ▸ Add effect) lists
-the registry, each with its one-line documentation as a tooltip; the effect
-is added after the others with its defaults. Each effect has *on* (enabled),
-*up*/*down* (the order they apply in) and × (remove).
+**Effects.** The `+` in the title of the *Effects* section (or *Add effect* in
+the command palette) lists the registry, each with its one-line
+documentation as a tooltip; the effect is added after the others with its
+defaults. Each effect has a switch (enabled), up and down arrows (the order
+they apply in) and a bin (remove).
 
-**Layers.** Layer ▸ (or *+ Layer* on the timeline) adds an image layer (choose
-its slot), a solid, an adjustment layer or a cube (choose the slot on its
-faces), one bar long, at the whole beat under the playhead (earlier when it
-would run past the end), directly above the selected layer (or on top). The inspector's buttons and the Layer menu
-enable or disable, duplicate (a copy directly above, id `<id>-copy`), move one
-place up or down in the stack, and delete the selected layer.
+**Layers.** *+ Layer* on the timeline (or *Add layer* in the command
+palette) adds a solid, an adjustment layer, an image layer from a slot or a
+cube with a slot on its faces, one bar long, at the whole beat under the
+playhead (earlier when it would run past the end), directly above the
+selected layer (or on top). The buttons in the inspector's title, the eye on
+a track, the keys (Ctrl+D, Delete) and the palette enable or disable,
+duplicate (a copy directly above, id `<id>-copy`), move one place up or down
+in the stack, and delete the selected layer.
 
-**Slots.** On the Slots page, type a path (relative to the project file) and
-press Enter, or **drop a picture file on a slot**: the path is written
+**Slots.** In the Slots drawer, type a path (relative to the project file)
+and press Enter, or **drop a picture file on a slot**: the path is written
 relative to the project when the picture is inside its folder. Dragging files
-over the window opens the page and outlines the slot under the pointer.
+over the window opens the drawer and outlines the slot under the pointer.
 Dropping works on X11; on Wayland it depends on the compositor and winit and
 may not reach the window (the tooltip says so): type the path there. Fit is a
-menu, focus two numbers. *Add slot* creates an empty one.
+menu, focus two numbers. *New slot* · *Add* creates an empty one.
 
 **Timeline.** Times snap to quarter beats in a beats project; hold Alt to snap
-to frames instead (a seconds project always snaps to frames). The header says
-which.
+to frames instead (a seconds project always snaps to frames). The toolbar
+says which.
 
 - Drag a layer's **bar** to move the layer in time. Its keys move with it
   (every key of its transform and effect parameters, a shake envelope's keys
@@ -275,15 +415,16 @@ playhead, with `audio.gain` applied. Seeking and looping restart it at the
 right place.
 
 If there is no sound device, no `ffmpeg`, or the file cannot be decoded,
-playback carries on silently and the status bar says `audio: silent` with the
-reason (the full message is in its tooltip).
+playback carries on silently and the status bar says `Audio silent` (in
+amber) with the reason in its tooltip.
 
 ## Export
 
-`Export…` asks for an output file (default: next to the project, named after
-its folder) and runs `edits render <project> -o <file>` as a separate
-process. Progress and the result appear in the dialog and the status bar;
-`Cancel` stops it. The `edits` command is looked for in `EDITS_BIN`, then next
+**Export** (top bar, Ctrl+E) opens a dialog that asks for an output file
+(default: next to the project, named after its folder); **Render** runs
+`edits render <project> -o <file>` as a separate process. Progress and the
+result appear in the dialog and the status bar, and a toast says when it
+has finished (or failed), also when the dialog is closed; `Cancel` stops it. The `edits` command is looked for in `EDITS_BIN`, then next
 to `edits-gui`, then on `PATH`. It renders the file as it is on disk, at full
 size, with the project's motion blur.
 
@@ -299,13 +440,14 @@ opens the window, waits until the preview of frame 37 is on screen (rendered
 at the paused quality, waveform included), saves a picture of the whole
 window and exits with code 0. It exits with code 1 and a line starting
 `error:` if the picture could not be taken (after three minutes at most).
-If the project is not valid, the picture shows the Problems panel.
+If the project is not valid, the picture shows the Problems list.
 
 `--delay SECONDS` keeps the window running that long before the picture is
 taken, and then waits for the preview again. That is how to check live
 reload: start it with a delay, change the project file meanwhile, and look
-for the new picture, the revision number and the Problems panel in the
-screenshot. `--select <layer id>` opens a layer in the inspector, `--play`
+for the new picture, the revision number, the toast and the Problems list in
+the screenshot. Run it with `WINIT_X11_SCALE_FACTOR=2` (and a screen twice
+the `--size`) for a picture of a 2× screen. `--select <layer id>` opens a layer in the inspector, `--play`
 starts playback, `--scale` sets the preview scale.
 
 A window needs a display. On a machine without one:
@@ -333,6 +475,17 @@ xvfb-run -a -s "-screen 0 1600x1000x24" edits-gui demo/project.json --screenshot
   them as actor `window`, with the hash of the file text it prepared them
   against, so a stale edit is refused rather than applied over someone
   else's.
+- The look is in one place: `theme` holds the design tokens (colours,
+  spacing, radii, type sizes), the fonts (Inter and JetBrains Mono, variable
+  fonts with their weight set through `FontTweak::coords`; Lucide from the
+  `lucide-icons` crate as an icon font) and `apply`, which turns them into
+  egui's `Style` and `Visuals`. `widgets` draws the window's own controls
+  with them (icon buttons, key caps, sections, menu rows, the switch); other
+  modules use the tokens and never write a colour of their own.
+- Nothing repaints while nothing happens: the window draws a new frame on
+  input, while playing, while a toast or an animation is on screen, and once
+  a second while the History list has times like `12 s ago` to update. An
+  idle window measured 0 CPU ticks over 10 s.
 - A value being dragged is previewed by giving the render thread a temporary
   revision of the project with the change applied (pictures stay loaded, so
   this is cheap); the edit is written when the widget lets go.
@@ -343,7 +496,10 @@ xvfb-run -a -s "-screen 0 1600x1000x24" edits-gui demo/project.json --screenshot
   mailbox and render thread (`worker`), waveform peaks (`audio`), the export
   process (`export`), and editing (`editing`): snapping, a drag becoming one
   edit, key insertion and removal on animated properties, eases, layer and
-  effect ops, paths of dropped pictures, history lines. The history itself is
+  effect ops, paths of dropped pictures, history lines and how they read; the
+  command palette's fuzzy matching (`palette`), the toasts and the reading of
+  the shared history behind them (`toasts`), and the fonts and style
+  (`theme`). The history itself is
   tested in `edits-core` (`edit`), including two writers at once.
 
 ## System packages
@@ -399,11 +555,21 @@ list matters for containers and minimal systems. On Ubuntu releases before
   exports the whole project at the project's settings (use `edits render` for
   a range or a smaller size).
 - Closing the window waits for the frame being rendered at that moment.
-- The window layout and settings are not remembered between runs.
+- The window layout and settings are not remembered between runs (which
+  sections are folded is remembered while the window is open).
+- The command palette runs the window's own commands; it does not send
+  anything to the agent.
+- The text of the interface is English and Inter covers Latin, Greek and
+  Cyrillic; other scripts fall back to egui's bundled fonts.
 - Tested on X11 (under Xvfb, with llvmpipe), driven with `xdotool`: typing
   and dragging values, key here, the ease menu, adding an effect from the
   menu, adding, duplicating and moving layers, dragging a bar, an edge and a
   key marker, double-clicking to key, slot paths, undo and redo, and an
-  agent's `project_edit` and `project_undo` while the window was open.
+  agent's `project_edit` and `project_undo` while the window was open. The
+  redesigned window was checked the same way at 1600 × 1000, 1280 × 800 and
+  at a scale factor of 2 (`WINIT_X11_SCALE_FACTOR=2`): the command palette,
+  folding sections, dragging a value and a bar, the agent's edit and its
+  toast's Undo, the error banner and toasts, the drawers, the popovers and
+  the shortcut sheet. Not seen on a real HiDPI or fractional-scale screen.
   Wayland support is compiled in and is the same code path in `winit`, but
   was not run.

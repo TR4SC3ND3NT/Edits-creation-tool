@@ -16,8 +16,10 @@
 //!
 //! The modules without a window in them (`timemap`, `clock`, `cache`,
 //! `rows`, `reload`, `export`, `editing`, the mailbox of `worker`, the peaks
-//! of `audio`) hold the logic and are unit tested; `app`, `timeline`,
-//! `inspector` and `panels` draw and turn input into calls of that logic.
+//! of `audio`, the matching of `palette`, the bookkeeping of `toasts`) hold
+//! the logic and are unit tested; `app`, `timeline`, `inspector` and
+//! `panels` draw and turn input into calls of that logic, with the tokens,
+//! fonts and icons of `theme` and the small controls of `widgets`.
 
 pub mod audio;
 pub mod cache;
@@ -89,7 +91,8 @@ usage: edits-gui <project.json> [options]
   --delay <seconds>         with --screenshot: keep running this long first
   -h, --help                this text
 
-keys: Space play/pause · Left/Right one frame · Shift+Left/Right one beat ·
+keys: Ctrl+K command palette (every action by name) · ? all shortcuts ·
+      Space play/pause · Left/Right one frame · Shift+Left/Right one beat ·
       Home start · End last frame · L loop · Ctrl+wheel zoom the timeline ·
       Ctrl+Z undo · Ctrl+Shift+Z or Ctrl+Y redo (the history is shared with the agent)
 
