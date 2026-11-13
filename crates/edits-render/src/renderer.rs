@@ -49,7 +49,7 @@ impl Default for RenderOptions {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub(crate) struct Uni {
-    mvp: [f32; 16],
+    pub(crate) mvp: [f32; 16],
     res: [f32; 4],
     time: [f32; 4],
     p: [[f32; 4]; 26],
@@ -144,6 +144,8 @@ pub(crate) struct Scene {
     pub clips: HashMap<String, Arc<Clip>>,
     /// Effect `source` -> key into `Renderer::custom`.
     pub custom: HashMap<String, String>,
+    /// Fonts of text layers by `font` as written (`""` for the built-in one).
+    pub fonts: HashMap<String, Arc<crate::text::Font>>,
 }
 
 impl Scene {
@@ -244,6 +246,8 @@ pub struct Renderer {
     probes: HashMap<String, VideoInfo>,
     /// Video frames uploaded lately, most recent last.
     video_textures: Vec<(VideoTexKey, Picture)>,
+    /// Fonts, layouts, glyph masks and atlases of text layers.
+    pub(crate) text: crate::text::TextCache,
     pub(crate) scene: Option<Arc<Scene>>,
     readback: Option<Readback>,
     samples_override: Option<u32>,
@@ -441,6 +445,7 @@ impl Renderer {
             videos: Videos::default(),
             probes: HashMap::new(),
             video_textures: Vec::new(),
+            text: Default::default(),
             scene: None,
             readback: None,
             samples_override: None,
@@ -509,11 +514,13 @@ impl Renderer {
         let mut used: Vec<&str> = Vec::new();
         let mut clips: HashMap<String, Arc<Clip>> = HashMap::new();
         let mut probed: Vec<String> = Vec::new();
+        let mut texts: Vec<(&str, Option<&str>)> = Vec::new();
         for l in &project.layers {
             match &l.kind {
                 LayerKind::Image { slot } => used.push(slot),
                 LayerKind::Cube { faces, .. } => used.extend(faces.iter().map(String::as_str)),
                 LayerKind::Solid { .. } | LayerKind::Adjustment => {}
+                LayerKind::Text(t) => texts.push((&l.id, t.font.as_deref())),
                 LayerKind::Video(v) => {
                     let Some(slot) = project.slots.get(&v.slot).filter(|s| s.path.is_some()) else {
                         // An empty slot shows its placeholder, like a picture.
@@ -582,6 +589,7 @@ impl Renderer {
             slots.insert(name.to_string(), picture);
         }
         self.flush();
+        let fonts = self.load_fonts(&texts, base_dir, file_key)?;
 
         let mut custom = HashMap::new();
         for l in &project.layers {
@@ -613,7 +621,7 @@ impl Renderer {
         self.video_textures.retain(|((key, ..), _)| clip_keys.contains(&key.as_str()));
         self.binds.clear();
         self.fx_binds.clear();
-        self.scene = Some(Arc::new(Scene { project: project.clone(), slots, clips, custom }));
+        self.scene = Some(Arc::new(Scene { project: project.clone(), slots, clips, custom, fonts }));
         Ok(())
     }
 
@@ -766,7 +774,7 @@ impl Renderer {
 
     // ---- textures ------------------------------------------------------------
 
-    fn new_id(&mut self) -> u64 {
+    pub(crate) fn new_id(&mut self) -> u64 {
         self.next_id += 1;
         self.next_id
     }
@@ -804,6 +812,47 @@ impl Renderer {
         }
         let id = self.new_id();
         Tex { id, view: texture.create_view(&wgpu::TextureViewDescriptor::default()), texture, w, h, kind: TexKind::Image }
+    }
+
+    /// Upload a glyph atlas (two coverage bytes per pixel, no mip levels).
+    pub(crate) fn upload_mask(&mut self, w: u32, h: u32, data: &[u8]) -> Tex {
+        let texture = self.gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("edits glyphs"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: crate::text::ATLAS_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            data,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(2 * w), rows_per_image: Some(h) },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        let id = self.new_id();
+        Tex { id, view: texture.create_view(&wgpu::TextureViewDescriptor::default()), texture, w, h, kind: TexKind::Image }
+    }
+
+    /// Forget the bind groups of a texture that is no longer used.
+    pub(crate) fn forget_texture(&mut self, id: u64) {
+        self.binds.retain(|k, _| k.0 != id && k.1 != id);
+    }
+
+    /// The largest side of a texture on this adapter.
+    pub(crate) fn max_texture_side(&self) -> u32 {
+        self.gpu.device.limits().max_texture_dimension_2d
+    }
+
+    /// A pipeline drawing layer quads (`vs_geo`) with the fragment `entry` of
+    /// `source`, blended premultiplied "over" what the target holds.
+    pub(crate) fn make_blended_pipeline(&self, label: &str, source: &str, entry: &str) -> wgpu::RenderPipeline {
+        let device = &self.gpu.device;
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(label), source: wgpu::ShaderSource::Wgsl(source.into()) });
+        let over = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha, operation: wgpu::BlendOperation::Add };
+        make_pipeline(device, &self.pipeline_layout, &module, "vs_geo", entry, WORK_FORMAT, Some(wgpu::BlendState { color: over, alpha: over }), 1, false)
     }
 
     /// A working texture from the pool. Give it back with [`Self::release`].
@@ -860,7 +909,7 @@ impl Renderer {
         })
     }
 
-    fn bind(&mut self, a: &Tex, b: Option<&Tex>, samp: Samp) -> wgpu::BindGroup {
+    pub(crate) fn bind(&mut self, a: &Tex, b: Option<&Tex>, samp: Samp) -> wgpu::BindGroup {
         let b = b.unwrap_or(&self.white).clone();
         let key = (a.id, b.id, samp);
         if let Some(g) = self.binds.get(&key) {
@@ -874,13 +923,13 @@ impl Renderer {
     // ---- passes --------------------------------------------------------------
 
     /// Make room for `n` uniform blocks in the current submission.
-    fn reserve_uniforms(&mut self, n: u64) {
+    pub(crate) fn reserve_uniforms(&mut self, n: u64) {
         if self.staging.len() as u64 + n * UNIFORM_SIZE > UNIFORM_SIZE * UNIFORM_SLOTS {
             self.flush();
         }
     }
 
-    fn push_uniform(&mut self, uni: &Uni) -> u32 {
+    pub(crate) fn push_uniform(&mut self, uni: &Uni) -> u32 {
         self.reserve_uniforms(1);
         let offset = self.staging.len() as u32;
         self.staging.extend_from_slice(bytemuck::bytes_of(uni));
@@ -899,7 +948,7 @@ impl Renderer {
     }
 
     /// One render pass: `draws` are (textures, uniform offset, vertex count).
-    fn raw_pass(
+    pub(crate) fn raw_pass(
         &mut self,
         pipeline: &wgpu::RenderPipeline,
         target: &wgpu::TextureView,
@@ -947,13 +996,13 @@ impl Renderer {
         }
     }
 
-    fn name(&mut self, label: impl FnOnce() -> String) {
+    pub(crate) fn name(&mut self, label: impl FnOnce() -> String) {
         if self.profile.is_some() {
             self.label = label();
         }
     }
 
-    fn uniform(&self, target: &Tex, p: &[[f32; 4]]) -> Uni {
+    pub(crate) fn uniform(&self, target: &Tex, p: &[[f32; 4]]) -> Uni {
         let mut uni = Uni::zeroed();
         uni.res = [target.w as f32, target.h as f32, 1.0 / target.w as f32, 1.0 / target.h as f32];
         uni.time = self.ctx.time;
@@ -1288,7 +1337,8 @@ impl Renderer {
                     .collect();
                 (quads, true)
             }
-            LayerKind::Adjustment => (Vec::new(), false),
+            // Text is drawn glyph by glyph (`text.rs`); adjustment layers have no picture.
+            LayerKind::Adjustment | LayerKind::Text(_) => (Vec::new(), false),
         }
     }
 

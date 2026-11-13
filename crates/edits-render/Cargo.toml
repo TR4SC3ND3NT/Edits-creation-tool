@@ -16,6 +16,12 @@ pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }
 glam = "0.30"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "tga", "gif"] }
+# Text layers: font tables and glyph outlines (skrifa), shaping (harfrust, a port of HarfBuzz)
+# and rasterisation of outlines to coverage masks (zeno). Line breaking and alignment are ours
+# (`text.rs`): see docs/RENDERING.md for why not parley.
+skrifa = "0.44"
+harfrust = "0.12"
+zeno = "0.3"
 
 [dev-dependencies]
 serde_json.workspace = true
