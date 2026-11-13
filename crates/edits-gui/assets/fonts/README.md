@@ -1,11 +1,14 @@
 # Fonts of the window
 
 `edits-gui` embeds these files with `include_bytes!` (see `src/theme.rs`), so
-the window looks the same on every machine. They are used unmodified.
+the window looks the same on every machine. They are used unmodified. Inter
+is shared with the renderer (the default font of text layers), so it lives in
+`assets/fonts/` at the root of the workspace, with its licence; the others
+are here.
 
 | File | Font | Version | Source | Licence |
 | --- | --- | --- | --- | --- |
-| `InterVariable.ttf` | Inter (variable: `wght` 100–900, `opsz` 14–32) | 4.1 | `Inter-4.1.zip` from https://github.com/rsms/inter/releases/tag/v4.1 | SIL Open Font License 1.1, no Reserved Font Name: `Inter-OFL.txt` |
+| `assets/fonts/InterVariable.ttf` (workspace root) | Inter (variable: `wght` 100–900, `opsz` 14–32) | 4.1 | `Inter-4.1.zip` from https://github.com/rsms/inter/releases/tag/v4.1 | SIL Open Font License 1.1, no Reserved Font Name: `assets/fonts/Inter-OFL.txt` |
 | `JetBrainsMono-Variable.ttf` | JetBrains Mono (variable: `wght` 100–800), renamed from `fonts/variable/JetBrainsMono[wght].ttf` | 2.304 | `JetBrainsMono-2.304.zip` from https://github.com/JetBrains/JetBrainsMono/releases/tag/v2.304 | SIL Open Font License 1.1: `JetBrainsMono-OFL.txt` |
 | (in the `lucide-icons` crate) | Lucide icon font `lucide.ttf` | 1.72.0 | the crate `lucide-icons` 1.72.0 (https://crates.io/crates/lucide-icons), which ships the font of https://github.com/lucide-icons/lucide/releases/tag/1.72.0 | ISC, with the icons derived from Feather under MIT: `Lucide-LICENSE.txt`; the crate is "MIT AND ISC" |
 

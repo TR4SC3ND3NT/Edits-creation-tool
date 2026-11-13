@@ -62,7 +62,6 @@ impl Renderer {
     fn quads_at(&mut self, ev: &Evaluator, layer: &Layer, at: &LayerAt, t: f64) -> Result<(Vec<Quad>, bool)> {
         let scene = self.scene.clone().ok_or_else(|| anyhow!("no project prepared: call prepare() first"))?;
         let aspect = self.ctx.time[3] as f64;
-        let vp = geometry::view_projection(&ev.camera(t), aspect);
         let mut frame = None;
         if let LayerKind::Video(v) = &layer.kind {
             if let Some(clip) = scene.clips.get(&v.slot) {
@@ -71,7 +70,28 @@ impl Renderer {
                 }
             }
         }
-        Ok(self.layer_quads(&scene, layer, vp * geometry::model(&at.resolved), aspect, frame.as_ref()))
+        Ok(self.layer_quads(&scene, layer, self.layer_mvp(ev, at, t), aspect, frame.as_ref()))
+    }
+
+    /// Layer space through the camera at `t` into clip space.
+    fn layer_mvp(&self, ev: &Evaluator, at: &LayerAt, t: f64) -> glam::DMat4 {
+        let aspect = self.ctx.time[3] as f64;
+        geometry::view_projection(&ev.camera(t), aspect) * geometry::model(&at.resolved)
+    }
+
+    /// A content layer's picture at `t` in a fresh frame-sized texture, with
+    /// `steps` run on it: its quads, or the glyphs of a text layer.
+    fn content_at(&mut self, ev: &Evaluator, layer: &Layer, at: &LayerAt, t: f64, steps: &[Step]) -> Result<Tex> {
+        let LayerKind::Text(text) = &layer.kind else {
+            let (quads, depth) = self.quads_at(ev, layer, at, t)?;
+            return Ok(self.draw_content(&quads, depth, steps));
+        };
+        let mvp = self.layer_mvp(ev, at, t);
+        let mut content = self.draw_text(&layer.id, text, mvp)?;
+        if let Some(out) = self.run_effects(&content, steps) {
+            self.release(std::mem::replace(&mut content, out));
+        }
+        Ok(content)
     }
 
     /// Draw quads into a fresh frame-sized texture and run `steps` on it.
@@ -102,10 +122,7 @@ impl Renderer {
         let ev = Evaluator::new(&scene.project);
         self.set_time(&scene.project, ev.layer_time(layer, t), saved.w.max(1), saved.h.max(1));
         let result = self.layer_at(&ev, layer, t).and_then(|at| match at {
-            Some(at) => {
-                let (quads, depth) = self.quads_at(&ev, layer, &at, t)?;
-                Ok(Some(self.draw_content(&quads, depth, &at.steps)))
-            }
+            Some(at) => Ok(Some(self.content_at(&ev, layer, &at, t, &at.steps)?)),
             None => Ok(None),
         });
         self.ctx = saved;
@@ -174,8 +191,7 @@ impl Renderer {
                 }
             } else {
                 let (head, tail) = crate::fx::split_tail(&at.steps);
-                let (quads, depth) = self.quads_at(ev, layer, &at, t)?;
-                let content = self.draw_content(&quads, depth, head);
+                let content = self.content_at(ev, layer, &at, t, head)?;
                 self.compose(&to, Source::Tex(&content), &tail, Sink::Over { dst: Some(&from), flat, mode: layer.blend, opacity });
                 self.release(content);
             }
@@ -204,15 +220,19 @@ impl Renderer {
         }
         // Colour effects at the end of the chain ride along with the blend.
         let (head, tail) = crate::fx::split_tail(&at.steps);
-        let (quads, depth) = self.quads_at(ev, layer, &at, t)?;
-        // A flat layer that hides the whole frame has no visible edges; if
-        // nothing has to look at neighbouring pixels it is drawn, graded
-        // and blended in a single pass.
-        if head.is_empty() && !depth && quads.len() == 1 && quads[0].covers {
-            self.blend_over(acc, flat, Source::Quad(&quads[0]), &tail, layer.blend, opacity);
-            return Ok(());
-        }
-        let content = self.draw_content(&quads, depth, head);
+        let content = if let LayerKind::Text(_) = &layer.kind {
+            self.content_at(ev, layer, &at, t, head)?
+        } else {
+            let (quads, depth) = self.quads_at(ev, layer, &at, t)?;
+            // A flat layer that hides the whole frame has no visible edges; if
+            // nothing has to look at neighbouring pixels it is drawn, graded
+            // and blended in a single pass.
+            if head.is_empty() && !depth && quads.len() == 1 && quads[0].covers {
+                self.blend_over(acc, flat, Source::Quad(&quads[0]), &tail, layer.blend, opacity);
+                return Ok(());
+            }
+            self.draw_content(&quads, depth, head)
+        };
         self.blend_over(acc, flat, Source::Tex(&content), &tail, layer.blend, opacity);
         self.release(content);
         Ok(())

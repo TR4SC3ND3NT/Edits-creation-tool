@@ -25,6 +25,7 @@ mod geometry;
 mod gpu;
 mod renderer;
 mod stack;
+mod text;
 mod transitions;
 
 pub mod font;

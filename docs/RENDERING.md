@@ -230,3 +230,50 @@ None of this changes what a frame looks like: the picture of source frame
 `n` is the same whichever way it was reached, so a frame stays a pure
 function of the project and the frame number. `Renderer::video_stats()`
 counts decoders started, frames decoded and cache hits.
+
+## Text layers
+
+`src/text.rs` draws `text` layers; nothing is read from the system (no
+system fonts), so a frame depends only on the project and its files.
+
+- **Layout, once per text.** The text is split into paragraphs at `\n` and
+  each paragraph is shaped by harfrust (a Rust port of HarfBuzz) with the
+  font at the layer's `weight` (`wght` axis). Lines are broken greedily at
+  `max_width`, aligned in the block and the block centred on the layer's
+  origin (see `docs/FORMAT.md`). The result is a list of glyphs, each with
+  its origin in layer space (composition-height units), its advance, the
+  character it comes from and its line: what per-character animation needs.
+  Layouts are cached by font file and text settings.
+- **One quad per glyph.** Every frame, each glyph is a quad of its own, drawn
+  through the layer's matrix and the camera (`vs_geo`, `shaders/text.wgsl`),
+  so text turns and moves in 3D like any layer, and a glyph can later get a
+  transform of its own.
+- **Masks at the output size.** A glyph's outline (skrifa) is rasterised to a
+  coverage mask (zeno) for an em of its size in output pixels, to a quarter
+  of a pixel, measured through the layer's matrix: text is as sharp at
+  `--scale 0.5` as at 4K, and growing text is rasterised anew rather than
+  magnified (up to an em of 640 pixels; beyond that it is magnified). When
+  the layer is only moved and uniformly scaled, the glyph is also rasterised
+  at its quarter-pixel offset and its quad put on whole pixels, so the mask
+  is sampled texel for pixel. A mask has two channels: the letter, and the
+  letter with its stroke (zeno's stroker, round joins, twice the `width`
+  wide, centred on the outline).
+- **Atlas.** The masks a layer needs at one size are packed (in the order the
+  glyphs come, with a transparent pixel around each) into one `Rg8Unorm`
+  texture, cached by the list of masks it holds; masks are cached by font,
+  weight, glyph, size, stroke and sub-pixel offset (64 MB), the last eight
+  atlases stay on the GPU. Because a mask and an atlas depend only on their
+  key, the caches never change a picture.
+- **Drawing.** The stroke quads of all glyphs are drawn first, then the fill
+  quads, blended premultiplied "over" into a transparent frame-sized
+  texture; that picture then goes through the layer's effects and blend like
+  any other layer's.
+
+Why not parley: parley (layout, shaping and font fallback in one crate) would
+do the shaping and line breaking, but it needs the ICU4X crates, which are
+under the Unicode licence, outside the MIT, Apache, zlib and OFL licences
+this project accepts, and it brings about thirty crates. skrifa and harfrust
+are already in the build (egui uses them), so text adds only zeno. What that
+costs: no bidirectional reordering within a paragraph, no font fallback, and
+line breaking by simple rules instead of the Unicode line-breaking algorithm.
+

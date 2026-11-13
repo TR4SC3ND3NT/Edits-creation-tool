@@ -82,7 +82,7 @@ pub fn check(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> {
                     err(format!("{lp}.size"), "cube size must be positive".into(), None);
                 }
             }
-            LayerKind::Solid { .. } | LayerKind::Adjustment => {}
+            LayerKind::Solid { .. } | LayerKind::Adjustment | LayerKind::Text(_) => {}
             LayerKind::Video(v) => {
                 refs.push((&v.slot, "slot"));
                 video_slots.insert(v.slot.clone());
@@ -102,6 +102,9 @@ pub fn check(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> {
                     err(format!("{lp}.volume"), format!("volume must be 0 or more, got {}", v.volume), Some("0 mutes the clip, 1 keeps its level"));
                 }
             }
+        }
+        if let LayerKind::Text(text) = &l.kind {
+            check_text(text, &lp, base_dir, &mut err, &mut warn);
         }
         if let Some(fps) = l.fps {
             if !fps.is_finite() || fps <= 0.0 {
@@ -213,7 +216,7 @@ pub fn check(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> {
             err(format!("{tp}.duration"), format!("the transition ({}) is longer than the layer ({})", tr.duration, end - l.start), Some("shorten the transition or move the layer's out"));
         } else {
             // What it comes from: a picture beneath that is still there when the transition ends.
-            let covered = p.layers[..i].iter().any(|b| b.enabled && !matches!(b.kind, LayerKind::Adjustment) && b.start <= l.start + 1e-9 && b.end.unwrap_or(s.duration) >= l.start + tr.duration - 1e-9);
+            let covered = p.layers[..i].iter().any(|b| b.enabled && !matches!(b.kind, LayerKind::Adjustment | LayerKind::Text(_)) && b.start <= l.start + 1e-9 && b.end.unwrap_or(s.duration) >= l.start + tr.duration - 1e-9);
             if !covered {
                 warn.push(Finding {
                     severity: Severity::Warning,
@@ -309,6 +312,48 @@ fn check_audio_clips(p: &Project, base_dir: Option<&Path>, err: &mut impl FnMut(
             if c.fade_in + c.fade_out > len + 1e-9 {
                 err(cp.clone(), format!("the fades ({} s in + {} s out) are longer than the clip ({len} s)", c.fade_in, c.fade_out), Some("shorten the fades or move trim_out"));
             }
+        }
+    }
+}
+
+/// A text layer: sizes, colours and the font file.
+fn check_text(t: &Text, lp: &str, base_dir: Option<&Path>, err: &mut impl FnMut(String, String, Option<&str>), warn: &mut Vec<Finding>) {
+    if !t.size.is_finite() || t.size <= 0.0 {
+        err(format!("{lp}.size"), format!("size must be positive, got {}", t.size), Some("percent of the composition height: 10 is a tenth of it"));
+    }
+    if !t.line_height.is_finite() || t.line_height <= 0.0 {
+        err(format!("{lp}.line_height"), format!("line_height must be positive, got {}", t.line_height), Some("a multiple of size: 1.2 is usual"));
+    }
+    if !t.tracking.is_finite() {
+        err(format!("{lp}.tracking"), "tracking must be a number".into(), None);
+    }
+    if let Some(w) = t.weight {
+        if !(1.0..=1000.0).contains(&w) {
+            err(format!("{lp}.weight"), format!("weight must be between 1 and 1000, got {w}"), Some("400 is regular, 700 bold, 900 black"));
+        }
+    }
+    if let Some(m) = t.max_width {
+        if !m.is_finite() || m <= 0.0 {
+            err(format!("{lp}.max_width"), format!("max_width must be positive, got {m}"), Some("composition units: the frame is 1 high; remove it to keep lines whole"));
+        }
+    }
+    if let Some(stroke) = &t.stroke {
+        if !stroke.width.is_finite() || stroke.width < 0.0 {
+            err(format!("{lp}.stroke.width"), format!("stroke width must be 0 or more, got {}", stroke.width), Some("percent of the composition height"));
+        }
+    }
+    let colours = [("fill", Some(&t.fill)), ("stroke.color", t.stroke.as_ref().map(|s| &s.color))];
+    for (name, c) in colours {
+        if let Some(c) = c.filter(|c| c.iter().any(|v| !(0.0..=1.0).contains(v))) {
+            warn.push(Finding { severity: Severity::Warning, path: format!("{lp}.{name}"), message: format!("{c:?} is outside 0..1; the renderer clamps it"), hint: Some("sRGB components and alpha in 0..1".into()) });
+        }
+    }
+    if t.text.trim().is_empty() {
+        warn.push(Finding { severity: Severity::Warning, path: format!("{lp}.text"), message: "the text is empty: the layer draws nothing".into(), hint: None });
+    }
+    if let (Some(font), Some(dir)) = (&t.font, base_dir) {
+        if !dir.join(font).is_file() {
+            err(format!("{lp}.font"), format!("font not found: {font}"), Some("a .ttf or .otf file, relative to the project file; remove \"font\" to use the built-in Inter"));
         }
     }
 }
@@ -430,6 +475,37 @@ mod tests {
         assert!(says("slots.clip.trim", "0 <= in < out", Severity::Error));
         assert!(says("slots.pic", "image not found: a.png", Severity::Error));
         assert!(says("slots.pic.trim", "only applies to video layers", Severity::Warning));
+    }
+
+    #[test]
+    fn text_layers_are_checked() {
+        let p = Project::from_json(
+            r#"{"format":"edits.project/1",
+                "settings":{"width":64,"height":64,"fps":25,"duration":4},
+                "layers":[
+                  {"id":"a","kind":"text","text":"HI","font":"fonts/missing.ttf","size":0},
+                  {"id":"b","kind":"text","text":" ","size":-2,"line_height":0,"weight":1200,"max_width":0,"stroke":{"width":-1},"fill":[2,0,0]},
+                  {"id":"c","kind":"text","text":"OK","size":12,"stroke":{"color":[0,0,0],"width":0.5}}
+                ]}"#,
+        )
+        .unwrap();
+        let f = check(&p, Some(Path::new("/nonexistent-dir")));
+        let says = |path: &str, needle: &str, sev: Severity| f.iter().any(|x| x.path == path && x.message.contains(needle) && x.severity == sev);
+        assert!(says("layers[0:\"a\"].font", "font not found: fonts/missing.ttf", Severity::Error), "{f:#?}");
+        assert!(says("layers[0:\"a\"].size", "size must be positive, got 0", Severity::Error));
+        assert!(says("layers[1:\"b\"].size", "size must be positive, got -2", Severity::Error));
+        assert!(says("layers[1:\"b\"].line_height", "line_height must be positive", Severity::Error));
+        assert!(says("layers[1:\"b\"].weight", "between 1 and 1000", Severity::Error));
+        assert!(says("layers[1:\"b\"].max_width", "max_width must be positive", Severity::Error));
+        assert!(says("layers[1:\"b\"].stroke.width", "0 or more", Severity::Error));
+        assert!(says("layers[1:\"b\"].fill", "outside 0..1", Severity::Warning));
+        assert!(says("layers[1:\"b\"].text", "empty", Severity::Warning));
+        assert!(!f.iter().any(|x| x.path.starts_with("layers[2")), "{f:#?}");
+        // Without a folder to look in, the font file is not checked.
+        assert!(!check(&p, None).iter().any(|x| x.path.ends_with(".font")));
+        // A colour has three or four numbers.
+        let bad = r#"{"format":"edits.project/1","settings":{"width":64,"height":64,"fps":25,"duration":4},"layers":[{"id":"a","kind":"text","text":"x","fill":[1,1]}]}"#;
+        assert!(Project::from_json(bad).unwrap_err().to_string().contains("[r, g, b] or [r, g, b, a]"));
     }
 
     #[test]

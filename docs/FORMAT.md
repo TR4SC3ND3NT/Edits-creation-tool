@@ -49,6 +49,7 @@ and optionally `transition` (how it comes in; see [Transitions](#transitions)) a
 | `cube` | `faces` (slot ids: front, right, back, left, top, bottom), `size` `[w, h, d]` | A real 3D box with a picture on each face |
 | `adjustment` | none | Its effects apply to everything beneath it |
 | `video` | `slot`, optional `speed`, `time_remap`, `loop`, `reverse`, `frame_blend`, `volume` | A clip from a slot, decoded by ffmpeg; see [Video layers](#video-layers-and-layer-time) |
+| `text` | `text`, optional `font`, `size`, `weight`, `align`, `line_height`, `tracking`, `fill`, `stroke`, `max_width` | Lines of text in a font file (Inter when none is named); see [Text layers](#text-layers) |
 
 `transform` has `position` `[x, y, z]`, `scale` (number, `[x, y]` or `[x, y, z]`),
 `rotation` `[x, y, z]`, `anchor` `[x, y]`, `opacity`.
@@ -315,3 +316,46 @@ its `in` (`floor((t - in) x fps) / fps`), so `"fps": 12` in a 24 fps project
 holds every picture for two frames ("on twos"). Motion blur samples inside a
 step are one picture. The layer still comes in and goes out at its own `in`
 and `out`, and its transition runs at the project's rate.
+
+## Text layers
+
+A `text` layer sets its `text` in a font and draws it like any other layer:
+`transform` moves, scales and turns it (in 3D too), effects, blend modes and
+transitions apply as usual.
+
+```json
+{ "id": "title", "kind": "text", "text": "SAY MY\nNAME", "in": 8, "out": 12,
+  "size": 14, "weight": 800, "align": "center", "line_height": 1.0, "tracking": 0.5,
+  "fill": [1, 1, 1], "stroke": { "color": [0, 0, 0], "width": 0.8 },
+  "transform": { "position": [0, 0.3, 0] } }
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `text` | (required) | The words; `\n` starts a new line. |
+| `font` | Inter | A `.ttf` or `.otf` file, relative to the project file. Without it, Inter (variable, built into the renderer, SIL Open Font Licence) is used. `check` reports a missing file. |
+| `size` | 10 | The em, in percent of the composition height (10 = a tenth of the frame's height). Must be positive. |
+| `weight` | the font's default | Position on the font's `wght` axis: 100 thin, 400 regular, 700 bold, 900 black. Fonts without that axis (not variable) ignore it. |
+| `align` | `center` | `left`, `center` or `right`: how the lines line up in the block. |
+| `line_height` | 1.2 | Baseline to baseline, in multiples of `size`. |
+| `tracking` | 0 | Extra space after every character, in percent of the composition height; negative tightens. |
+| `fill` | `[1, 1, 1]` | Colour of the letters: straight-alpha sRGB, `[r, g, b]` or `[r, g, b, a]` in 0..1. |
+| `stroke` | none | `{ "color": [r, g, b(, a)], "width": w }`: an outline reaching `w` percent of the composition height beyond the edge of the letters, drawn beneath every letter's fill (so outlines of neighbouring letters never cover a letter). `color` defaults to black. |
+| `max_width` | none | Wrap lines longer than this, in composition units (the frame is 1 high, `16/9` wide in 16:9). Lines break at spaces and dashes and between CJK characters (not before closing or after opening punctuation); a word longer than the line stays whole. |
+
+**Where the block is.** The block is centred on the layer's origin (its
+`position`, or `anchor` from it): horizontally, the box is `max_width` wide,
+or as wide as the longest line, and lines are aligned inside that box;
+vertically, the middle of the block is halfway between the cap height of the
+first line and the baseline of the last, so capitals are centred exactly and
+descenders hang below. A single line is therefore centred whatever its
+`align`; to set left-aligned captions from the left edge, give `max_width`
+and move the layer.
+
+Shaping (kerning, ligatures, Arabic and Indic forms) comes from the font.
+A right-to-left paragraph is set right to left; a paragraph that mixes
+directions is not reordered. There is no fallback to other fonts: a
+character the font lacks shows the font's missing-glyph box. Text renders
+sharp at any output size (`--scale`): glyphs are rasterised at their size
+in output pixels.
+

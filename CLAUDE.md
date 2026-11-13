@@ -104,8 +104,9 @@ definitions; `docs/AGENTS.md` has the client setup.
   wall-clock time, no unseeded randomness, in the renderer or in effects.
 - **Never commit media**: no pictures, audio, video, renders or analyses.
   Tests and the demo generate what they need in code. `.gitignore` covers
-  `*.mp4`, `*.mov`, `/out`, `/analysis`, `/assets`; keep working files there
-  or outside the repository.
+  `*.mp4`, `*.mov`, `/out`, `/analysis` and `/assets` (except
+  `assets/fonts/`, which holds the built-in Inter font and its OFL licence);
+  keep working files there or outside the repository.
 - **Tests use generated content.** `edits-render` renders tiny procedural
   pictures; `edits-analyze` synthesises clips with known parameters;
   `edits-mcp` runs `edits demo` into a temporary folder.

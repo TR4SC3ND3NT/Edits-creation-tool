@@ -594,6 +594,12 @@ fn layer(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, l: &Layer,
                     info_row(ui, "Timing", timing.join(", "));
                 }
             }
+            LayerKind::Text(t) => {
+                info_row(ui, "Text", t.text.replace('\n', " / "));
+                let font = t.font.clone().unwrap_or_else(|| "Inter (built in)".into());
+                let weight = t.weight.map(|w| format!(", weight {w}")).unwrap_or_default();
+                info_row(ui, "Font", format!("{font}, size {}{weight}", num(t.size)));
+            }
         }
         for (field, value, label) in [("in", l.start, "In"), ("out", end, "Out")] {
             field_row(ui, label, &format!("In {unit}. Or drag the edge of the bar in the timeline (snaps to quarter beats; Alt: frames)."), |ui| {

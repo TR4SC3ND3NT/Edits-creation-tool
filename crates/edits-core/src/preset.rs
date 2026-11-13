@@ -597,7 +597,8 @@ fn active(l: &Value, t: f64, duration: f64) -> bool {
 fn is_picture(l: &Value) -> bool {
     let kind = l.get("kind").and_then(Value::as_str).unwrap_or("");
     let blend = l.get("blend").and_then(Value::as_str).unwrap_or("normal");
-    kind != "adjustment" && blend == "normal"
+    // Text sits over the pictures (captions, titles): it is not one of them.
+    !matches!(kind, "adjustment" | "text") && blend == "normal"
 }
 
 /// The topmost picture visible at `t`.

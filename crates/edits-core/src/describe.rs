@@ -63,6 +63,7 @@ pub fn describe(p: &Project) -> String {
                 }
                 parts.join(" ")
             }
+            LayerKind::Text(t) => text_summary(t),
         };
         let what = match l.fps {
             Some(fps) => format!("{what} fps={fps}"),
@@ -124,6 +125,38 @@ pub fn describe(p: &Project) -> String {
     o
 }
 
+/// `text "SAY MY NAME" size 12 fonts/Anton.ttf w800 left stroke 0.8 [0.0, 0.0, 0.0, 1.0] wrap 1.2`
+fn text_summary(t: &Text) -> String {
+    const SHOWN: usize = 40;
+    let words: String = t.text.chars().take(SHOWN).collect();
+    let more = if t.text.chars().count() > SHOWN { "…" } else { "" };
+    let mut parts = vec![format!("text {words:?}{more} size {}", t.size), t.font.clone().unwrap_or_else(|| "Inter".into())];
+    if let Some(w) = t.weight {
+        parts.push(format!("w{w}"));
+    }
+    match t.align {
+        Align::Left => parts.push("left".into()),
+        Align::Right => parts.push("right".into()),
+        Align::Center => {}
+    }
+    if t.fill != [1.0, 1.0, 1.0, 1.0] {
+        parts.push(format!("fill {:?}", t.fill));
+    }
+    if let Some(s) = &t.stroke {
+        parts.push(format!("stroke {} {:?}", s.width, s.color));
+    }
+    if t.tracking != 0.0 {
+        parts.push(format!("tracking {}", t.tracking));
+    }
+    if t.line_height != 1.2 {
+        parts.push(format!("line_height {}", t.line_height));
+    }
+    if let Some(m) = t.max_width {
+        parts.push(format!("wrap {m}"));
+    }
+    parts.join(" ")
+}
+
 fn const_text(p: &Prop) -> String {
     match p {
         Prop::Const(Value::Num(n)) => format!("{n}"),
@@ -173,6 +206,20 @@ mod tests {
         )
         .unwrap();
         assert!(describe(&p).contains("fx halftone mode=cmyk; size=2"), "{}", describe(&p));
+    }
+
+    #[test]
+    fn text_layers_show_what_they_say() {
+        let p = Project::from_json(
+            r#"{"format":"edits.project/1","settings":{"width":64,"height":64,"fps":25,"duration":4},
+                "layers":[{"id":"title","kind":"text","text":"SAY MY NAME","font":"fonts/Anton.ttf","size":12,"weight":800,"align":"left",
+                           "stroke":{"color":[0,0,0],"width":0.8},"max_width":1.2},
+                          {"id":"cap","kind":"text","text":"hello\nworld"}]}"#,
+        )
+        .unwrap();
+        let d = describe(&p);
+        assert!(d.contains(r#"text "SAY MY NAME" size 12 fonts/Anton.ttf w800 left stroke 0.8 [0.0, 0.0, 0.0, 1.0] wrap 1.2"#), "{d}");
+        assert!(d.contains(r#"text "hello\nworld" size 10 Inter"#), "{d}");
     }
 
     #[test]
