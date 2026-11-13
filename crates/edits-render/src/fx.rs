@@ -50,7 +50,9 @@ fn color_op(e: &ResolvedEffect, height: f32, frame: f32) -> Option<ColorOp> {
     op
 }
 
-/// The effects implemented in this file rather than as `fxlib` shaders.
+/// The effects implemented in this file rather than as `fxlib` shaders (a
+/// test checks that every registered effect is one or the other).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const NATIVE: &[&str] = &[
     "exposure", "fade", "brightness_contrast", "saturation", "hue", "invert", "threshold", "posterize", "tint", "vignette", "grain",
     "gaussian_blur", "directional_blur", "zoom_blur", "spin_blur", "glow", "rgb_split", "transform2d", "custom",
@@ -93,7 +95,7 @@ impl Renderer {
             }
             if let Some(b) = crate::fxlib::builtin(&e.kind) {
                 let spec = edits_core::effects::spec(b.kind).ok_or_else(|| anyhow!("effect \"{}\" is not in the registry", b.kind))?;
-                if let Some(p) = (b.pack)(e, &crate::fxlib::Frame { w, h, aspect }) {
+                if let Some(p) = (b.pack)(e, &crate::fxlib::Frame { h, aspect }) {
                     let key = crate::fxlib::option_key(spec, e);
                     let pipeline = self.builtin_pipeline(b, &key).map_err(|err| anyhow!("layer \"{layer}\": {err}"))?;
                     steps.push(Step::Builtin(pipeline, p));

@@ -20,9 +20,8 @@ mod color;
 mod distort;
 mod stylize;
 
-/// What a packer knows about the frame: its size in pixels and width / height.
+/// What a packer knows about the frame: its height in pixels and width / height.
 pub(crate) struct Frame {
-    pub w: f32,
     pub h: f32,
     pub aspect: f32,
 }

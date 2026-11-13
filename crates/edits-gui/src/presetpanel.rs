@@ -94,9 +94,10 @@ fn var_control(ui: &mut Ui, p: &Preset, name: &str, var: &edits_core::preset::Va
             let r = ui
                 .scope_builder(egui::UiBuilder::new().id_salt(id), |ui| {
                     ui.spacing_mut().slider_width = (width - 64.0).max(60.0);
-                    let mut s = egui::Slider::new(&mut v, lo..=hi).step_by(step).clamping(egui::SliderClamping::Always).custom_formatter(|v, _| crate::inspector::num(v));
+                    // No step for numbers: a step would move the default onto its grid.
+                    let mut s = egui::Slider::new(&mut v, lo..=hi).clamping(egui::SliderClamping::Always).custom_formatter(|v, _| crate::inspector::num(v));
                     if var.ty == VarType::Integer {
-                        s = s.integer();
+                        s = s.integer().step_by(step);
                     }
                     ui.add(s)
                 })
@@ -160,6 +161,12 @@ fn var_control(ui: &mut Ui, p: &Preset, name: &str, var: &edits_core::preset::Va
             r.changed().then(|| json!(s))
         }
     }
+}
+
+/// A label in the label column of the card.
+fn cell(ui: &mut Ui, label: &str) {
+    let (r, _) = ui.allocate_exact_size(vec2(84.0, 24.0), Sense::hover());
+    ui.painter().text(pos2(r.left(), r.center().y), Align2::LEFT_CENTER, label, theme::body(), color::TEXT_MUTED);
 }
 
 /// The drawer's page.
@@ -253,7 +260,7 @@ fn card(app: &mut App, ui: &mut Ui, p: &Preset, slots: &[String]) {
         // ---- what and when ----
         if p.target == TargetKind::Layer {
             ui.horizontal(|ui| {
-                ui.add_sized(vec2(84.0, 22.0), egui::Label::new(RichText::new("On").color(color::TEXT_MUTED)));
+                cell(ui, "On");
                 let mut choice = app.pre.target;
                 let options: Vec<(TargetChoice, &str)> = TargetChoice::ALL.iter().map(|c| (*c, c.label())).collect();
                 if widgets::segmented(ui, &mut choice, &options) {
@@ -263,17 +270,17 @@ fn card(app: &mut App, ui: &mut Ui, p: &Preset, slots: &[String]) {
             .response
             .on_hover_text(TargetChoice::ALL.iter().map(|c| format!("{}: {}", c.label(), c.tip())).collect::<Vec<_>>().join("\n"));
             ui.horizontal(|ui| {
-                ui.add_sized(vec2(84.0, 22.0), egui::Label::new(RichText::new("At").color(color::TEXT_MUTED)));
+                cell(ui, "At");
                 let mut at = app.pre.at;
-                if widgets::segmented(ui, &mut at, &[(AtChoice::Playhead, "Playhead"), (AtChoice::LayerIn, "Layer's cut")]) {
+                if widgets::segmented(ui, &mut at, &[(AtChoice::Playhead, "Playhead"), (AtChoice::LayerIn, "Cut")]) {
                     app.pre.at = at;
                 }
             })
             .response
-            .on_hover_text("Playhead: where the playhead is. Layer's cut: the target layer's in (where a transition belongs).");
+            .on_hover_text("Playhead: where the playhead is. Cut: the target layer's in (where a transition belongs)."); 
         }
         ui.horizontal(|ui| {
-            ui.add_sized(vec2(84.0, 22.0), egui::Label::new(RichText::new("Preview").color(color::TEXT_MUTED)));
+            cell(ui, "Preview");
             widgets::switch(ui, &mut app.pre.preview).on_hover_text("Show the result at the playhead before applying it (nothing is written)");
         });
         let plan = app.state.doc.clone().zip(app.tm).map(|(doc, tm)| {

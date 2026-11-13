@@ -590,6 +590,7 @@ impl Renderer {
 
     /// Upload a 3D lookup table of `size`^3 linear RGB entries, red varying
     /// fastest, then green, then blue (the order of a `.cube` file).
+    #[cfg_attr(not(test), allow(dead_code))] // the `lut` effect (WP4) will use it
     pub(crate) fn upload_lut(&mut self, size: u32, rgb: &[[f32; 3]]) -> Result<Lut> {
         if !(2..=256).contains(&size) || rgb.len() != (size * size * size) as usize {
             bail!("a 3D lookup table needs size^3 entries with a size of 2 to 256 (got {} entries for size {size})", rgb.len());
@@ -1422,5 +1423,32 @@ mod tests {
         assert_eq!(f32_to_half(1.0), 0x3c00);
         assert_eq!(f32_to_half(-0.0), 0x8000);
         assert!(half_to_f32(f32_to_half(f32::NAN)).is_nan());
+    }
+
+    #[test]
+    fn effects_read_a_3d_lookup_table() {
+        let Ok(mut r) = Renderer::new(RenderOptions::default()) else {
+            eprintln!("skipping: no adapter");
+            return;
+        };
+        let p = Project::from_json(r#"{"format":"edits.project/1","settings":{"width":8,"height":8,"fps":10,"duration":1},"layers":[{"id":"s","kind":"solid","color":[1,0.5,0,1]}]}"#).unwrap();
+        r.prepare(&p, Path::new(".")).unwrap();
+        r.begin_frame(8, 8, 1.0, 1).unwrap();
+        let base = r.render_stack(&p.layers, 0.0, 8, 8).unwrap();
+        let pipeline = r.compile_custom("lut", "fn effect(uv: vec2<f32>) -> vec4<f32> { return vec4<f32>(fx_lut(src(uv).rgb), 1.0); }").unwrap();
+        // Without a table of its own an effect sees the identity.
+        let out = r.acquire(8, 8);
+        r.fx_pass(&pipeline, &out, &base, None, None, &[0.0; 16]);
+        // (Filtering weights are 8-bit on some adapters: allow one step.)
+        let got = r.read_back(&out).unwrap().get_pixel(4, 4).0;
+        assert!(got[0] == 255 && got[2] == 0 && (got[1] as i32 - 128).abs() <= 1, "{got:?}");
+        // An inverting table (affine, so trilinear filtering is exact).
+        let corners: Vec<[f32; 3]> = (0..8).map(|i| [1.0 - (i & 1) as f32, 1.0 - ((i >> 1) & 1) as f32, 1.0 - ((i >> 2) & 1) as f32]).collect();
+        let lut = r.upload_lut(2, &corners).unwrap();
+        r.fx_pass(&pipeline, &out, &base, None, Some(&lut), &[0.0; 16]);
+        let green = (assets::linear_to_srgb(1.0 - assets::srgb_to_linear(0.5)) * 255.0).round() as u8;
+        let got = r.read_back(&out).unwrap().get_pixel(4, 4).0;
+        assert!(got[0] == 0 && got[2] == 255 && (got[1] as i32 - green as i32).abs() <= 1, "{got:?}");
+        assert!(r.upload_lut(3, &corners).is_err(), "a table of the wrong size is refused");
     }
 }

@@ -139,8 +139,8 @@ impl TargetChoice {
 
     pub fn label(self) -> &'static str {
         match self {
-            TargetChoice::Selected => "Selected",
-            TargetChoice::Auto => "On screen",
+            TargetChoice::Selected => "Layer",
+            TargetChoice::Auto => "Screen",
             TargetChoice::Fx => "Accents",
         }
     }
