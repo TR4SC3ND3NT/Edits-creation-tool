@@ -125,8 +125,8 @@ not a fudge factor:
   is needed: bias is under 0.05 stops clean and the decay rate under 0.02.
 - **Draft timing.** The draft used to snap a key to the nearest quarter beat
   whenever the renderer would show it within a frame either way, so a flash
-  or a punch could appear a frame early or late (on the real reference, 4 of
-  17 cuts). Keys are now snapped only when the renderer shows them on the
+  or a punch could appear a frame early or late (on the real reference, flashes
+  or punches on at least 3 of its 17 shots). Keys are now snapped only when the renderer shows them on the
   frame they were measured on.
 - **Draft values.** A key snapped to a quarter beat can sit up to a frame
   before its frame, and a `decay` segment has moved a lot by then (rate 0.5,
@@ -260,7 +260,35 @@ shots, 40 flashes) was analysed, drafted without proxies, its 17 slots
 filled with the four unrelated pictures of `edits demo`, rendered at
 `--scale 0.5 --samples 1` and compared (`edits-analyze compare`):
 
-REALTABLE
+| Stage | overall | tempo | cuts | flashes | tone hits | exposure | blur | saturation | scale |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| First run (reported before this work) | 0.67 | 1.00 | 0.94 | 0.72 | 0.80 | 0.40 | 0.54 | 0.28 | 0.66 |
+| Same code, re-run for this comparison | 0.65 | 1.00 | 1.00 | 0.83 | 0.80 | 0.41 | 0.51 | 0.11 | 0.51 |
+| After the estimator and draft fixes | 0.69 | 1.00 | 0.94 | 0.79 | 0.50 | 0.56 | 0.50 | 0.45 | 0.78 |
+| After `fit` (budget 24) | **0.76** | 1.00 | 0.97 | 0.83 | 0.78 | 0.60 | 0.56 | 0.51 | 0.81 |
+
+The fixes moved exposure (+0.15), saturation (+0.34) and zoom (+0.27):
+flashes and punches now land on their frame with their measured value,
+and the reference's colour curve is drafted. Tone hits fell (0.80 -> 0.50):
+the re-analysed reference now has 9 hits instead of 12 (one-frame greys on
+flash peaks are no longer hits) and the drafted colour curve dips into
+extra hits on the unrelated pictures. `fit` then recovered tone hits and
+gained on every curve category: 0.69 -> 0.76 overall, in 410 shot renders
+(5502 frames at 360 px) and 343 s on 4 CPU cores without a GPU. Its own
+in-process estimate (no audio, no H.264) was 0.620 -> 0.755.
+
+Commands (working files outside the repository):
+
+```
+edits-analyze analyze ref.mp4 -o an
+edits-analyze draft an/reference_analysis.json -o project.json      # no --proxies
+# point the 17 slots at demo/img/{a,b,c,d}.png (edits demo demo)
+edits render project.json -o render.mp4 --scale 0.5 --samples 1
+edits-analyze compare an/reference_analysis.json render.mp4
+cargo run --release -p edits-calib --example calib -- fit project.json an/reference_analysis.json
+edits render project.json -o render_fit.mp4 --scale 0.5 --samples 1
+edits-analyze compare an/reference_analysis.json render_fit.mp4
+```
 
 ## Limits that remain
 
@@ -293,7 +321,7 @@ REALTABLE
   flash to match the signature, but the measured peak of a fully clipped
   frame is only a lower bound on either side.
 - **Cost.** `fit` renders each shot `budget` times; the real 17-shot,
-  207-frame edit takes FITTIME. Shots with 20-30 parameters
+  207-frame edit takes about 6 minutes (343 s, 410 shot renders) on 4 cores. Shots with 20-30 parameters
   get fewer than two visits per parameter at the default budget.
 - Only one real reference was available for validation; the numbers above
   are for that clip with the demo's pictures. The harness's pictures and

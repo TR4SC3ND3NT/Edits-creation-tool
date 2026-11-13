@@ -79,7 +79,7 @@ impl Clock<'_> {
     /// before it): a key moved to another frame would not reproduce the
     /// reference. (`edits calib` measured the earlier rule, which allowed a
     /// frame either way, putting the real reference's flashes and punches a
-    /// frame late on 4 of 17 cuts.)
+    /// frame late on at least 3 of its 17 shots.)
     fn time(&self, frame: usize) -> f64 {
         if self.snap {
             if let Some(q) = self.beats.snap(frame as f64, self.fps) {
