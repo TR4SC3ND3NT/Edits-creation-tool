@@ -44,7 +44,7 @@ files, D = can overwrite or remove something.
 | `project_describe(project)` | R | Compact text outline: read this first |
 | `project_edit(project, ops, dry_run?)` | D | Apply a batch of edits as one validated step |
 | `project_read(project, pointer?)` | R | The JSON, or the value at a pointer (one layer, one effect) |
-| `project_undo(project)` | D | Restore the version before the last edit |
+| `project_undo(project)` | D | Restore the version before the newest edit in the shared history (yours or the person's) |
 | `reference_analyze(video, out_dir, bpm?, beat_offset?, whole?)` | W | Background job: extract the recipe of a finished edit |
 | `reference_compare(analysis, video, top?)` | R | Scores and ranked differences in signature space |
 | `reference_draft(analysis, output, proxies?, width?, height?, single_loop?, no_snap?)` | D | Write a project that replays an analysed recipe |
@@ -142,8 +142,10 @@ is compared is timing and effect curves. See [ANALYSIS.md](ANALYSIS.md).
   such as `"transfrom"`.
 - **Every write can be undone.** Before a project file is replaced, the
   previous version is copied to `<project folder>/.edits/history/` (the last
-  50 are kept). `project_undo` restores the newest one; calling it again goes
-  further back. The version an undo replaces is kept under `.edits/undone/`.
+  50 are kept), with a note of who made the edit (`agent` for the server,
+  `window` for a person in `edits-gui`) and what it did. `project_undo`
+  restores the newest one; calling it again goes further back. The version an
+  undo replaces is kept under `.edits/undone/`.
 - **The file is the review surface.** It is written with a fixed key order
   and one value per line where lines get long, so `git diff` on a project
   shows only what changed. The first edit through the server reformats a
@@ -151,6 +153,34 @@ is compared is timing and effect curves. See [ANALYSIS.md](ANALYSIS.md).
 - **Edits made by hand are respected.** The server reads the file fresh on
   every call and keeps no copy, so a person can edit the same project between
   calls, and the preview window ([GUI.md](GUI.md)) follows every change.
+
+### The person and the agent share one history
+
+The window (`edits-gui`) is also an editor, and its edits go through the same
+code as `project_edit` (`edits_core::edit`): validated the same way, written
+atomically, and saved in the same `.edits/history/`. So there is one history
+for the project, not one per side:
+
+- **`project_undo` undoes the newest edit, whoever made it.** If the person
+  changed something in the window after your last `project_edit`, your undo
+  takes back *their* change, not yours. The answer says whose it was
+  (`undid an edit made by the person in the edits-gui window: add glow to
+  tex`, and `undone_edit: {actor, summary}` in the structured result). Read
+  that line; when it was not yours, tell the person, or redo it with
+  `project_edit`.
+- **The person's Ctrl+Z in the window does the same**, so it can take back
+  your last edit. The window's History list shows each entry as `you` or
+  `agent`.
+- **Redo** exists in the window (Ctrl+Shift+Z) until the next edit by either
+  side; there is no redo tool for the agent. A new edit from either side
+  clears it (the undone versions stay in `.edits/undone/`).
+- **Neither clobbers the other.** Each step locks the history
+  (`.edits/history/<name>.lock`), so simultaneous edits are applied one after
+  the other, each as its own entry. The window refuses an edit it prepared
+  against a version that is no longer on disk (your edit landed meanwhile)
+  and reloads; your `project_edit` always applies to the file as it is on
+  disk, including the person's latest change, so read before you overwrite a
+  value the person may be working on (`project_read`).
 
 `.edits/` folders carry their own `.gitignore`; nothing in them is committed.
 
