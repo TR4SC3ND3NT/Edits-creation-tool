@@ -115,6 +115,18 @@ A project is **slots + layers + keyframes + effects**.
   `alpha_inverted`, `luma`, `luma_inverted`): a picture inside the letters
   of a text layer. Give the source `"visible": false` so it works only as
   the matte.
+- **Comps (precomps)** group layers into one picture. Define the group once
+  under `"comps": { "card": { "duration": 4, "layers": [ ... ] } }` (optional
+  `width`, `height`, opaque `background`), then draw it with
+  `{ "id": "card1", "kind": "comp", "comp": "card", "in": 8, "out": 12 }`:
+  its transform, masks, effects, matte, blend and transition act on the
+  whole group, like an image. Inside, times count from 0 (comp time) and
+  space is in the comp's height. `offset`, `speed`, `time_remap`, `loop`
+  and `reverse` work as for video: one beat-loop comp with `"loop": true`
+  repeats along the edit, the same title card can be drawn several times.
+  Edit inside with pointers like `/comps/card/layers/@title/size`; `check`
+  reports paths like `comps.card.layers[1:"title"]` and comps that contain
+  themselves.
 - **Presets** are named building blocks (`flash`, `punch`, `shake`,
   `rgb_split`, `slide_in`, `flip_3d`, `cube_turn`, `velocity`, `letterbox`,
   `transition:<kind>`, ...) with typed variables. Applying one writes ordinary

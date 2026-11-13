@@ -360,15 +360,23 @@ impl<'a> Evaluator<'a> {
     /// that instant, or else the speed integrated from the layer's `in`.
     /// Never negative.
     pub fn source_seconds(&self, layer: &Layer, video: &Video, t: f64) -> f64 {
-        let p = self.project;
-        let lt = self.layer_time(layer, t);
         if let Some(remap) = &video.time_remap {
-            let s = self.num(remap, lt);
+            let s = self.num(remap, self.layer_time(layer, t));
             return if s.is_finite() { s.max(0.0) } else { 0.0 };
         }
+        self.speed_seconds(layer, video.speed.as_ref(), t)
+    }
+
+    /// Seconds of source played from the layer's `in` to project time `t`
+    /// (at the layer's time) at `speed` (1 when `None`): the speed
+    /// integrated over the layer's time. Never negative. Video and comp
+    /// layers share it.
+    pub fn speed_seconds(&self, layer: &Layer, speed: Option<&Prop>, t: f64) -> f64 {
+        let p = self.project;
+        let lt = self.layer_time(layer, t);
         let start = p.to_seconds(layer.start);
         let span = (p.to_seconds(lt) - start).max(0.0);
-        let s = match &video.speed {
+        let s = match speed {
             None => span,
             Some(Prop::Const(v)) => span * v.to_vec().first().copied().unwrap_or(1.0).max(0.0),
             Some(speed) => {

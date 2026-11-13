@@ -32,7 +32,8 @@ is the short version.
   "audio_clips": [ { "id": "whoosh1", "path": "sfx/whoosh.wav", "at": 15.5 } ],
   "slots": { "a": { "path": "img/a.png", "fit": "cover", "focus": [0.5, 0.4] } },
   "camera": { "fov": 39.6, "position": [0, 0, 0], "rotation": [0, 0, 0] },
-  "layers": [ ... ]
+  "layers": [ ... ],
+  "comps": { "card": { "duration": 4, "layers": [ ... ] } }
 }
 ```
 
@@ -52,6 +53,7 @@ and optionally `transition` (how it comes in; see [Transitions](#transitions)), 
 | `video` | `slot`, optional `speed`, `time_remap`, `loop`, `reverse`, `frame_blend`, `volume` | A clip from a slot, decoded by ffmpeg; see [Video layers](#video-layers-and-layer-time) |
 | `text` | `text`, optional `font`, `size`, `weight`, `align`, `line_height`, `tracking`, `fill`, `stroke`, `max_width`, `animators` | Lines of text in a font file (Inter when none is named), optionally animated letter by letter; see [Text layers](#text-layers) and [Text animators](#text-animators) |
 | `particles` | `emitter`, `rate`, `bursts`, `life`, `speed`, `direction`, `spread`, `gravity`, `sprite`, ... | Petals, sparkles, dust, a burst on a beat; see [Particle layers](#particle-layers) |
+| `comp` | `comp`, optional `offset`, `speed`, `time_remap`, `loop`, `reverse` | A group of layers from `comps`, drawn as one picture; see [Comps](#comps-precomps) |
 
 `transform` has `position` `[x, y, z]`, `scale` (number, `[x, y]` or `[x, y, z]`),
 `rotation` `[x, y, z]`, `anchor` `[x, y]`, `opacity`.
@@ -393,6 +395,67 @@ its `in` (`floor((t - in) x fps) / fps`), so `"fps": 12` in a 24 fps project
 holds every picture for two frames ("on twos"). Motion blur samples inside a
 step are one picture. The layer still comes in and goes out at its own `in`
 and `out`, and its transition runs at the project's rate.
+
+## Comps (precomps)
+
+`comps` holds named compositions: groups of layers that one `comp` layer
+draws as a single flat picture. Use them for a reusable title card or panel
+animated as one, a group that should take one transform, mask, matte or
+effect chain, or a little beat loop repeated along the edit.
+
+```json
+"comps": {
+  "card": { "width": 1080, "height": 400, "duration": 4, "background": [0, 0, 0],
+            "layers": [
+              { "id": "bg", "kind": "image", "slot": "a" },
+              { "id": "title", "kind": "text", "text": "CHAPTER 2", "size": 30,
+                "transform": { "opacity": { "keys": [ { "t": 0, "v": 0 }, { "t": 0.5, "v": 1 } ] } } } ] }
+},
+"layers": [
+  { "id": "card1", "kind": "comp", "comp": "card", "in": 8, "out": 12,
+    "transform": { "position": [0, 0.3, 0], "rotation": [0, 0, -4] },
+    "effects": [ { "kind": "glow" } ] },
+  { "id": "card2", "kind": "comp", "comp": "card", "in": 24, "out": 30, "loop": true, "speed": 2 }
+]
+```
+
+A comp:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `width`, `height` | the project's | Size in pixels at the project's size (it scales with `--scale` like the frame). |
+| `duration` | required | Length in the project's time base. Its layers without `out` end here. |
+| `background` | none (transparent) | An opaque sRGB colour `[r, g, b]` under its layers. |
+| `layers` | `[]` | Layers of any kind, bottom to top, including `comp` layers (a comp may not contain itself, directly or through others). |
+
+Inside a comp, time is comp time: its layers' `in`, `out` and keys count
+from 0 at the comp's start, in the project's time base. Space is in units of
+the comp's height, with the origin at the comp's centre, as in the project;
+the camera is the default one (the project's camera moves the comp layer, not
+what is inside). Layer ids and track mattes are per stack: a comp's layers
+may reuse ids of the project's layers, and a matte names a layer of its own
+stack. Motion blur is the project's: a comp is rendered at each sample's
+instant. Video layers inside a comp play, but their sound is not mixed.
+
+A `comp` layer:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `comp` | required | A key of `comps`. |
+| `offset` | 0 | Comp time at the layer's `in`. |
+| `speed` | 1 | Playback rate, keyed in project time; an animated speed is integrated from `in`, as for video. Not negative. |
+| `time_remap` | none | Comp time to show, as a function of project time. Overrides `speed` and `offset`. |
+| `loop` | false | Start again from comp time 0 after the comp's end. Without it the comp's last instant holds. |
+| `reverse` | false | Play backwards: the layer starts on the comp's last instant. |
+
+The comp's picture fills a box of the comp's size (a comp of the project's
+size fills the frame at scale 1, exactly like its layers drawn inline), and
+then behaves like an image layer: `transform`, `masks`, `effects`, `matte`,
+`blend`, `opacity`, `transition` and `fps` apply to the group as a whole.
+`edits check` reports an unknown comp, a cycle (`comps form a cycle: a -> b
+-> a`) and everything wrong inside a comp, with paths such as
+`comps.card.layers[1:"title"].size`; `project_edit` takes the same places as
+pointers (`/comps/card/layers/@title/size`).
 
 ## Particle layers
 

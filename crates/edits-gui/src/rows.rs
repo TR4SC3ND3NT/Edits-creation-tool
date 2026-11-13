@@ -129,6 +129,7 @@ pub fn kind_text(kind: &LayerKind) -> String {
             format!("text \"{words}\"")
         }
         LayerKind::Particles(p) => format!("particles {}", p.sprite),
+        LayerKind::Comp(c) => format!("comp {}", c.comp),
     }
 }
 

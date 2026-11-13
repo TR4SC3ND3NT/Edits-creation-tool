@@ -37,6 +37,8 @@ pub(crate) enum Input {
     Tex,
     /// Texture 0 plus the blurred bright pass in texture 1, tinted by `p[1]`.
     Glow,
+    /// Texture 0, of the target's size, read texel for texel (an exact copy).
+    Pixels,
     /// A quad's picture (texture 0) through the fit in `p[0]`, tinted by
     /// `p[1]`. `cut` trims the picture where its coordinates leave 0..1.
     Quad { cut: bool },
@@ -239,6 +241,7 @@ impl Recipe {
         let input = match self.input {
             Input::Tex => "Tex",
             Input::Glow => "Glow",
+            Input::Pixels => "Pixels",
             Input::Quad { .. } => "Quad",
         };
         let ops = if self.ops.is_empty() { String::new() } else { format!("+{}ops", self.ops.len()) };
@@ -276,6 +279,10 @@ impl Recipe {
                 line("let cover = clamp(max(g.r, max(g.g, g.b)), 0.0, 1.0);");
                 line("let s0 = vec4<f32>(base.rgb + g, base.a + (1.0 - base.a) * cover);");
             }
+            Input::Pixels => {
+                line("let frame_uv = in.uv;");
+                line("let s0 = textureLoad(t0, vec2<i32>(in.pos.xy), 0);");
+            }
             Input::Quad { cut } => {
                 line("let frame_uv = in.pos.xy * u.res.zw;");
                 line("let quv = u.p[0].xy + in.uv * u.p[0].zw;");
@@ -307,7 +314,7 @@ impl Recipe {
                 line("let sp = s1 * u.p[2].z;");
                 if flat {
                     line("let d = u.p[3];");
-                } else if matches!(self.input, Input::Quad { .. }) {
+                } else if matches!(self.input, Input::Quad { .. } | Input::Pixels) {
                     line("let d = textureLoad(t1, vec2<i32>(in.pos.xy), 0);");
                 } else {
                     line("let d = textureSampleLevel(t1, samp, in.uv, 0.0);");

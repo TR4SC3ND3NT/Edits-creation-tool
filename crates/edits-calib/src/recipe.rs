@@ -229,6 +229,7 @@ pub fn generate(spec: &CaseSpec) -> Case {
         slots: BTreeMap::new(),
         camera: Camera::default(),
         layers: vec![],
+        comps: BTreeMap::new(),
         markers: vec![],
     };
     for p in &pictures {

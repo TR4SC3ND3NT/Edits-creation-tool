@@ -66,7 +66,7 @@ pub(crate) struct Inputs {
 }
 
 /// Lookup tables of a prepared project, by `source` as written.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Loaded {
     luts: HashMap<String, Lut>,
 }
@@ -86,7 +86,7 @@ impl Renderer {
     /// tables of `lut` effects (paths relative to `base_dir`).
     pub(crate) fn load_fx_inputs(&mut self, project: &Project, base_dir: &Path) -> Result<Loaded> {
         let mut out = Loaded::default();
-        for l in &project.layers {
+        for l in project.all_layers() {
             for (i, e) in l.effects.iter().enumerate() {
                 if edits_core::effects::spec(&e.kind).map(|s| s.source) != Some(SourceKind::Cube) {
                     continue;

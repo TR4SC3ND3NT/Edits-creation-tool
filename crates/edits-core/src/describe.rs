@@ -39,8 +39,49 @@ pub fn describe(p: &Project) -> String {
         let _ = writeln!(o, "camera: {}", animated.join("; "));
     }
     let _ = writeln!(o, "layers (bottom to top):");
-    for l in &p.layers {
-        let end = l.end.unwrap_or(s.duration);
+    layer_lines(&mut o, &p.layers, s.duration);
+    if !p.comps.is_empty() {
+        let _ = writeln!(o, "comps (layers in comp time):");
+    }
+    for (name, c) in &p.comps {
+        let _ = writeln!(o, "  {}", crate::comp::describe_heading(p, name, c, unit));
+        let mut inner = String::new();
+        layer_lines(&mut inner, &c.layers, c.duration);
+        for line in inner.lines() {
+            let _ = writeln!(o, "  {line}");
+        }
+    }
+    for m in &p.markers {
+        let _ = writeln!(o, "marker {:.2}: {}", m.t, m.label);
+    }
+    if !p.audio_clips.is_empty() {
+        let _ = writeln!(o, "audio clips (sound effects):");
+    }
+    for c in &p.audio_clips {
+        let mut parts = vec![c.path.clone()];
+        if c.trim_in != 0.0 || c.trim_out.is_some() {
+            parts.push(format!("trim {}..{} s", c.trim_in, c.trim_out.map(|b| b.to_string()).unwrap_or_else(|| "end".into())));
+        }
+        if c.volume != 1.0 {
+            parts.push(if c.volume == 0.0 { "muted".to_string() } else { format!("volume {}", c.volume) });
+        }
+        if c.fade_in > 0.0 {
+            parts.push(format!("fade in {} s", c.fade_in));
+        }
+        if c.fade_out > 0.0 {
+            parts.push(format!("fade out {} s", c.fade_out));
+        }
+        let _ = writeln!(o, "  {:<14} at {:>7.2} {}{}", c.id, c.at, parts.join(", "), if c.enabled { "" } else { " (disabled)" });
+    }
+    o
+}
+
+/// One line per layer of `layers` (bottom to top), and an indented line per
+/// transition, mask, animated value and effect. `duration` is where a layer
+/// without `out` ends.
+fn layer_lines(o: &mut String, layers: &[Layer], duration: f64) {
+    for l in layers {
+        let end = l.end.unwrap_or(duration);
         let what = match &l.kind {
             LayerKind::Image { slot } => format!("image {slot}"),
             LayerKind::Solid { color } => format!("solid {color:?}"),
@@ -65,6 +106,7 @@ pub fn describe(p: &Project) -> String {
                 parts.join(" ")
             }
             LayerKind::Text(t) => text_summary(t),
+            LayerKind::Comp(c) => crate::comp::describe_layer(c),
         };
         let what = match l.fps {
             Some(fps) => format!("{what} fps={fps}"),
@@ -110,29 +152,6 @@ pub fn describe(p: &Project) -> String {
             let _ = writeln!(o, "      fx {}{} {}", e.kind, if e.enabled { "" } else { " (off)" }, params.join("; "));
         }
     }
-    for m in &p.markers {
-        let _ = writeln!(o, "marker {:.2}: {}", m.t, m.label);
-    }
-    if !p.audio_clips.is_empty() {
-        let _ = writeln!(o, "audio clips (sound effects):");
-    }
-    for c in &p.audio_clips {
-        let mut parts = vec![c.path.clone()];
-        if c.trim_in != 0.0 || c.trim_out.is_some() {
-            parts.push(format!("trim {}..{} s", c.trim_in, c.trim_out.map(|b| b.to_string()).unwrap_or_else(|| "end".into())));
-        }
-        if c.volume != 1.0 {
-            parts.push(if c.volume == 0.0 { "muted".to_string() } else { format!("volume {}", c.volume) });
-        }
-        if c.fade_in > 0.0 {
-            parts.push(format!("fade in {} s", c.fade_in));
-        }
-        if c.fade_out > 0.0 {
-            parts.push(format!("fade out {} s", c.fade_out));
-        }
-        let _ = writeln!(o, "  {:<14} at {:>7.2} {}{}", c.id, c.at, parts.join(", "), if c.enabled { "" } else { " (disabled)" });
-    }
-    o
 }
 
 /// `text "SAY MY NAME" size 12 fonts/Anton.ttf w800 left stroke 0.8 [0.0, 0.0, 0.0, 1.0] wrap 1.2`

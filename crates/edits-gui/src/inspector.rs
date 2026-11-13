@@ -603,6 +603,10 @@ fn layer(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, l: &Layer,
             LayerKind::Particles(p) => {
                 info_row(ui, "Particles", p.describe());
             }
+            LayerKind::Comp(c) => {
+                let size = shown.comps.get(&c.comp).map(|k| format!("{} {unit}, {} layers", num(k.duration), k.layers.len())).unwrap_or_else(|| "not defined".into());
+                info_row(ui, "Comp", format!("{} ({size})", c.comp));
+            }
         }
         for (field, value, label) in [("in", l.start, "In"), ("out", end, "Out")] {
             field_row(ui, label, &format!("In {unit}. Or drag the edge of the bar in the timeline (snaps to quarter beats; Alt: frames)."), |ui| {
