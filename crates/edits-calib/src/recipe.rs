@@ -231,7 +231,7 @@ pub fn generate(spec: &CaseSpec) -> Case {
         markers: vec![],
     };
     for p in &pictures {
-        project.slots.insert(p.slot.clone(), Slot { path: Some(format!("img/{}.png", p.slot)), fit: Fit::Cover, focus: [0.5, 0.5], note: Some(format!("generated {} picture", p.kind.name())) });
+        project.slots.insert(p.slot.clone(), Slot { path: Some(format!("img/{}.png", p.slot)), fit: Fit::Cover, focus: [0.5, 0.5], note: Some(format!("generated {} picture", p.kind.name())), trim: None });
     }
 
     let mut flashes: Vec<FlashTruth> = Vec::new();
@@ -359,7 +359,7 @@ pub fn generate(spec: &CaseSpec) -> Case {
             transform: tr,
             blend: Blend::Normal,
             effects,
-            enabled: true, transition: None,
+            enabled: true, transition: None, fps: None,
         });
         b0 = b1;
     }
@@ -372,7 +372,7 @@ pub fn generate(spec: &CaseSpec) -> Case {
     }
     let overlay_seed = r.next_u64() >> 16;
     if overlay {
-        project.slots.insert("overlay".into(), Slot { path: Some("img/overlay.png".into()), fit: Fit::Stretch, focus: [0.5, 0.5], note: None });
+        project.slots.insert("overlay".into(), Slot { path: Some("img/overlay.png".into()), fit: Fit::Stretch, focus: [0.5, 0.5], note: None, trim: None });
         project.layers.push(Layer {
             id: "overlay".into(),
             kind: LayerKind::Image { slot: "overlay".into() },
@@ -382,7 +382,7 @@ pub fn generate(spec: &CaseSpec) -> Case {
             transform: Transform::default(),
             blend: Blend::Screen,
             effects: vec![],
-            enabled: true, transition: None,
+            enabled: true, transition: None, fps: None,
         });
     }
     if let Some(v) = vignette {
@@ -395,7 +395,7 @@ pub fn generate(spec: &CaseSpec) -> Case {
             transform: Transform::default(),
             blend: Blend::Normal,
             effects: vec![effect("vignette", vec![("amount", v[0].into()), ("radius", v[1].into()), ("softness", v[2].into())])],
-            enabled: true, transition: None,
+            enabled: true, transition: None, fps: None,
         });
     }
 

@@ -254,6 +254,7 @@ pub(crate) fn slots(app: &mut App, ui: &mut Ui) {
                 .filter(|l| match &l.kind {
                     edits_core::LayerKind::Image { slot } => slot == name,
                     edits_core::LayerKind::Cube { faces, .. } => faces.contains(name),
+                    edits_core::LayerKind::Video(v) => &v.slot == name,
                     _ => false,
                 })
                 .map(|l| l.id.as_str())

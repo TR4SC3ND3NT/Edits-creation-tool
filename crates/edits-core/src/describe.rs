@@ -30,7 +30,8 @@ pub fn describe(p: &Project) -> String {
     }
     let _ = writeln!(o, "slots:");
     for (name, slot) in &p.slots {
-        let _ = writeln!(o, "  {name}: {} [{:?}]", slot.path.as_deref().unwrap_or("(empty)"), slot.fit);
+        let trim = slot.trim.map(|[a, b]| format!(" trim {a}..{b} s")).unwrap_or_default();
+        let _ = writeln!(o, "  {name}: {} [{:?}]{trim}", slot.path.as_deref().unwrap_or("(empty)"), slot.fit);
     }
     let cam = [("fov", &p.camera.fov), ("position", &p.camera.position), ("rotation", &p.camera.rotation)];
     let animated: Vec<String> = cam.iter().filter_map(|(n, pr)| prop_summary(pr).map(|s| format!("{n} {s}"))).collect();
@@ -45,6 +46,27 @@ pub fn describe(p: &Project) -> String {
             LayerKind::Solid { color } => format!("solid {color:?}"),
             LayerKind::Cube { faces, size } => format!("cube {size:?} faces {}", faces.join(",")),
             LayerKind::Adjustment => "adjustment".to_string(),
+            LayerKind::Video(v) => {
+                let mut parts = vec![format!("video {}", v.slot)];
+                if let Some(remap) = &v.time_remap {
+                    parts.push(format!("remap {}", prop_summary(remap).unwrap_or_else(|| const_text(remap))));
+                } else if let Some(speed) = &v.speed {
+                    parts.push(format!("speed {}", prop_summary(speed).unwrap_or_else(|| const_text(speed))));
+                }
+                for (on, word) in [(v.looped, "loop"), (v.reverse, "reverse"), (v.frame_blend == FrameBlend::Mix, "mix")] {
+                    if on {
+                        parts.push(word.to_string());
+                    }
+                }
+                if v.volume != 1.0 {
+                    parts.push(if v.volume == 0.0 { "muted".to_string() } else { format!("volume {}", v.volume) });
+                }
+                parts.join(" ")
+            }
+        };
+        let what = match l.fps {
+            Some(fps) => format!("{what} fps={fps}"),
+            None => what,
         };
         let _ = writeln!(
             o,
@@ -132,5 +154,18 @@ mod tests {
         )
         .unwrap();
         assert!(describe(&p).contains("fx halftone mode=cmyk; size=2"), "{}", describe(&p));
+    }
+
+    #[test]
+    fn video_layers_show_their_timing() {
+        let p = Project::from_json(
+            r#"{"format":"edits.project/1","settings":{"width":64,"height":64,"fps":25,"duration":4},
+                "slots":{"op":{"path":"op.mp4","trim":[1.5,4]}},
+                "layers":[{"id":"clip","kind":"video","slot":"op","speed":{"keys":[{"t":0,"v":1},{"t":2,"v":0.25}]},"loop":true,"frame_blend":"mix","volume":0,"fps":12}]}"#,
+        )
+        .unwrap();
+        let d = describe(&p);
+        assert!(d.contains("op: op.mp4 [Cover] trim 1.5..4 s"), "{d}");
+        assert!(d.contains("video op speed 0→1, 2→0.25 loop mix muted fps=12"), "{d}");
     }
 }

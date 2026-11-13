@@ -3,6 +3,12 @@
 //! Evaluation is a pure function of (project, time): no state is carried from
 //! one frame to the next. That is what makes scrubbing, sub-frame motion blur
 //! and repeatable renders work.
+//!
+//! Video time (`source_seconds`, `source_frame`, `frame_position`) ports the
+//! logic of EffectCraft (https://github.com/storytold/effectcraft,
+//! MIT OR Apache-2.0, used under MIT): `frame_position` in
+//! `crates/render/src/frames.rs` and `timewarp_integrate_speed` in
+//! `crates/effects/src/time_fx.rs`. See `THIRD_PARTY.md`.
 
 use crate::model::*;
 use crate::{ease, effects};
@@ -44,6 +50,75 @@ pub struct ResolvedTransition {
     pub progress: f64,
     /// Every parameter of the transition's spec, with defaults filled in.
     pub params: BTreeMap<String, Vec<f64>>,
+}
+
+/// What the core cannot know about a video by itself: the frame rate and
+/// the number of frames of its source after the slot's `trim`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClipInfo {
+    pub fps: f64,
+    pub frames: u64,
+}
+
+/// Which source frames a video layer shows at an instant: `frame`, crossed
+/// with `next` by `weight` (0 shows `frame` alone). Indices count from the
+/// first frame kept by the slot's `trim`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SourceFrame {
+    pub frame: u64,
+    pub next: u64,
+    pub weight: f64,
+}
+
+/// Speed samples per project frame when an animated speed is integrated.
+const SPEED_SAMPLES_PER_FRAME: f64 = 2.0;
+/// Most speed samples one integration takes (longer spans widen the step).
+const SPEED_MAX_SAMPLES: f64 = 50_000.0;
+
+/// Position of `position` (in frames) among whole frames: the frame at or
+/// before it and the fraction (0..1) of the way to the next. A position
+/// within a millionth of a frame of a whole frame is that frame, so that
+/// times that line up exactly with frames do not fall one frame short
+/// through rounding. (After EffectCraft's `frame_position`, which does this
+/// exactly in integer ticks.)
+pub fn frame_position(position: f64) -> (i64, f64) {
+    if !position.is_finite() {
+        return (0, 0.0);
+    }
+    let whole = (position + 1e-6).floor();
+    (whole as i64, (position - whole).clamp(0.0, 1.0 - f64::EPSILON))
+}
+
+/// The integral of `speed_at(u)` over `u` from 0 to `span` (seconds), by
+/// the midpoint rule on a fixed grid anchored at 0 with `samples_per_second`
+/// samples a second (at most [`SPEED_MAX_SAMPLES`]; a longer span widens the
+/// step). Anchoring the grid at 0 means successive frames share their
+/// samples, so a `hold` key lands the same way on every frame. Non-finite
+/// samples count as 0. (A port of EffectCraft's `timewarp_integrate_speed`,
+/// with the speed as a multiplier instead of a percentage.)
+pub fn integrate_speed(span: f64, samples_per_second: f64, speed_at: impl Fn(f64) -> f64) -> f64 {
+    if !span.is_finite() || span <= 0.0 {
+        return 0.0;
+    }
+    let rate = if samples_per_second.is_finite() && samples_per_second > 0.0 { samples_per_second } else { 60.0 };
+    let mut h = 1.0 / rate;
+    if !(span / h).is_finite() || span / h >= SPEED_MAX_SAMPLES {
+        h = span / SPEED_MAX_SAMPLES;
+    }
+    if !h.is_finite() || h <= 0.0 {
+        return 0.0;
+    }
+    let whole = (span / h).floor().clamp(0.0, SPEED_MAX_SAMPLES);
+    let rest = (span - whole * h).max(0.0);
+    let sample = |u: f64| Some(speed_at(u)).filter(|v| v.is_finite()).unwrap_or(0.0);
+    let full: f64 = (0..whole as u64).map(|i| sample((i as f64 + 0.5) * h)).sum::<f64>() * h;
+    let part = if rest > 0.0 { sample(whole * h + rest * 0.5) * rest } else { 0.0 };
+    let v = full + part;
+    if v.is_finite() {
+        v
+    } else {
+        0.0
+    }
 }
 
 impl ResolvedEffect {
@@ -217,6 +292,79 @@ impl<'a> Evaluator<'a> {
         let end = layer.end.unwrap_or(self.project.settings.duration);
         layer.enabled && t >= layer.start - 1e-9 && t < end - 1e-9
     }
+
+    /// The instant at which `layer`'s own values (transform, effects, video
+    /// frame) are evaluated at project time `t`: `t` itself, or with the
+    /// layer's `fps` set, the start of the step of `1 / fps` seconds
+    /// (counted from the layer's `in`) that `t` falls in.
+    pub fn layer_time(&self, layer: &Layer, t: f64) -> f64 {
+        let Some(fps) = layer.fps.filter(|f| f.is_finite() && *f > 0.0) else { return t };
+        let p = self.project;
+        let start = p.to_seconds(layer.start);
+        let steps = ((p.to_seconds(t) - start) * fps + 1e-6).floor().max(0.0);
+        p.from_seconds(start + steps / fps)
+    }
+
+    /// Seconds into a video layer's (trimmed) source at project time `t`,
+    /// before looping, reversing or clamping to the clip: `time_remap` at
+    /// that instant, or else the speed integrated from the layer's `in`.
+    /// Never negative.
+    pub fn source_seconds(&self, layer: &Layer, video: &Video, t: f64) -> f64 {
+        let p = self.project;
+        let lt = self.layer_time(layer, t);
+        if let Some(remap) = &video.time_remap {
+            let s = self.num(remap, lt);
+            return if s.is_finite() { s.max(0.0) } else { 0.0 };
+        }
+        let start = p.to_seconds(layer.start);
+        let span = (p.to_seconds(lt) - start).max(0.0);
+        let s = match &video.speed {
+            None => span,
+            Some(Prop::Const(v)) => span * v.to_vec().first().copied().unwrap_or(1.0).max(0.0),
+            Some(speed) => {
+                let rate = p.settings.fps * SPEED_SAMPLES_PER_FRAME;
+                integrate_speed(span, rate, |u| self.num(speed, p.from_seconds(start + u)).max(0.0))
+            }
+        };
+        if s.is_finite() {
+            s
+        } else {
+            0.0
+        }
+    }
+
+    /// The source frames a video layer shows at project time `t`, given its
+    /// clip: past the end the last frame holds (or, with `loop`, the clip
+    /// starts again), `reverse` counts from the last frame, and
+    /// `frame_blend: mix` crosses into the next frame by the fraction of the
+    /// way to it. `None` when the clip has no frames.
+    pub fn source_frame(&self, layer: &Layer, video: &Video, t: f64, clip: ClipInfo) -> Option<SourceFrame> {
+        if clip.frames == 0 || !clip.fps.is_finite() || clip.fps <= 0.0 {
+            return None;
+        }
+        let n = clip.frames as f64;
+        let mut pos = self.source_seconds(layer, video, t) * clip.fps;
+        if video.looped {
+            pos = pos.rem_euclid(n);
+            if video.reverse {
+                pos = (n - 1.0 - pos).rem_euclid(n);
+            }
+        } else {
+            pos = pos.clamp(0.0, n - 1.0);
+            if video.reverse {
+                pos = n - 1.0 - pos;
+            }
+        }
+        let (whole, fraction) = frame_position(pos);
+        let last = clip.frames - 1;
+        let frame = (whole.max(0) as u64).min(last);
+        if video.frame_blend == FrameBlend::None || fraction < 1e-6 {
+            return Some(SourceFrame { frame, next: frame, weight: 0.0 });
+        }
+        let next = if video.looped { (frame + 1) % clip.frames } else { (frame + 1).min(last) };
+        let weight = if next == frame { 0.0 } else { fraction };
+        Some(SourceFrame { frame, next, weight })
+    }
 }
 
 /// Pad or truncate to `n` components; a shorter vector repeats its last value.
@@ -309,5 +457,120 @@ mod tests {
         assert_eq!((r.option("mode"), r.option("shape"), r.option("nope")), ("cmyk", "dot", ""));
         let fx: Effect = serde_json::from_str(r#"{"kind":"halftone","options":{"mode":"sepia"}}"#).unwrap();
         assert_eq!(e.effect(&fx, 0.0).option("mode"), "mono");
+    }
+
+    /// A 24 fps project in seconds with one video layer from `json` (spliced into the layer).
+    fn video_project(json: &str) -> Project {
+        Project::from_json(&format!(
+            r#"{{"format":"edits.project/1","settings":{{"width":64,"height":64,"fps":24,"duration":10}},
+                "slots":{{"v":{{"path":"clip.mkv"}}}},
+                "layers":[{{"id":"clip","kind":"video","slot":"v","in":1{json}}}]}}"#
+        ))
+        .unwrap()
+    }
+
+    fn video(p: &Project) -> &Video {
+        match &p.layers[0].kind {
+            LayerKind::Video(v) => v,
+            other => panic!("not a video: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn video_layers_round_trip_with_defaults_left_out() {
+        let p = video_project(r#","loop":true,"frame_blend":"mix","volume":0,"fps":12"#);
+        let v = video(&p);
+        assert!(v.looped && !v.reverse && v.frame_blend == FrameBlend::Mix && v.volume == 0.0 && v.speed.is_none());
+        assert_eq!(p.layers[0].fps, Some(12.0));
+        let text = p.to_json();
+        assert!(text.contains("\"loop\": true") && !text.contains("reverse") && !text.contains("speed"), "{text}");
+        let plain = video_project("");
+        assert_eq!(video(&plain).volume, 1.0);
+        assert!(!plain.to_json().contains("volume"));
+    }
+
+    #[test]
+    fn animated_speed_integrates_to_the_analytic_value() {
+        // Speed ramps linearly from 1 at t = 1 (the layer's in) to 3 at t = 3, then holds:
+        // source(t) = (t - 1) + (t - 1)^2 / 2 up to t = 3 (= 4), then 4 + 3 (t - 3).
+        let p = video_project(r#","speed":{"keys":[{"t":1,"v":1},{"t":3,"v":3}]}"#);
+        let e = Evaluator::new(&p);
+        let (l, v) = (&p.layers[0], video(&p));
+        for t in [1.0, 1.5, 2.0, 2.7, 3.0, 4.25, 7.0] {
+            let u: f64 = t - 1.0;
+            let want = if t <= 3.0 { u + u * u / 2.0 } else { 4.0 + 3.0 * (t - 3.0) };
+            let got = e.source_seconds(l, v, t);
+            assert!((got - want).abs() < 1e-9, "t={t}: {got} vs {want}");
+        }
+        // A constant speed is exact, and a remap overrides it.
+        let p = video_project(r#","speed":0.5"#);
+        assert!((Evaluator::new(&p).source_seconds(&p.layers[0], video(&p), 3.0) - 1.0).abs() < 1e-12);
+        let p = video_project(r#","speed":4,"time_remap":{"keys":[{"t":1,"v":2},{"t":3,"v":0}]}"#);
+        assert!((Evaluator::new(&p).source_seconds(&p.layers[0], video(&p), 2.5) - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn hold_keys_land_the_same_way_on_every_frame() {
+        // Speed 1, then 0.5 from a hold key between two samples: past it every frame
+        // advances the source by exactly half a frame.
+        let p = video_project(r#","speed":{"keys":[{"t":1,"v":1,"ease":"hold"},{"t":2.01,"v":0.5}]}"#);
+        let e = Evaluator::new(&p);
+        let at = |k: u32| e.source_seconds(&p.layers[0], video(&p), 1.0 + k as f64 / 24.0);
+        for k in 30..90 {
+            assert!((at(k) - at(k - 1) - 0.5 / 24.0).abs() < 1e-9, "k={k}: {}", at(k) - at(k - 1));
+        }
+        assert_eq!(integrate_speed(f64::NAN, 48.0, |_| 1.0), 0.0);
+        assert!(integrate_speed(1e12, 48.0, |_| 1.0).is_finite());
+    }
+
+    #[test]
+    fn source_frames_hold_loop_reverse_and_mix() {
+        let clip = ClipInfo { fps: 24.0, frames: 48 };
+        let frame = |json: &str, t: f64| {
+            let p = video_project(json);
+            Evaluator::new(&p).source_frame(&p.layers[0], video(&p), t, clip).unwrap()
+        };
+        let at = |n: u64| 1.0 + n as f64 / 24.0;
+        assert_eq!(frame("", at(5)).frame, 5);
+        assert_eq!(frame("", at(100)).frame, 47, "holds the last frame");
+        assert_eq!(frame(r#","loop":true"#, at(50)).frame, 2);
+        assert_eq!(frame(r#","reverse":true"#, at(0)).frame, 47);
+        assert_eq!(frame(r#","reverse":true"#, at(47)).frame, 0);
+        assert_eq!(frame(r#","reverse":true,"loop":true"#, at(48)).frame, 47);
+        assert_eq!(frame(r#","speed":2"#, at(7)).frame, 14);
+        let half = frame(r#","speed":0.5,"frame_blend":"mix""#, at(7));
+        assert!((half.frame, half.next) == (3, 4) && (half.weight - 0.5).abs() < 1e-9, "{half:?}");
+        assert_eq!(frame(r#","speed":0.5"#, at(7)), SourceFrame { frame: 3, next: 3, weight: 0.0 });
+        // Mixing past the last frame of a loop crosses into the first.
+        let wrap = frame(r#","speed":0.5,"loop":true,"frame_blend":"mix""#, at(95));
+        assert_eq!((wrap.frame, wrap.next), (47, 0));
+        let plain = video_project("");
+        assert_eq!(Evaluator::new(&plain).source_frame(&plain.layers[0], video(&plain), 1.0, ClipInfo { fps: 24.0, frames: 0 }), None);
+    }
+
+    #[test]
+    fn layer_fps_posterizes_time_from_the_layer_in() {
+        let p = video_project(r#","fps":12"#);
+        let e = Evaluator::new(&p);
+        let l = &p.layers[0];
+        // Steps of 1/12 s from t = 1: frames 0 and 1 of the project share a step.
+        let at = |n: u64| e.layer_time(l, 1.0 + n as f64 / 24.0);
+        assert!((at(0) - 1.0).abs() < 1e-12 && (at(1) - 1.0).abs() < 1e-12);
+        assert!((at(2) - (1.0 + 1.0 / 12.0)).abs() < 1e-12 && (at(3) - at(2)).abs() < 1e-12);
+        let clip = ClipInfo { fps: 24.0, frames: 48 };
+        let frames: Vec<u64> = (0..6).map(|n| e.source_frame(l, video(&p), 1.0 + n as f64 / 24.0, clip).unwrap().frame).collect();
+        assert_eq!(frames, [0, 0, 2, 2, 4, 4]);
+        // Without fps the time is untouched.
+        let plain = video_project("");
+        assert_eq!(Evaluator::new(&plain).layer_time(&plain.layers[0], 1.37), 1.37);
+    }
+
+    #[test]
+    fn trim_keeps_the_frames_between_in_and_out() {
+        let slot = |trim: &str| -> Slot { serde_json::from_str(&format!(r#"{{"path":"a.mp4","trim":{trim}}}"#)).unwrap() };
+        assert_eq!(slot("[0.5, 1.5]").trim_frames(24.0, 48), (12, 24));
+        assert_eq!(slot("[0, 100]").trim_frames(24.0, 48), (0, 48));
+        assert_eq!(slot("[5, 6]").trim_frames(24.0, 48), (47, 1));
+        assert_eq!(Slot::default().trim_frames(24.0, 48), (0, 48));
     }
 }
