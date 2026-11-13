@@ -10,11 +10,17 @@
 //! the clip (file, size) and the frame index, so going back a little, motion
 //! blur samples and frame blending find their frames there.
 //!
+//! Between two source frames, [`Videos::picture`] cross-fades them
+//! (`frame_blend: mix`) or warps both along their optical flow
+//! (`frame_blend: flow`, see `flow.rs`); flow fields are cached per frame
+//! pair, so the in-betweens of one pair share one estimate.
+//!
 //! None of this changes what a frame looks like: the picture of source frame
 //! `n` is the same however it was reached.
 
-use crate::assets;
+use crate::{assets, flow};
 use anyhow::{anyhow, bail, Context, Result};
+use edits_core::{FrameBlend, SourceFrame};
 use image::RgbaImage;
 use std::collections::HashMap;
 use std::io::Read;
@@ -26,6 +32,8 @@ use std::sync::{Arc, OnceLock};
 const MAX_SKIP_SECONDS: f64 = 2.0;
 /// Default byte budget of the frame cache; `EDITS_VIDEO_CACHE_MB` changes it.
 const DEFAULT_CACHE_MB: usize = 512;
+/// Flow fields kept (each about 8 MB at 1080p: per-pixel vectors at 960 x 540, both ways).
+const FLOW_CACHE: usize = 8;
 
 const INSTALL_HINT: &str = "install ffmpeg (it brings ffprobe), e.g. `apt install ffmpeg` or `brew install ffmpeg`, or point EDITS_FFMPEG and EDITS_FFPROBE at the binaries";
 
@@ -205,6 +213,8 @@ pub struct VideoStats {
     pub frames_decoded: u64,
     /// Frames served from the cache.
     pub cache_hits: u64,
+    /// Optical flow fields estimated (`frame_blend: flow`): one per frame pair not in the flow cache.
+    pub flows_estimated: u64,
 }
 
 /// Decoders and the frame cache, shared by every clip of every project.
@@ -214,6 +224,8 @@ pub(crate) struct Videos {
     cache: HashMap<(String, u64), (Arc<RgbaImage>, u64)>,
     /// Frames past the end of a clip whose frame count was too high: clip key -> frames really there.
     short: HashMap<String, u64>,
+    /// (clip key, source frame, next source frame) -> flow, least recently used first.
+    flows: Vec<((String, u64, u64), Arc<flow::Flow>)>,
     bytes: usize,
     budget: usize,
     clock: u64,
@@ -223,7 +235,7 @@ pub(crate) struct Videos {
 impl Default for Videos {
     fn default() -> Self {
         let mb = std::env::var("EDITS_VIDEO_CACHE_MB").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(DEFAULT_CACHE_MB);
-        Self { decoders: HashMap::new(), cache: HashMap::new(), short: HashMap::new(), bytes: 0, budget: mb.max(1) << 20, clock: 0, stats: VideoStats::default() }
+        Self { decoders: HashMap::new(), cache: HashMap::new(), short: HashMap::new(), flows: Vec::new(), bytes: 0, budget: mb.max(1) << 20, clock: 0, stats: VideoStats::default() }
     }
 }
 
@@ -231,6 +243,7 @@ impl Videos {
     /// Stop the decoders and drop the cached frames of clips not in `keep`.
     pub fn retain(&mut self, keep: &[&str]) {
         self.decoders.retain(|k, _| keep.contains(&k.as_str()));
+        self.flows.retain(|((k, ..), _)| keep.contains(&k.as_str()));
         let before = self.cache.len();
         self.cache.retain(|(k, _), _| keep.contains(&k.as_str()));
         if self.cache.len() != before {
@@ -301,22 +314,73 @@ impl Videos {
     }
 }
 
-/// Cross-fade two premultiplied sRGB pictures of the same size: `b` by
-/// `weight`, in linear light.
-pub(crate) fn mix(a: &RgbaImage, b: &RgbaImage, weight: f64) -> RgbaImage {
+impl Videos {
+    /// The picture a video layer shows for source frames `at`: the frame, or
+    /// between two frames their cross-fade (`mix`) or flow in-between
+    /// (`flow`). Two identical frames (a still) give the cross-fade either way.
+    pub fn picture(&mut self, clip: &Clip, at: SourceFrame, blend: FrameBlend) -> Result<Arc<RgbaImage>> {
+        let a = self.frame(clip, at.frame)?;
+        if !(at.weight > 0.0 && at.next != at.frame) {
+            return Ok(a);
+        }
+        let b = self.frame(clip, at.next)?;
+        if blend == FrameBlend::Flow && a.as_raw() != b.as_raw() {
+            let key = (clip.key.clone(), clip.first + at.frame, clip.first + at.next);
+            let field = match self.flows.iter().position(|(k, _)| *k == key) {
+                Some(i) => {
+                    let entry = self.flows.remove(i);
+                    let field = entry.1.clone();
+                    self.flows.push(entry);
+                    field
+                }
+                None => {
+                    let field = Arc::new(flow::estimate(&a, &b));
+                    self.stats.flows_estimated += 1;
+                    self.flows.push((key, field.clone()));
+                    if self.flows.len() > FLOW_CACHE {
+                        self.flows.remove(0);
+                    }
+                    field
+                }
+            };
+            return Ok(Arc::new(flow::interpolate(&a, &b, &field, at.weight)));
+        }
+        Ok(Arc::new(mix(&a, &b, at.weight)))
+    }
+}
+
+/// Lookup tables between premultiplied sRGB bytes and linear light: byte ->
+/// linear, and linear (scaled by the table's length - 1) -> byte.
+pub(crate) fn linear_luts() -> (&'static [f32], &'static [u8]) {
     static DECODE: OnceLock<Vec<f32>> = OnceLock::new();
     static ENCODE: OnceLock<Vec<u8>> = OnceLock::new();
     const STEPS: usize = 1 << 16;
     let decode = DECODE.get_or_init(|| (0..256).map(|i| assets::srgb_to_linear(i as f32 / 255.0)).collect());
     let encode = ENCODE.get_or_init(|| (0..STEPS).map(|i| (assets::linear_to_srgb(i as f32 / (STEPS - 1) as f32) * 255.0).round() as u8).collect());
+    (decode, encode)
+}
+
+/// `v.round()` for a `v` that is not negative, without the call to the C
+/// library's `roundf` (half away from zero; `v - trunc(v)` is exact).
+#[inline]
+pub(crate) fn round(v: f32) -> usize {
+    let whole = v as usize;
+    whole + usize::from(v - whole as f32 >= 0.5)
+}
+
+/// Cross-fade two premultiplied sRGB pictures of the same size: `b` by
+/// `weight`, in linear light.
+pub(crate) fn mix(a: &RgbaImage, b: &RgbaImage, weight: f64) -> RgbaImage {
+    let (decode, encode) = linear_luts();
+    let steps = (encode.len() - 1) as f32;
     let w = weight.clamp(0.0, 1.0) as f32;
     let mut out = a.clone();
     for (o, q) in out.as_mut().chunks_exact_mut(4).zip(b.as_raw().chunks_exact(4)) {
         for c in 0..3 {
             let v = decode[o[c] as usize] * (1.0 - w) + decode[q[c] as usize] * w;
-            o[c] = encode[(v.clamp(0.0, 1.0) * (STEPS - 1) as f32).round() as usize];
+            o[c] = encode[round(v.clamp(0.0, 1.0) * steps)];
         }
-        o[3] = (o[3] as f32 * (1.0 - w) + q[3] as f32 * w).round() as u8;
+        o[3] = round(o[3] as f32 * (1.0 - w) + q[3] as f32 * w) as u8;
     }
     out
 }

@@ -226,13 +226,97 @@ shaders are compiled on first use.
   frame anchored at the layer's `in`, so a `hold` key lands the same way on
   every frame), then `loop` or hold, then `reverse`. `frame_blend: mix` crosses
   the frame with the next by the fraction between them, on the CPU in linear
-  light. A layer's signature includes the source frames, so motion blur
+  light; `frame_blend: flow` makes the in-between from the optical flow of the
+  two frames (below). A layer's signature includes the source frames, so motion blur
   instants that show the same frame share a picture.
 
 None of this changes what a frame looks like: the picture of source frame
 `n` is the same whichever way it was reached, so a frame stays a pure
 function of the project and the frame number. `Renderer::video_stats()`
-counts decoders started, frames decoded and cache hits.
+counts decoders started, frames decoded, cache hits and flow fields estimated.
+
+### Flow frame blending
+
+`src/flow.rs` makes the picture between source frames `a` and `b` at a
+fraction `w` for `frame_blend: flow`. It is written after EffectCraft's
+block flow and Pixel Motion (`raster/flow.rs`, `fx_time.wgsl::ftm_motion`;
+see `THIRD_PARTY.md`), with flow both ways and occlusion handling added.
+
+1. **Flow level.** Luma (plus a quarter of alpha) of both frames, box-halved
+   until the longer side is at most 1024 (1080p is estimated at 960 x 540,
+   vectors doubled for the frame).
+2. **Tile vectors, coarse to fine.** A box pyramid of up to 6 levels down to a
+   shorter side of 16. Tiles of 8 pixels, each compared over a 12-pixel window
+   by mean absolute difference: every vector within 4 pixels at the coarsest
+   level; at the others every vector within 2 (so a small object the coarse
+   levels blurred away is still found) and 3x3 around the doubled coarser
+   vectors of the tile and its 4 neighbours and around the tile on the left.
+   A 3x3 median after each level; on the finest, a parabola through the
+   squared differences at the vector and either side gives sub-pixel vectors
+   (an exact match stays whole).
+3. **Per-pixel vectors.** Each pixel picks, from the bilinear tile vector and
+   the vectors of the 3x3 tiles around it, the one whose 5x5 neighbourhood
+   matches best, so motion edges follow the picture rather than the tile grid.
+   Where the tiles agree (most of a frame) nothing is compared.
+   Steps 2 and 3 run from `a` to `b` and from `b` to `a`.
+4. **Motion at the instant.** For each pixel of the in-between, candidate
+   motions are the forward vector there, the backward one reversed, and each
+   followed once into the two frames. A motion `v` is *confirmed by `a`* when
+   the pixel it comes from (`p - w v` in `a`) has forward vector `v`, and *by
+   `b`* when the pixel it goes to (`p + (1 - w) v` in `b`) has backward vector
+   `-v` (within a pixel plus 5 % of the length, falling off to nothing at
+   twice that). Both together are the forward-backward consistency check
+   along the path. The best confirmed candidate wins.
+5. **Occlusion and fallback.** Confirmed by one frame only, a pixel is
+   uncovered or about to be covered: it is taken from that frame alone,
+   provided the other frame has something else there that moves consistently
+   (the occluder). Otherwise (a cut, a flash, a wrong vector) neither frame is
+   trusted and the pixel is the plain cross-fade, `mix`. Where both frames
+   confirm the motion but the two warped samples differ by more than 0.15 in
+   linear light, it also leans to `mix` (fully at 0.3).
+6. **Warp and blend.** `a` is sampled at `p - w v` and `b` at `p + (1 - w) v`,
+   bicubic (Catmull-Rom; plain bilinear visibly softens fine detail at
+   half-pixel offsets) in linear light, and cross-faded by `w` (by the
+   confirmation weights where only one frame confirms). The motion field is
+   computed at the flow level and read bilinearly at the frame size.
+
+Why this design: it is deterministic and the same on every adapter (the
+pixels are a function of the two frames and `w` alone, computed in `f32` on
+the CPU, split by rows over at most 8 threads with each row computed alone;
+a test checks 1, 3 and 8 threads give the same bytes). It slots into the
+existing CPU path of `mix` (decoded frames are on the CPU; the result is
+uploaded with mip levels like any frame) and needs no GPU readback. Block
+matching with per-pixel refinement copes with the large motions and flat
+colour areas of anime footage better than gradient-based Lucas-Kanade, which
+needs texture everywhere and many iterations. A field of zero vectors gives
+exactly the `mix` picture, and two identical frames skip the estimate.
+
+**Caching.** Flow fields are kept per (clip, frame, next frame) in a
+least-recently-used list of 8 (about 8 MB each at 1080p), so the three
+in-betweens of a pair at quarter speed share one estimate; the in-between
+picture itself is cached like any video frame on the GPU.
+
+**Cost** (release build, 1920 x 1080, a 2.1 GHz Xeon shared with other
+builds; `cargo test --release -p edits-render --lib flow_cost -- --ignored
+--nocapture`):
+
+| | 1 thread | 4 threads |
+| --- | --- | --- |
+| Estimate (once per frame pair, both ways) | 106 ms | 44 ms |
+| In-between (per output frame) | 260 to 340 ms | 87 to 106 ms |
+| `mix`, for comparison | 35 ms | 35 ms |
+
+At quarter speed a 1080p frame costs about 0.1 s more with `flow` than with
+`mix` on 4 cores. Clips decode no larger than the project, so a 720p project
+costs less than half that.
+
+**Limits.** Large areas are followed up to about 150 pixels of the flow
+level between two frames (300 at 1080p). Something small is followed only as
+far as the coarser levels still see it (in the tests, a 40-pixel textured
+square moving 6 pixels over a still background is); what is not followed
+falls back to `mix`. Motion edges are exact to about one pixel of the flow
+level (two at 1080p). Lighting changes, transparency and motion blur in the
+source are cross-faded, not modelled.
 
 ## Text layers
 

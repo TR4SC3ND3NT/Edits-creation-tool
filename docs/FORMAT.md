@@ -369,7 +369,7 @@ must be on `PATH` (or named by `EDITS_FFMPEG` and `EDITS_FFPROBE`).
 | `time_remap` | none | Seconds of the trimmed clip to show, as a function of project time. Overrides `speed`. |
 | `loop` | false | Start again after the last frame. Without it the last frame holds. |
 | `reverse` | false | Play backwards: the layer starts on the last frame. |
-| `frame_blend` | `none` | `mix` cross-fades the two neighbouring source frames (in linear light) by the fraction between them, for smoother slow motion. `none` shows the frame at or before the instant. |
+| `frame_blend` | `none` | What shows between two source frames (slow motion). `none` shows the frame at or before the instant. `mix` cross-fades the two neighbouring frames (in linear light) by the fraction between them: smooth, but a moving edge shows twice. `flow` estimates the optical flow between the two frames and moves both to the instant between them before the cross-fade, so a moving edge shows once, in between; where the motion cannot be followed (a cut, a flash, something too fast or too small) it falls back to `mix`. A still clip looks the same with either. `flow` costs about 0.05 s per frame pair and 0.1 s per in-between at 1080p on 4 CPU cores; see [RENDERING.md](RENDERING.md#flow-frame-blending). |
 | `volume` | 1 | Gain of the clip's own sound in `edits render`; 0 mutes it. Mixed only while the speed is constant and there is no `time_remap` (a constant speed keeps the pitch). |
 
 Source time starts at the layer's `in`: at `in` the layer shows the first

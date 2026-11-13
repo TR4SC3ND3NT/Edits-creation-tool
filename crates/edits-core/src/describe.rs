@@ -54,7 +54,7 @@ pub fn describe(p: &Project) -> String {
                 } else if let Some(speed) = &v.speed {
                     parts.push(format!("speed {}", prop_summary(speed).unwrap_or_else(|| const_text(speed))));
                 }
-                for (on, word) in [(v.looped, "loop"), (v.reverse, "reverse"), (v.frame_blend == FrameBlend::Mix, "mix")] {
+                for (on, word) in [(v.looped, "loop"), (v.reverse, "reverse"), (v.frame_blend == FrameBlend::Mix, "mix"), (v.frame_blend == FrameBlend::Flow, "flow")] {
                     if on {
                         parts.push(word.to_string());
                     }
@@ -243,6 +243,8 @@ mod tests {
         let d = describe(&p);
         assert!(d.contains("op: op.mp4 [Cover] trim 1.5..4 s"), "{d}");
         assert!(d.contains("video op speed 0→1, 2→0.25 loop mix muted fps=12"), "{d}");
+        let flow = Project::from_json(&serde_json::to_string(&p).unwrap().replace(r#""frame_blend":"mix""#, r#""frame_blend":"flow""#)).unwrap();
+        assert!(describe(&flow).contains("loop flow muted"), "{}", describe(&flow));
     }
 
     #[test]

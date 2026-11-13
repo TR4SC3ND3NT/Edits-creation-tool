@@ -19,6 +19,7 @@
 
 mod assets;
 mod compose;
+mod flow;
 mod fx;
 mod fxlib;
 mod geometry;
