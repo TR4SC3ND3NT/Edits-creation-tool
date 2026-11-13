@@ -114,6 +114,15 @@ every pass over the frame costs milliseconds.
   and repeat with shorter streaks, so three passes give 64 even samples.
 - **Textures are pooled** and bind groups cached, so a frame allocates
   nothing after the first.
+- **One-pass effects are compiled per option.** The built-in distort and
+  stylise effects (`src/fxlib/`, `shaders/fx/`) are each one full-frame pass
+  with the custom-effect contract (`shaders/fx/prelude.wgsl`: sixteen
+  parameters, `src`, `src_mirror`, an auxiliary picture and a 3D lookup
+  table). Their options are written into the source as constants, so every
+  combination in use is its own pipeline, compiled the first time it is
+  needed and cached; a CPU rasteriser never runs the branches of the other
+  options. Lookup tables are uploaded as RGBA16Float 3D textures and sampled
+  trilinearly; an effect without one gets a 2x2x2 identity.
 
 `edits bench project.json --passes` shows where a project's time goes.
 

@@ -83,13 +83,32 @@ range: `{ "kind": "loop", "from": 0, "period": 4 }`.
 
 ## Effects
 
-`{ "kind": "...", "params": { ... } }`, on a layer or on an adjustment layer.
-The registry in `crates/edits-core/src/effects.rs` lists every kind with its
-parameters and defaults; `edits effects` prints it.
+`{ "kind": "...", "params": { ... }, "options": { ... }, "source": "...", "enabled": true }`,
+on a layer or on an adjustment layer. Only `kind` is required.
 
-`exposure`, `fade`, `brightness_contrast`, `saturation`, `hue`, `invert`, `threshold`,
-`posterize`, `tint`, `gaussian_blur`, `directional_blur`, `zoom_blur`, `spin_blur`,
-`glow`, `vignette`, `rgb_split`, `transform2d`, `grain`, `custom` (a WGSL file in `source`).
+- `params`: numbers or vectors, each animatable like a transform value. Each
+  has a unit (`%h` percent of height, `pos` composition units, `deg`,
+  `color` linear RGB, ...) and may have a range the renderer clamps to.
+- `options`: strings naming a choice that cannot be animated, for example
+  `{ "shape": "hex" }` on `pixelate` or `{ "mode": "cmyk", "shape": "line" }`
+  on `halftone`. A missing option takes the first of its values.
+- `source`: a file the effect reads (a WGSL file for `custom`). Effects that
+  take none must not have one.
+
+The registry in `crates/edits-core/src/effects/` (one file per category)
+lists every kind with its parameters, units, ranges, options and defaults;
+`edits effects` prints it and `edits check` validates against it.
+
+colour: `exposure`, `fade`, `brightness_contrast`, `saturation`, `hue`, `invert`,
+`threshold`, `posterize`, `tint`, `vignette`, `grain`; blur: `gaussian_blur`,
+`directional_blur`, `zoom_blur`, `spin_blur`; light: `glow`; distort:
+`transform2d`, `twirl`, `bulge`, `kaleidoscope`; stylise: `rgb_split`,
+`chromatic_aberration`, `pixelate`, `halftone`; and `custom` (a WGSL file in `source`).
+
+```json
+{ "kind": "pixelate", "params": { "size": { "keys": [ { "t": 8, "v": 6, "ease": "out" }, { "t": 9, "v": 0 } ] } },
+  "options": { "shape": "hex" } }
+```
 
 ## Transitions
 

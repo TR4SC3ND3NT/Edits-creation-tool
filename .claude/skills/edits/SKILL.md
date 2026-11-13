@@ -62,7 +62,16 @@ A project is **slots + layers + keyframes + effects**.
   value until the next key. `decay` is the look of this genre: each frame
   covers `rate` of the remaining distance (a fast start that settles).
 - **Effects** are `{ "kind": "exposure", "params": { "stops": ... } }` in a
-  layer's `effects` list, applied in order. `edits effects` lists them all.
+  layer's `effects` list, applied in order. `edits effects` lists them all,
+  by category, with each parameter's unit (`%h` = percent of frame height,
+  `pos` = `[x, y]` composition units, `deg`, `color` = linear RGB) and range.
+  Some have `"options"` (choices that cannot be keyed), e.g.
+  `{ "kind": "pixelate", "params": { "size": 4 }, "options": { "shape": "hex" } }`;
+  `check` rejects an unknown option or value and lists the allowed ones.
+  Looks for this genre: `twirl` / `bulge` / `kaleidoscope` (key `angle`,
+  `amount` or `zoom` on a hit), `pixelate` (key `size` to 0 for a reveal),
+  `halftone` (`mode` mono/rgb/cmyk; manga print), `chromatic_aberration`
+  (radial lens fringe, zero in the middle).
 - **Transitions** sit on the incoming layer: `"transition": { "kind": "whip_pan", "duration": 0.5 }`
   mixes the picture beneath into this one over `duration` from its `in`
   (`edits transitions` lists 22). The outgoing layer must last until the end.
@@ -308,12 +317,13 @@ blur, tone hits, overlay, vignette) and replay it on other pictures.
    }
    ```
    Available: `src(uv)` (the picture so far), `src_mirror(uv)`, `fx.p0` to
-   `fx.p7` (your parameters), `fx.time` (seconds), `fx.beats`, `fx.frame`,
-   `fx.resolution`, `fx.inv_resolution`, `fx.aspect`.
+   `fx.p15` (your parameters), `fx.time` (seconds), `fx.beats`, `fx.frame`,
+   `fx.resolution`, `fx.inv_resolution`, `fx.aspect`, and helpers
+   `fx_to_comp(uv)` / `fx_to_uv(p)` (composition units), `fx_hash`, `fx_noise`.
 2. Add it to a layer's effects:
    `{ "kind": "custom", "source": "shaders/stripes.wgsl", "params": { "p0": 0.5, "p1": 40 } }`
    (MCP: `project_edit` with `{ "op": "set", "pointer": "/layers/@shot1/effects/-", "value": { ... } }`).
-   `p0` to `p7` can be keyframed like any parameter.
+   `p0` to `p15` can be keyframed like any parameter.
 3. Check it: `edits shader check shaders/stripes.wgsl` compiles it the way
    the renderer will, without a GPU, and points at the line and column of
    each problem (exit 1). With MCP, `effect_define {project, name, wgsl,

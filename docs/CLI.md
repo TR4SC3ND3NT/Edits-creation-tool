@@ -212,9 +212,26 @@ project with errors, listing them.
 edits effects [--json]
 ```
 
-The registry from `edits-core`: every effect kind with its parameters, their
-defaults and what they mean. `--json` gives
-`[{ "kind", "doc", "params": [{ "name", "default", "doc" }] }]`.
+The registry from `edits-core`: every effect kind by category with its
+parameters (default, unit, range, meaning), its options and where its maths
+comes from:
+
+```
+-- stylize --
+...
+pixelate: Mosaic: the picture in flat cells, each the colour at its centre.
+    size         default 2                %h 0..     Cell size, % of height (the ring width for polar).
+    center       default [0.0, 0.0]       pos        A point the grid is centred on, in composition units.
+    option shape square | hex | triangle | polar (default square): Cell shape; polar cells are rings cut into segments about `center`.
+    credit: GPUImage Pixellate and PolarPixellate, BSD-3-Clause; glfx.js hexagonalPixelate, MIT
+```
+
+`--json` gives `[{ "kind", "category", "doc", "params": [{ "name", "default",
+"unit", "range", "doc" }], "options": [{ "name", "values", "default", "doc" }],
+"source", "reads_time", "credit" }]`. `unit` is `""`, `"%h"`, `"deg"`,
+`"pos"`, `"color"`, `"x"`, `"count"`, `"stops"`, `"px1080"` or `"time"`;
+`range` is `[min, max]` with `null` for an open end, or `null`; `source` is
+`"none"` or `"shader"`.
 [EFFECTS.md](EFFECTS.md) has the details. The text ends with the names of the
 transitions, which are listed by [`edits transitions`](#transitions).
 

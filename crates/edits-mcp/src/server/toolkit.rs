@@ -128,9 +128,9 @@ pub struct EffectDefineArgs {
     pub project: String,
     /// Name of the effect: letters, digits, - and _. The shader is written to shaders/<name>.wgsl next to the project.
     pub name: String,
-    /// The WGSL source: must define fn effect(uv: vec2<f32>) -> vec4<f32>. src(uv) reads the picture (linear, premultiplied), fx.p0..fx.p7 are the parameters, fx.time / fx.beats / fx.frame / fx.aspect / fx.resolution the inputs.
+    /// The WGSL source: must define fn effect(uv: vec2<f32>) -> vec4<f32>. src(uv) reads the picture (linear, premultiplied), fx.p0..fx.p15 are the parameters, fx.time / fx.beats / fx.frame / fx.aspect / fx.resolution the inputs, fx_to_comp / fx_to_uv / fx_hash / fx_noise helpers.
     pub wgsl: String,
-    /// Values for p0..p7 (numbers, or keyframed values).
+    /// Values for p0..p15 (numbers, or keyframed values).
     pub params: Option<Map<String, Value>>,
     /// Add it to this layer's effects. Default: a new adjustment layer named after the effect, on top, so it applies to everything.
     pub layer: Option<String>,

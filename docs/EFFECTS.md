@@ -1,10 +1,13 @@
 # Effects
 
-An effect is `{ "kind": "...", "params": { ... } }` in a layer's `effects`
-list. On an `image`, `solid` or `cube` layer it changes that layer before it
-is blended; on an `adjustment` layer it changes everything beneath. Effects
-run in list order. `edits effects` prints this registry (`--json` for
-machines); `crates/edits-core/src/effects.rs` is the source of truth.
+An effect is `{ "kind": "...", "params": { ... }, "options": { ... } }` in a
+layer's `effects` list. On an `image`, `solid` or `cube` layer it changes that
+layer before it is blended; on an `adjustment` layer it changes everything
+beneath. Effects run in list order. `edits effects` prints this registry
+(`--json` for machines; the MCP tool `effects_list` shows the same);
+`crates/edits-core/src/effects/` is the source of truth, one file per
+category (`color.rs`, `blur.rs`, `light.rs`, `distort.rs`, `stylize.rs`,
+`time.rs`, `generate.rs`).
 
 ## Rules that hold for every effect
 
@@ -26,13 +29,33 @@ machines); `crates/edits-core/src/effects.rs` is the source of truth.
 - **A layer's effects see a frame-sized picture** of that layer, transparent
   where the layer is not. A blur spreads into the transparent part; a
   `vignette` or `zoom_blur` is centred on the frame, not on the layer.
+- **Every parameter has a unit and may have a range.** `edits effects --json`
+  gives each parameter's `unit`: `""` (a plain number), `"%h"` (percent of
+  height), `"deg"`, `"pos"` (`[x, y]` in composition units), `"color"`
+  (linear `[r, g, b]`), `"x"` (a factor), `"count"` (rounded to a whole
+  number), `"stops"`, `"px1080"` (pixels at 1080 high) or `"time"`; and its
+  `range` `[min, max]` (`null` for an open end). The renderer clamps a value
+  to its range, and `edits check` warns when a written value is outside it.
+  A `color` must have 3 numbers and a `pos` 2 (or one number for all):
+  anything else is an error.
+- **Options are choices that cannot be animated**, such as a pixelate's cell
+  shape: `"options": { "shape": "hex" }`. Each option has a fixed list of
+  values (the first is the default); `edits check` rejects an unknown option
+  or value and lists the allowed ones:
+  ```
+  error: layers[1:"fx"].effects[0].options.shape: "star" is not a value of pixelate's option "shape" (one of: square, hex, triangle, polar (default square))
+  ```
+- **Credits.** Effects whose maths was ported from another project say so in
+  their `credit` (`edits effects` prints it); see
+  [`THIRD_PARTY.md`](../THIRD_PARTY.md).
 - **Effects at zero strength cost nothing**: they are skipped (for example
   `exposure` at 0 stops, `saturation` at 1, `gaussian_blur` at radius 0).
   `"enabled": false` skips an effect whatever its values.
 - **Cost.** The colour effects (`exposure` to `tint`, `vignette`, `grain`) are
   cheap: neighbours in the list share one pass, and at the end of a layer's
   list they are folded into the blend. Each blur, `glow`, `rgb_split`,
-  `transform2d` and `custom` adds at least one pass over the frame.
+  `transform2d` and `custom` adds at least one pass over the frame; each
+  distort and stylise effect below (`twirl` to `halftone`) is exactly one.
 
 ## Colour
 
@@ -61,17 +84,37 @@ machines); `crates/edits-core/src/effects.rs` is the source of truth.
 | `glow` | `threshold` (0.7), `radius` (3), `intensity` (1), `color` ([1, 1, 1]) | Bloom. Keeps the light above `threshold` (linear luminance L: colour x max(L - threshold, 0) / L), blurs it with sigma `radius` % of height, multiplies by `intensity` x `color` and adds it back. Around a layer the halo carries its own transparency, so later effects and blend modes treat it as part of the layer. |
 | `rgb_split` | `amount` (0.5), `angle` (0) | Chromatic aberration: red is moved `amount` % of height against the direction `angle`, blue the same distance along it, green stays. |
 
-## Geometry
+## Distort
 
 | Kind | Parameters (default) | What it does |
 | --- | --- | --- |
 | `transform2d` | `scale` (1), `rotation` (0), `offset` ([0, 0]), `mirror` (1) | Scales the picture about the frame centre, turns it (degrees, clockwise) and moves it by `offset`. With `mirror` 1 the area this uncovers is filled with the picture mirrored at its edges; with 0 it is left transparent. On an adjustment layer this is a camera punch or shake applied to the finished image. |
+| `twirl` | `angle` (90), `radius` (30), `center` ([0, 0]) | Twists the picture about `center`. A point at distance d < `radius` (% of height) is turned clockwise by `angle` x (1 - d / radius)^2 degrees, so the centre turns most and the edge of the disc not at all; outside the disc nothing moves. Key `angle` from 0 for a twist-in. Skipped at angle 0. |
+| `bulge` | `amount` (0.5, -1..1), `radius` (25), `center` ([0, 0]), `taper` (0, 0..1) | A lens over a disc of `radius` % of height: inside it each pixel reads the picture at the distance d x (1 - amount x (1 - d^2)^(1 + 3 taper) / 2) from the centre (d in radii). `amount` 1 doubles the size at the centre, -1 pinches it to two thirds; `taper` makes the dome sharper. Outside the disc nothing moves. Skipped at amount 0. |
+| `kaleidoscope` | `segments` (6, 2..64), `center` ([0, 0]), `rotation` (0), `zoom` (1); option `mirror` = `on` / `off` | Folds the picture into `segments` wedges about `center`: every wedge shows the first one (from `rotation` degrees, clockwise), mirrored in turn with `on`, repeated with `off`. `zoom` magnifies the folded picture. The frame's edges are mirrored, so zooming out shows no smear. Always runs. |
+
+## Stylise
+
+| Kind | Parameters (default) | What it does |
+| --- | --- | --- |
+| `chromatic_aberration` | `amount` (1), `center` ([0, 0]), `samples` (8, 2..32) | Radial lens fringing. Each pixel averages `samples` points on the line through it from `center`, weighted by a spectrum from red (the point nearest the centre) through green to blue (the farthest), so the red picture is larger and the blue one smaller. The spread grows linearly with the distance from `center` and is `amount` % of height at the frame's corners (from the frame centre); at `center` nothing moves. Unlike `rgb_split`, it is zero in the middle and smooth. Skipped below a tenth of a pixel. |
+| `pixelate` | `size` (2), `center` ([0, 0]); option `shape` = `square` / `hex` / `triangle` / `polar` | Mosaic: flat cells `size` % of height across, each the colour of the picture at its centre, on a grid with a cell centred on `center`. `hex` are hexagons `size` wide, `triangle` equilateral triangles with sides of `size`, `polar` rings `size` wide about `center`, cut into segments about `size` long. Key `size` down to 0 for a de-pixelate reveal. Skipped at size 0. |
+| `halftone` | `size` (1.2), `angle` (45), `smoothing` (0.15, 0..1), `amount` (1, 0..1); option `mode` = `mono` / `rgb` / `cmyk`; option `shape` = `dot` / `line` / `square` | A print screen: a grid of cells `size` % of height apart turned to `angle` degrees, each holding a dot (or a line, or a square) whose area is the fraction of the cell the colour asks for, in linear light, so the picture's mean brightness is kept (within a few percent). The colour of a cell is the average of five points of it. `mono`: black ink on white by luminance. `rgb`: red, green and blue light on black, screens at `angle` - 30, `angle`, `angle` + 30. `cmyk`: cyan, magenta, yellow and black ink on white at `angle` - 30, `angle`, `angle` - 45, `angle` + 30 (15, 45, 0 and 75 by default). `smoothing` softens the dot edges; `amount` mixes with the original. Transparent parts stay transparent. Skipped at amount 0. |
+
+The built-in one-pass effects (the last three tables, except `transform2d`)
+are WGSL files in `crates/edits-render/src/shaders/fx/`, written against the
+same contract as a custom effect (below), with their options compiled in. To
+add one: a row in the category's file in `crates/edits-core/src/effects/`, a
+WGSL file, a packer in `crates/edits-render/src/fxlib/` (it turns the
+effect's values into `fx.p0` .. `fx.p15` and says when it changes nothing), a
+pixel test in `crates/edits-render/tests/effects.rs`, and a line here. Ported
+code keeps its licence header and gets an entry in `THIRD_PARTY.md`.
 
 ## Custom effects
 
 `{ "kind": "custom", "source": "shaders/mine.wgsl", "params": { "p0": 0.5 } }`
 runs your own WGSL fragment. `source` is relative to the project file.
-`params` are eight numbers `p0` to `p7` (default 0), animatable like any other.
+`params` are sixteen numbers `p0` to `p15` (default 0), animatable like any other.
 
 ### The contract
 
@@ -99,7 +142,12 @@ The renderer provides:
 | `fx.time` | `f32` | Project time in seconds. |
 | `fx.beats` | `f32` | Project time in beats (0 when the project has no `bpm`). |
 | `fx.frame` | `f32` | Output frame number, from 0. |
-| `fx.p0` ... `fx.p7` | `f32` | The effect's `params`. |
+| `fx.p0` ... `fx.p15` | `f32` | The effect's `params`. |
+| `fx_to_comp(uv)`, `fx_to_uv(p)` | `fn(vec2<f32>) -> vec2<f32>` | uv to composition units (height 1, origin at the centre, y down) and back, so positions and sizes can be written like a layer's. |
+| `fx_delta_uv(d)`, `fx_pixel()` | | A displacement in composition units as uv; one pixel in composition units. |
+| `fx_hash(x, y, z)`, `fx_hash2(p, seed)`, `fx_noise(p, seed)` | `-> f32` | Exact integer hash to 0..1; the hash of the cell `floor(p)`; smooth value noise in 0..1 with features one unit apart. |
+| `fx_luma(c)`, `fx_straight(c)` | | Rec. 709 luminance; premultiplied to straight colour. |
+| `fx_aux(uv)`, `fx_lut(c)` | | A second picture and a 3D lookup table, for effects that have them; for a custom effect they are opaque white and the identity. |
 | `src_texture`, `src_sampler`, `src_mirror_sampler` | texture and samplers | For calling `textureSample*` yourself. |
 
 Rules worth knowing:
@@ -115,8 +163,8 @@ Rules worth knowing:
   same frame renders the same way every time; derive any randomness from
   `uv`, `fx.frame` and your parameters.
 - **Names to leave alone**: `fx`, `src`, `src_mirror`, `src_texture`,
-  `src_sampler`, `src_mirror_sampler`, and anything starting with `edits_` or
-  `Edits`.
+  `src_sampler`, `src_mirror_sampler`, and anything starting with `fx_`,
+  `edits_` or `Edits`.
 - A custom effect is never skipped, whatever its parameters.
 
 ### Errors
@@ -212,7 +260,7 @@ A transition is not an effect in a layer's `effects` list: it is the layer's
 replaces the cut into the layer by a mix of two pictures over `duration`
 from the layer's `in`: the frame beneath the layer ("from") and the frame
 with the layer ("to"). See [FORMAT.md](FORMAT.md#transitions). The registry
-is `TRANSITIONS` in `crates/edits-core/src/effects.rs`; `edits transitions`
+is `TRANSITIONS` in `crates/edits-core/src/effects/mod.rs`; `edits transitions`
 prints it (`--json` for machines), `edits check` validates kinds and
 parameters against it, and the MCP `effects_list` lists it too. The preset
 `transition:<kind>` sets the field and overlaps the two layers around the

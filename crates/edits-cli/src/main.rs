@@ -375,7 +375,7 @@ fn list_effects(as_json: bool) {
             println!("    option {:<5} {} (default {}): {}", o.name, o.values.join(" | "), o.default(), o.doc);
         }
         if !e.credit.is_empty() {
-            println!("    from {}", e.credit);
+            println!("    credit: {}", e.credit);
         }
     }
     let kinds: Vec<&str> = effects::TRANSITIONS.iter().map(|t| t.kind).collect();

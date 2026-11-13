@@ -19,7 +19,7 @@ A Cargo workspace; every crate is under `crates/`.
 
 | Crate | Binary | Owns |
 | --- | --- | --- |
-| `edits-core` | | The project model (`model.rs`), keyframe and easing evaluation (`eval.rs`, `ease.rs`), **the effect registry** (`effects.rs`), validation (`check.rs`) and the text outline (`describe.rs`). No GPU or media dependencies; everything else depends on it. |
+| `edits-core` | | The project model (`model.rs`), keyframe and easing evaluation (`eval.rs`, `ease.rs`), **the effect registry** (`effects/`, one file per category), validation (`check.rs`) and the text outline (`describe.rs`). No GPU or media dependencies; everything else depends on it. |
 | `edits-render` | | The wgpu renderer: project + frame number -> RGBA image. Layers, blend modes, effects (`fx.rs`, `compose.rs`, `shaders/*.wgsl`), cubes, motion blur, custom WGSL effects. |
 | `edits-cli` | `edits` | The command line: `render`, `frame`, `sheet`, `bench`, `describe`, `check`, `effects`, `doctor`, `demo`; `analyze`, `draft`, `compare`, `probe` through the `edits-analyze` library (`analysis.rs`); `gui` and `mcp` start the sibling executables (`launch.rs`). Encoding through the system `ffmpeg` (`encode.rs`), contact sheets (`sheet.rs`), the generated demo (`demo.rs`). |
 | `edits-analyze` | `edits-analyze` | Reference analysis: `analyze` (recipe of a finished edit -> `reference_analysis.json`), `draft` (analysis -> project), `compare` (render vs analysis in signature space), `probe` (per-frame signatures). |
@@ -77,10 +77,12 @@ definitions; `docs/AGENTS.md` has the client setup.
 ## Conventions
 
 - **Effects are defined once**, in `edits-core::effects::EFFECTS` (kind,
-  parameters, defaults, docs). The renderer implements exactly that list,
-  `check` validates against it, `edits effects` and the MCP `effects_list`
-  print it, and `docs/EFFECTS.md` explains it. To add an effect: add it to the
-  registry, implement it in `edits-render`, add a pixel test in
+  category, parameters with units, ranges and defaults, options, docs,
+  credit; one file per category in `effects/`). The renderer implements
+  exactly that list, `check` validates against it, `edits effects` and the
+  MCP `effects_list` print it, and `docs/EFFECTS.md` explains it. To add an
+  effect: add it to the registry, implement it in `edits-render` (a one-pass
+  effect is a WGSL file in `shaders/fx/` plus a packer in `fxlib/`), add a pixel test in
   `crates/edits-render/tests/effects.rs`, document it in `docs/EFFECTS.md`.
   Never add an effect in the renderer alone.
 - **The project model is `edits-core::model`.** `docs/FORMAT.md` is its short

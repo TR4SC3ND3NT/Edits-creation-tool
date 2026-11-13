@@ -59,7 +59,9 @@ fn effects_at_zero_strength_change_nothing() {
         {"kind":"gaussian_blur","params":{"radius":0}}, {"kind":"directional_blur","params":{"length":0}},
         {"kind":"zoom_blur","params":{"strength":0}}, {"kind":"spin_blur","params":{"angle":0}},
         {"kind":"glow","params":{"intensity":0}}, {"kind":"vignette","params":{"amount":0}}, {"kind":"rgb_split","params":{"amount":0}},
-        {"kind":"transform2d"}, {"kind":"grain","params":{"amount":0}}"#;
+        {"kind":"transform2d"}, {"kind":"grain","params":{"amount":0}},
+        {"kind":"twirl","params":{"angle":0}}, {"kind":"bulge","params":{"amount":0}}, {"kind":"pixelate","params":{"size":0}},
+        {"kind":"halftone","params":{"amount":0}}, {"kind":"chromatic_aberration","params":{"amount":0}}"#;
     assert!(plain == render(r, &with(neutral), 0), "neutral effects changed the picture");
     // The same on an adjustment layer.
     let adjusted = project("", &format!(r#""slots":{{"a":{{"path":"{q}"}}}},"layers":[{{"id":"a","kind":"image","slot":"a","transform":{{"scale":0.8}}}},{{"id":"fx","kind":"adjustment","effects":[{neutral}]}}]"#));
@@ -95,6 +97,12 @@ fn every_registered_effect_renders_and_changes_the_picture() {
             "transform2d" => r#"{"scale":1.3,"rotation":10}"#,
             "grain" => r#"{"amount":0.3}"#,
             "custom" => r#"{"p0":1}"#,
+            "twirl" => r#"{"angle":120}"#,
+            "bulge" => r#"{"amount":0.8}"#,
+            "kaleidoscope" => r#"{"segments":5}"#,
+            "pixelate" => r#"{"size":10}"#,
+            "halftone" => r#"{"size":8}"#,
+            "chromatic_aberration" => r#"{"amount":10}"#,
             other => panic!("the registry has an effect this test does not cover: {other}"),
         };
         let source = if spec.kind == "custom" { r#","source":"registry.wgsl""# } else { "" };
@@ -569,4 +577,244 @@ fn extreme_values_render_without_errors() {
     let err = r.render_frame(0, 2000.0).unwrap_err().to_string();
     assert!(err.contains("too large"), "{err}");
     assert_eq!(r.render_frame(0, 1.0).unwrap().dimensions(), (64, 64));
+}
+
+// ---- built-in one-pass effects (fxlib) -----------------------------------------
+
+/// A `w` x `h` project (seconds, 10 fps) showing the picture `slot_file` full
+/// frame, with `effects` on it.
+fn picture(w: u32, h: u32, file: &str, effects: &str) -> Project {
+    let text = format!(
+        r#"{{"format":"edits.project/1","settings":{{"width":{w},"height":{h},"fps":10,"duration":1}},
+            "slots":{{"a":{{"path":"{file}"}}}},"layers":[{{"id":"a","kind":"image","slot":"a","effects":[{effects}]}}]}}"#
+    );
+    Project::from_json(&text).unwrap()
+}
+
+/// Four sectors about the centre: top red, right green, bottom blue, left yellow.
+fn sectors(name: &str) -> String {
+    let img = RgbaImage::from_fn(64, 64, |x, y| {
+        let (dx, dy) = (x as f64 + 0.5 - 32.0, y as f64 + 0.5 - 32.0);
+        let c = if dy.abs() > dx.abs() {
+            if dy < 0.0 { [255, 0, 0] } else { [0, 0, 255] }
+        } else if dx > 0.0 {
+            [0, 255, 0]
+        } else {
+            [255, 255, 0]
+        };
+        image::Rgba([c[0], c[1], c[2], 255])
+    });
+    save(name, &img)
+}
+
+/// A smooth colour picture: red across, green down, blue the other way.
+fn gradient(name: &str, size: u32) -> String {
+    let img = RgbaImage::from_fn(size, size, |x, y| {
+        let (u, v) = (x as f64 / (size - 1) as f64, y as f64 / (size - 1) as f64);
+        image::Rgba([(255.0 * u) as u8, (255.0 * v) as u8, (255.0 * (1.0 - 0.5 * (u + v))) as u8, 255])
+    });
+    save(name, &img)
+}
+
+/// Mean linear value of each channel over an `n` x `n` grid of blocks.
+fn blocks(img: &RgbaImage, n: u32) -> Vec<[f64; 3]> {
+    let (bw, bh) = (img.width() / n, img.height() / n);
+    let mut out = Vec::new();
+    for by in 0..n {
+        for bx in 0..n {
+            let mut sum = [0.0; 3];
+            for y in by * bh..(by + 1) * bh {
+                for x in bx * bw..(bx + 1) * bw {
+                    let p = img.get_pixel(x, y).0;
+                    for c in 0..3 {
+                        sum[c] += to_linear(p[c] as f64 / 255.0);
+                    }
+                }
+            }
+            out.push(sum.map(|v| v / (bw * bh) as f64));
+        }
+    }
+    out
+}
+
+fn mean_luminance(img: &RgbaImage) -> f64 {
+    let b = blocks(img, 1)[0];
+    0.2126 * b[0] + 0.7152 * b[1] + 0.0722 * b[2]
+}
+
+#[test]
+fn twirl_turns_inside_its_radius_and_leaves_the_rest() {
+    gpu!(r);
+    let pic = sectors("sectors.png");
+    let plain = render(r, &picture(64, 64, &pic, ""), 0);
+    // Radius 40% = 25.6 px. A pixel 12.5 px right of the centre turns by
+    // 360 x (1 - 12.5/25.6)^2, about 94 degrees: it shows what was above the centre.
+    let img = render(r, &picture(64, 64, &pic, r#"{"kind":"twirl","params":{"angle":360,"radius":40}}"#), 0);
+    assert_px(&plain, 44, 32, [0, 255, 0], 0);
+    assert_px(&img, 44, 32, [255, 0, 0], 8);
+    // Outside the radius nothing changes at all.
+    for (x, y) in (0..64).flat_map(|y| (0..64).map(move |x| (x, y))) {
+        let d = ((x as f64 + 0.5 - 32.0).powi(2) + (y as f64 + 0.5 - 32.0).powi(2)).sqrt();
+        if d > 26.5 {
+            assert_eq!(img.get_pixel(x, y), plain.get_pixel(x, y), "({x}, {y}) is outside the radius");
+        }
+    }
+    // The centre maps to itself: on a gradient, a twirl centred on pixel
+    // (44, 40) turns everything around it but keeps that pixel.
+    let pic = gradient("gradient64.png", 64);
+    let plain = render(r, &picture(64, 64, &pic, ""), 0);
+    let img = render(r, &picture(64, 64, &pic, r#"{"kind":"twirl","params":{"angle":720,"radius":15,"center":[0.1953125,0.1328125]}}"#), 0);
+    assert_px(&img, 44, 40, px(&plain, 44, 40), 1);
+    assert!(px(&img, 47, 40) != px(&plain, 47, 40));
+}
+
+#[test]
+fn bulge_magnifies_and_pinches_a_disc() {
+    gpu!(r);
+    let wide = |img: &RgbaImage| (0..64).filter(|x| img.get_pixel(*x, 32).0[0] > 128).count();
+    let plain = render(r, &boxed([0.125, 0.125], [0.0, 0.0], ""), 0);
+    let bulged = render(r, &boxed([0.125, 0.125], [0.0, 0.0], r#"{"kind":"bulge","params":{"amount":1,"radius":40}}"#), 0);
+    let pinched = render(r, &boxed([0.125, 0.125], [0.0, 0.0], r#"{"kind":"bulge","params":{"amount":-1,"radius":40}}"#), 0);
+    // Amount 1 doubles the size at the centre; -1 shrinks it to two thirds.
+    assert_eq!(wide(&plain), 8);
+    assert!((14..=17).contains(&wide(&bulged)), "bulged {}", wide(&bulged));
+    assert!((4..=6).contains(&wide(&pinched)), "pinched {}", wide(&pinched));
+    // A box outside the radius is untouched.
+    let far = render(r, &boxed([0.1, 0.1], [0.4, 0.4], ""), 0);
+    assert!(far == render(r, &boxed([0.1, 0.1], [0.4, 0.4], r#"{"kind":"bulge","params":{"amount":1,"radius":30}}"#), 0));
+}
+
+#[test]
+fn kaleidoscope_is_symmetric() {
+    gpu!(r);
+    let pic = gradient("gradient64.png", 64);
+    let img = render(r, &picture(64, 64, &pic, r#"{"kind":"kaleidoscope","params":{"segments":4}}"#), 0);
+    let mut worst = (0, 0);
+    for y in 0..64u32 {
+        for x in 0..64u32 {
+            let a = img.get_pixel(x, y).0;
+            // Mirrored about the horizontal line through the centre, and a quarter turn.
+            for b in [img.get_pixel(x, 63 - y).0, img.get_pixel(63 - y, x).0] {
+                let d = (0..3).map(|c| (a[c] as i32 - b[c] as i32).abs()).max().unwrap();
+                worst = worst.max((d, 0));
+            }
+        }
+    }
+    assert!(worst.0 <= 3, "largest difference between symmetric pixels: {}", worst.0);
+    // Without mirroring the wedges are copies, so it is no longer symmetric about the axis.
+    let copies = render(r, &picture(64, 64, &pic, r#"{"kind":"kaleidoscope","params":{"segments":4},"options":{"mirror":"off"}}"#), 0);
+    assert!(copies != img);
+}
+
+#[test]
+fn pixelate_cells_are_uniform() {
+    gpu!(r);
+    let pic = gradient("gradient64.png", 64);
+    // Cells of 12.5% = 8 px, one of them centred on the frame's centre:
+    // cells span 4..12, 12..20, ... in both directions.
+    let img = render(r, &picture(64, 64, &pic, r#"{"kind":"pixelate","params":{"size":12.5}}"#), 0);
+    for cy in 0..7 {
+        for cx in 0..7 {
+            let (x0, y0) = (4 + 8 * cx, 4 + 8 * cy);
+            let first = img.get_pixel(x0, y0);
+            for y in y0..y0 + 8 {
+                for x in x0..x0 + 8 {
+                    assert_eq!(img.get_pixel(x, y), first, "cell at ({x0}, {y0}) is not uniform at ({x}, {y})");
+                }
+            }
+        }
+    }
+    // Its colour is the picture's at the cell centre.
+    let plain = render(r, &picture(64, 64, &pic, ""), 0);
+    let (p, q) = (img.get_pixel(20, 20).0, plain.get_pixel(23, 23).0);
+    assert!((0..3).all(|c| (p[c] as i32 - (q[c] as i32 + plain.get_pixel(24, 24).0[c] as i32) / 2).abs() <= 3), "{p:?} vs {q:?}");
+    // Every shape is piecewise flat: few distinct colours.
+    for shape in ["square", "hex", "triangle", "polar"] {
+        let img = render(r, &picture(64, 64, &pic, &format!(r#"{{"kind":"pixelate","params":{{"size":20}},"options":{{"shape":"{shape}"}}}}"#)), 0);
+        let mut colours: Vec<[u8; 4]> = img.pixels().map(|p| p.0).collect();
+        colours.sort_unstable();
+        colours.dedup();
+        assert!(colours.len() < 100, "{shape}: {} colours", colours.len());
+        assert!(img != plain, "{shape}");
+    }
+}
+
+#[test]
+fn halftone_keeps_the_mean_luminance() {
+    gpu!(r);
+    let pic = gradient("gradient128.png", 128);
+    let plain = mean_luminance(&render(r, &picture(128, 128, &pic, ""), 0));
+    for (mode, shape) in [("mono", "dot"), ("mono", "line"), ("mono", "square"), ("rgb", "dot"), ("cmyk", "dot")] {
+        let fx = format!(r#"{{"kind":"halftone","params":{{"size":6}},"options":{{"mode":"{mode}","shape":"{shape}"}}}}"#);
+        let img = render(r, &picture(128, 128, &pic, &fx), 0);
+        let mean = mean_luminance(&img);
+        assert!((mean - plain).abs() / plain < 0.05, "{mode} {shape}: mean luminance {mean:.4} vs {plain:.4}");
+        // It really is a screen: mono pixels are mostly ink or paper.
+        if mode == "mono" {
+            let extreme = img.pixels().filter(|p| p.0[0] < 40 || p.0[0] > 215).count();
+            assert!(extreme > 128 * 128 / 2, "{shape}: only {extreme} pixels are ink or paper");
+        }
+    }
+    // Amount mixes with the original.
+    let half = render(r, &picture(128, 128, &pic, r#"{"kind":"halftone","params":{"size":6,"amount":0.5}}"#), 0);
+    assert!((mean_luminance(&half) - plain).abs() / plain < 0.05);
+}
+
+#[test]
+fn chromatic_aberration_leaves_the_centre_and_splits_colours_outward() {
+    gpu!(r);
+    let fx = r#"{"kind":"chromatic_aberration","params":{"amount":20}}"#;
+    let plain = render(r, &boxed([0.6, 0.6], [0.0, 0.0], ""), 0);
+    let img = render(r, &boxed([0.6, 0.6], [0.0, 0.0], fx), 0);
+    // The box spans pixels 13..51. At the centre nothing moves.
+    assert_px(&img, 32, 32, px(&plain, 32, 32), 1);
+    assert_px(&img, 31, 31, px(&plain, 31, 31), 1);
+    // Outside the right and left edges, red spreads outward and blue stays in.
+    for x in [52, 11] {
+        let p = px(&img, x, 32);
+        assert!(p[0] as i32 - p[2] as i32 > 40, "pixel ({x}, 32) is {p:?}: red should lead outward");
+    }
+    // The blue picture is the smallest: just inside the edge blue is already missing.
+    let p = px(&img, 50, 32);
+    assert!(p[0] == 255 && p[0] as i32 - p[2] as i32 > 60, "pixel (50, 32) is {p:?}");
+    // The far corners of the black frame stay black.
+    assert_px(&img, 0, 0, [0, 0, 0], 0);
+}
+
+#[test]
+fn builtin_effects_are_resolution_independent() {
+    gpu!(r);
+    let pic = gradient("gradient128.png", 128);
+    let q = quadrants("quad128.png", 128, 128);
+    let cases = [
+        (&pic, r#"{"kind":"twirl","params":{"angle":200,"radius":35,"center":[0.1,0]}}"#),
+        (&q, r#"{"kind":"bulge","params":{"amount":0.8,"radius":30}}"#),
+        (&q, r#"{"kind":"kaleidoscope","params":{"segments":6,"rotation":10}}"#),
+        (&pic, r#"{"kind":"pixelate","params":{"size":5},"options":{"shape":"hex"}}"#),
+        (&pic, r#"{"kind":"halftone","params":{"size":5},"options":{"mode":"cmyk"}}"#),
+        (&q, r#"{"kind":"chromatic_aberration","params":{"amount":4}}"#),
+    ];
+    for (file, fx) in cases {
+        let p = picture(256, 256, file, fx);
+        let full = blocks(&render_in(r, &p, &dir(), 0, 1.0), 8);
+        let half = blocks(&render_in(r, &p, &dir(), 0, 0.5), 8);
+        let worst = full.iter().zip(&half).flat_map(|(a, b)| (0..3).map(move |c| (a[c] - b[c]).abs())).fold(0.0, f64::max);
+        assert!(worst < 0.04, "{fx}: blocks differ by up to {worst:.3} (linear) between scale 1 and 0.5");
+    }
+}
+
+#[test]
+fn builtin_effects_take_options_and_render_on_layers() {
+    gpu!(r);
+    let q = quadrants("quad.png", 64, 64);
+    // On a layer smaller than the frame, the outside stays transparent black.
+    let p = project("", &format!(r#""slots":{{"a":{{"path":"{q}"}}}},"layers":[{{"id":"a","kind":"image","slot":"a","transform":{{"scale":0.5}},"effects":[{{"kind":"halftone","params":{{"size":6}},"options":{{"mode":"rgb","shape":"square"}}}}]}}]"#));
+    let img = render(r, &p, 0);
+    assert_px(&img, 2, 2, [0, 0, 0], 0);
+    assert!(energy(&img) > 10.0);
+    // Different options are different pictures; the same frame twice is the same.
+    let shape = |s: &str| project("", &format!(r#""slots":{{"a":{{"path":"{q}"}}}},"layers":[{{"id":"a","kind":"image","slot":"a","effects":[{{"kind":"pixelate","params":{{"size":20}},"options":{{"shape":"{s}"}}}}]}}]"#));
+    let (a, b) = (render(r, &shape("hex"), 0), render(r, &shape("polar"), 0));
+    assert!(a != b);
+    assert!(a == render(r, &shape("hex"), 0));
 }
