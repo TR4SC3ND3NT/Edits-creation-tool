@@ -832,6 +832,7 @@ dependencies = [
  "glam",
  "harfrust",
  "image",
+ "kurbo",
  "naga",
  "pollster",
  "serde",

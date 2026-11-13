@@ -273,6 +273,9 @@ pub enum LayerKind {
     Text(Text),
     /// A comp of `project.comps` drawn as one flat picture. See `crate::comp`.
     Comp(crate::comp::CompLayer),
+    /// Vector shapes (rects, ellipses, stars, paths, lines) with fills,
+    /// strokes and operators (trim, repeater, ...). See `crate::shape`.
+    Shape(crate::shape::Shapes),
 }
 
 /// A `text` layer: what it says and how it is set.

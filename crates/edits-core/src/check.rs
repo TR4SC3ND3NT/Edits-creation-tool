@@ -93,6 +93,7 @@ pub(crate) fn check_stack(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> 
             LayerKind::Solid { .. } | LayerKind::Adjustment | LayerKind::Text(_) => {}
             LayerKind::Particles(ps) => crate::particles::check(ps, p, &lp, &mut err, &mut warn, &mut used_slots),
             LayerKind::Comp(c) => crate::comp::check_layer(c, p, &lp, &mut err, &mut warn),
+            LayerKind::Shape(s) => crate::shape::check(s, &lp, &mut err, &mut warn),
             LayerKind::Video(v) => {
                 refs.push((&v.slot, "slot"));
                 video_slots.insert(v.slot.clone());

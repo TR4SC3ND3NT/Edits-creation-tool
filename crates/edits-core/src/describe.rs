@@ -107,6 +107,7 @@ fn layer_lines(o: &mut String, layers: &[Layer], duration: f64) {
             }
             LayerKind::Text(t) => text_summary(t),
             LayerKind::Comp(c) => crate::comp::describe_layer(c),
+            LayerKind::Shape(s) => s.describe(),
         };
         let what = match l.fps {
             Some(fps) => format!("{what} fps={fps}"),

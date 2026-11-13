@@ -311,6 +311,8 @@ pub struct Renderer {
     pub(crate) matte_depth: u32,
     /// Pictures of comps rendered during this output frame (see `comp.rs`).
     pub(crate) comp_cache: crate::comp::CompCache,
+    /// Pictures of shape layers (see `shape/mod.rs`).
+    pub(crate) shapes: crate::shape::ShapeCache,
 }
 
 fn file_key(path: &Path) -> String {
@@ -509,6 +511,7 @@ impl Renderer {
             particles: Default::default(),
             matte_depth: 0,
             comp_cache: Default::default(),
+            shapes: Default::default(),
         };
         r.white = r.upload_picture(&RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255])));
         r.flush();
@@ -574,7 +577,7 @@ impl Renderer {
             match &l.kind {
                 LayerKind::Image { slot } => used.push(slot),
                 LayerKind::Cube { faces, .. } => used.extend(faces.iter().map(String::as_str)),
-                LayerKind::Solid { .. } | LayerKind::Adjustment | LayerKind::Comp(_) => {}
+                LayerKind::Solid { .. } | LayerKind::Adjustment | LayerKind::Comp(_) | LayerKind::Shape(_) => {}
                 LayerKind::Text(t) => texts.push((&l.id, t.font.as_deref())),
                 LayerKind::Particles(ps) => used.extend(ps.sprite_slot()),
                 LayerKind::Video(v) => {
@@ -882,6 +885,29 @@ impl Renderer {
             wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
             data,
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(2 * w), rows_per_image: Some(h) },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        let id = self.new_id();
+        Tex { id, view: texture.create_view(&wgpu::TextureViewDescriptor::default()), texture, w, h, kind: TexKind::Image }
+    }
+
+    /// Upload a frame-sized picture made on the CPU (RGBA16Float,
+    /// premultiplied linear, like a working texture; no mip levels).
+    pub(crate) fn upload_work(&mut self, w: u32, h: u32, data: &[u8]) -> Tex {
+        let texture = self.gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("edits shapes"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: WORK_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        self.gpu.queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            data,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(8 * w), rows_per_image: Some(h) },
             wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
         );
         let id = self.new_id();
@@ -1398,8 +1424,8 @@ impl Renderer {
             }
             // Text is drawn glyph by glyph (`text.rs`); adjustment layers have no picture.
             LayerKind::Adjustment | LayerKind::Text(_) => (Vec::new(), false),
-            // Drawn by `particle_quads` instead.
-            LayerKind::Particles(_) => (Vec::new(), false),
+            // Drawn by `particle_quads` and `shape_quads` instead.
+            LayerKind::Particles(_) | LayerKind::Shape(_) => (Vec::new(), false),
             // `frame` is the comp's picture at this instant, in a box of the comp's size.
             LayerKind::Comp(c) => match (frame, scene.comps.get(&c.comp)) {
                 (Some(pic), Some(sub)) => {

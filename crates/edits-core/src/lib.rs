@@ -20,6 +20,7 @@ pub mod model;
 pub mod particles;
 pub mod pointer;
 pub mod preset;
+pub mod shape;
 pub mod beatops;
 pub mod song;
 pub mod text_select;
