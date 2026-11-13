@@ -4,7 +4,9 @@
 *.mov
 /out
 /analysis
-/assets
+# Working media; only the fonts bundled with the engine are kept.
+/assets/*
+!/assets/fonts/
 .DS_Store
 
 # Agent worktrees (temporary checkouts of parallel agents)

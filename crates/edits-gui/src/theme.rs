@@ -162,7 +162,7 @@ pub mod size {
 
 // ---- fonts -------------------------------------------------------------------------
 
-const INTER: &[u8] = include_bytes!("../assets/fonts/InterVariable.ttf");
+const INTER: &[u8] = include_bytes!("../../../assets/fonts/InterVariable.ttf");
 const MONO: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Variable.ttf");
 
 /// Weights of the variable fonts, as `wght` coordinates. Light text on a

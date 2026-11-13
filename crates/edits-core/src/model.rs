@@ -11,7 +11,7 @@
 //!   composition height, so a project renders the same at any resolution.
 //! - Layers are listed bottom to top.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 
 pub const FORMAT: &str = "edits.project/1";
@@ -219,6 +219,78 @@ pub enum LayerKind {
     Adjustment,
     /// A video clip from a slot, played from the slot's `trim` in.
     Video(Video),
+    /// Lines of text set in a font file (the bundled Inter by default).
+    Text(Text),
+}
+
+/// A `text` layer: what it says and how it is set.
+///
+/// The text block is centred on the layer's origin: horizontally, the box is
+/// `max_width` wide (or as wide as the longest line) and lines are aligned
+/// inside it; vertically, the middle of the block runs from the cap height of
+/// the first line to the baseline of the last. `transform` moves, scales and
+/// turns the block like any other layer. Sizes are percent of the
+/// composition height, like effect sizes; `max_width` is in composition units.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Text {
+    /// The words. `\n` starts a new line.
+    pub text: String,
+    /// A font file (TrueType or OpenType, `.ttf` or `.otf`), relative to the
+    /// project. `None` is Inter, which is built into the renderer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font: Option<String>,
+    /// Font size (the em) in percent of the composition height.
+    #[serde(default = "default_text_size")]
+    pub size: f64,
+    /// Weight on the font's `wght` axis (100 thin .. 400 regular .. 900
+    /// black). Only variable fonts have one; others ignore it. `None` is the
+    /// font's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<f64>,
+    #[serde(default, skip_serializing_if = "Align::is_center")]
+    pub align: Align,
+    /// Distance from one baseline to the next, in multiples of `size`.
+    #[serde(default = "default_line_height")]
+    pub line_height: f64,
+    /// Extra space after every character, in percent of the composition
+    /// height (negative tightens).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub tracking: f64,
+    /// Colour of the letters: straight-alpha sRGB, `[r, g, b]` or `[r, g, b, a]`.
+    #[serde(default = "white", deserialize_with = "rgba")]
+    pub fill: [f32; 4],
+    /// An outline around the letters, drawn beneath every letter's fill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stroke: Option<TextStroke>,
+    /// Wrap lines longer than this, in composition units (height = 1), at
+    /// spaces and between CJK characters. A word longer than the line stays whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_width: Option<f64>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TextStroke {
+    /// Straight-alpha sRGB, `[r, g, b]` or `[r, g, b, a]`.
+    #[serde(default = "black", deserialize_with = "rgba")]
+    pub color: [f32; 4],
+    /// How far the outline reaches beyond the edge of the letters, in percent
+    /// of the composition height.
+    pub width: f64,
+}
+
+/// How the lines of a text block line up.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Align {
+    Left,
+    #[default]
+    Center,
+    Right,
+}
+impl Align {
+    fn is_center(&self) -> bool {
+        *self == Align::Center
+    }
 }
 
 /// A `video` layer: which clip, and how its time runs.
@@ -522,6 +594,29 @@ fn is_false(v: &bool) -> bool {
 }
 fn is_one(v: &f64) -> bool {
     *v == 1.0
+}
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
+}
+fn default_text_size() -> f64 {
+    10.0
+}
+fn default_line_height() -> f64 {
+    1.2
+}
+fn white() -> [f32; 4] {
+    [1.0, 1.0, 1.0, 1.0]
+}
+fn black() -> [f32; 4] {
+    [0.0, 0.0, 0.0, 1.0]
+}
+/// A colour written as `[r, g, b]` (opaque) or `[r, g, b, a]`.
+fn rgba<'de, D: Deserializer<'de>>(d: D) -> Result<[f32; 4], D::Error> {
+    match Vec::<f32>::deserialize(d)?.as_slice() {
+        [r, g, b] => Ok([*r, *g, *b, 1.0]),
+        [r, g, b, a] => Ok([*r, *g, *b, *a]),
+        other => Err(serde::de::Error::custom(format!("a colour is [r, g, b] or [r, g, b, a] in 0..1, not {} numbers", other.len()))),
+    }
 }
 fn centre2() -> [f64; 2] {
     [0.5, 0.5]
