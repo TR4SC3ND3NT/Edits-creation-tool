@@ -127,7 +127,7 @@ pub fn kind_text(kind: &LayerKind) -> String {
 }
 
 pub fn blend_text(blend: Blend) -> String {
-    format!("{blend:?}").to_lowercase()
+    blend.name().to_string()
 }
 
 /// The rows of the timeline, top of the picture first: the camera (only when

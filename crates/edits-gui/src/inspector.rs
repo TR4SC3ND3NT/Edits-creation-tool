@@ -63,7 +63,6 @@ pub(crate) fn animation_note(prop: &Prop) -> String {
     parts.join(" + ")
 }
 
-const BLENDS: [Blend; 8] = [Blend::Normal, Blend::Add, Blend::Screen, Blend::Multiply, Blend::Overlay, Blend::Lighten, Blend::Darken, Blend::Difference];
 
 /// Height of a row of the inspector.
 const ROW: f32 = 26.0;
@@ -597,7 +596,7 @@ fn layer(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, l: &Layer,
         }
         field_row(ui, "Blend", "How the layer mixes with what is under it", |ui| {
             widgets::combo("layer-blend", blend_text(base_l.blend), 96.0).show_ui(ui, |ui| {
-                for b in BLENDS {
+                for b in Blend::ALL {
                     if ui.selectable_label(b == base_l.blend, blend_text(b)).clicked() && b != base_l.blend {
                         app.commit(vec![editing::set_field(&id, "blend", json!(blend_text(b)))], format!("blend of {id}: {}", blend_text(b)));
                     }
