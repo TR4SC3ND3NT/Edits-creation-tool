@@ -78,12 +78,12 @@ impl TextAnimator {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Selector {
-    Range(RangeSelector),
-    Wiggly(WigglySelector),
+    Range(Box<RangeSelector>),
+    Wiggly(Box<WigglySelector>),
 }
 impl Default for Selector {
     fn default() -> Self {
-        Selector::Range(RangeSelector::default())
+        Selector::Range(Box::default())
     }
 }
 impl Selector {
@@ -311,7 +311,7 @@ pub fn shape_value(shape: Shape, pos: usize, n: usize, r: &RangeAt) -> f64 {
     match shape {
         Shape::Square => {
             let w = r.smoothness / 100.0;
-            if !(w > 1e-9) {
+            if w.is_nan() || w <= 1e-9 {
                 return f64::from(c >= s && c < e);
             }
             // The part of a unit-wide window (`w` wide) that lies in the range.
@@ -366,7 +366,7 @@ pub fn range_value(sel: &RangeSelector, pos: usize, n: usize, r: &RangeAt) -> f6
 /// A seeded shuffle of `0..n`: `order[unit]` is the position the unit takes.
 pub fn random_order(n: usize, seed: u32) -> Vec<usize> {
     let mut order: Vec<usize> = (0..n).collect();
-    let mut state = (seed as u64) ^ 0x5EED_7E47_A11C_E5u64;
+    let mut state = (seed as u64) ^ 0x005E_ED7E_47A1_1CE5_u64;
     let mut next = || {
         // SplitMix64.
         state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -509,9 +509,9 @@ mod tests {
         // Offset moves both ends; start after end is the same range.
         let moved = at(0.0, 40.0, 20.0);
         let swapped = at(60.0, 20.0, 0.0);
-        for i in 0..10 {
-            assert_eq!(shape_value(Shape::RampUp, i, 10, &moved), up[i]);
-            assert_eq!(shape_value(Shape::RampUp, i, 10, &swapped), up[i]);
+        for (i, v) in up.iter().enumerate() {
+            assert_eq!(shape_value(Shape::RampUp, i, 10, &moved), *v);
+            assert_eq!(shape_value(Shape::RampUp, i, 10, &swapped), *v);
         }
     }
 

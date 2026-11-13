@@ -715,7 +715,7 @@ impl Renderer {
         for (gi, g) in layout.glyphs.iter().enumerate() {
             let st = states.map(|s| &s[gi]);
             let opacity = st.map_or(1.0, |s| s.opacity);
-            if !(opacity > 1e-4) || st.is_some_and(|s| s.scale.iter().any(|v| !(v.abs() > 1e-6))) {
+            if opacity.is_nan() || opacity <= 1e-4 || st.is_some_and(|s| s.scale.iter().any(|v| v.is_nan() || v.abs() <= 1e-6)) {
                 continue;
             }
             let off = st.map_or([0.0; 3], |s| s.offset);
@@ -844,7 +844,7 @@ impl Renderer {
         for (stroke, channel) in passes {
             for q in &quads {
                 let colour = stroke.unwrap_or_else(|| premultiplied(q.fill)).map(|c| c * q.opacity);
-                if !(colour[3] > 0.0) {
+                if colour[3].is_nan() || colour[3] <= 0.0 {
                     continue;
                 }
                 let m = &masks[q.mask];
