@@ -70,6 +70,13 @@ postprocessing, ISF), no code was taken from it.
 
 The particle sprites in `crates/edits-render/src/shaders/particles.wgsl` are ours.
 
+## Text animators
+
+| Our file | Source | Licence | What was taken |
+| --- | --- | --- | --- |
+| `crates/edits-core/src/text_select.rs` (range selector) | Skottie, https://skia.googlesource.com/skia, `modules/skottie/src/text/RangeSelector.cpp`; EffectCraft, `crates/text/src/selectors.rs` | BSD-3-Clause (Skia); MIT OR Apache-2.0 (EffectCraft, used under MIT) | Written after their semantics (those of the After Effects range selector), not from their code, which was not copied: start, end and offset in percent of the units, the shapes, each unit measured at its middle, `ease_high` / `ease_low` as a cubic whose handles move with the two values, a seeded shuffle of the units. The `smoothness` window of `square`, the per-unit `ease`, the word and line grouping and the code are ours. |
+| `crates/edits-core/src/text_select.rs` (wiggly selector) | EffectCraft, `crates/text/src/selectors.rs` | MIT OR Apache-2.0 (used under MIT) | The idea of mixing a noise track shared by every unit with one per unit by a `correlation`. The noise is the engine's own (`eval::noise`). |
+
 ## Licence texts
 
 ### EffectCraft (MIT)
