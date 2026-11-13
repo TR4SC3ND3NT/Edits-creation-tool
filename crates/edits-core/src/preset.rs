@@ -8,7 +8,7 @@
 //! `presets/*.json` at the root of the repository and are compiled in; a
 //! project can add its own in `<project dir>/presets/<name>.json`, and
 //! `transition:<kind>` presets are generated from the transition registry.
-//! The format is documented in `docs/PRESETS.md`.
+//! The format is documented in `docs/FORMAT.md` (Presets).
 //!
 //! Inside actions, a string that starts with `=` is an expression (numbers,
 //! `+ - * /`, parentheses, `min`, `max`, `abs`, `vec(a, b, ...)`; vectors
@@ -657,7 +657,8 @@ fn apply_once(doc: &Value, preset: &Preset, target: &Target, at: f64, vars: &Map
         (TargetKind::Project, Target::Layer(id)) => Some(id.clone()),
         (TargetKind::Project, _) => None,
         (_, Target::Layer(id)) => Some(id.clone()),
-        (_, Target::Auto) => Some(picture_at(&doc, at).ok_or_else(|| format!("no picture is visible at {at}; give --layer")) ?),
+        // Half a frame later: a hit right on a cut belongs to the picture after it.
+        (_, Target::Auto) => Some(picture_at(&doc, at + 0.5 * tc.frame_len()).ok_or_else(|| format!("no picture is visible at {at}; give --layer"))?),
         (_, Target::Fx) => {
             if index_of(&doc, FX_LAYER).is_err() {
                 let ls = doc.get_mut("layers").and_then(Value::as_array_mut).ok_or("the project has no \"layers\"")?;
@@ -692,7 +693,15 @@ fn apply_once(doc: &Value, preset: &Preset, target: &Target, at: f64, vars: &Map
             env.insert("prev_out".into(), vec![num_field(pl, "out").unwrap_or(tc.duration)]);
         }
     }
-    let mut run = Run { doc, project, tc, vars: vars.clone(), env, changes: Vec::new(), target, at };
+    let mut changes = Vec::new();
+    if let (Some(i), false) = (target, preset.name.starts_with("transition:")) {
+        let l = &layers(&doc)[i];
+        if !active(l, at, tc.duration) && preset.target == TargetKind::Layer {
+            let (a, b) = (num_field(l, "in").unwrap_or(0.0), num_field(l, "out").unwrap_or(tc.duration));
+            changes.push(format!("note: {} is not visible at {at} (it runs {a}..{b}), so this may not show", target_id.as_deref().unwrap_or("?")));
+        }
+    }
+    let mut run = Run { doc, project, tc, vars: vars.clone(), env, changes, target, at };
     for action in &preset.apply {
         run.action(action)?;
     }

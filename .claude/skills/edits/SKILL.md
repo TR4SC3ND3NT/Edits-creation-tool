@@ -1,6 +1,6 @@
 ---
 name: edits
-description: Make, change and render short beat-synced video edits (pictures cut to music with flashes, scale punches, blur, 3D cubes, overlays) with the `edits` engine, and recreate the recipe of a reference edit with different pictures. Use when asked to make an edit from a song and pictures, to copy the timing or style of an existing edit, to change or render a project JSON of format `edits.project/1`, to preview frames of one, or to write a custom WGSL effect for it.
+description: Make, change and render short beat-synced video edits (pictures cut to music with flashes, scale punches, blur, 3D cubes, transitions, overlays) with the `edits` engine, from a song analysis, beat cuts and named presets, and recreate the recipe of a reference edit with different pictures. Use when asked to make an edit from a song and pictures, to copy the timing or style of an existing edit, to change or render a project JSON of format `edits.project/1`, to preview frames of one, or to write a custom WGSL effect for it.
 ---
 
 # edits
@@ -24,6 +24,12 @@ the shell. They can be mixed: the project file is the only state.
 | Many frames in one image | `edits sheet p.json -o s.png`, then view `s.png` | `render_sheet` (returns the image) |
 | The video | `edits render p.json -o out.mp4` | `render_video`, then `job_status` |
 | Recipe of a reference edit | `edits analyze / draft / compare / probe / fit` | `reference_analyze`, `reference_read`, `reference_draft`, `reference_compare`, `reference_probe`, `project_fit` |
+| Song: tempo, bars, kicks, snares, drop | `edits audio song.mp3 -o song.json --project p.json` | `audio_analyze` |
+| Pictures cut to the beat | `edits beats cut p.json --slots a,b,c --every 1 --from 0 --to 16` | `beats_cut` |
+| A hit on every beat / kick / bar | `edits beats accent p.json --preset flash --on downbeats` | `beats_accent` |
+| One preset (flash, punch, shake, slide, 3D flip, transition...) | `edits presets`, `edits apply p.json punch --layer cut3 --at b4` | `presets_list`, `preset_apply` |
+| Check a custom shader | `edits shader check fx.wgsl` | `effect_define` (checks, writes, adds) |
+| What the person selected in the window | read `.edits/ui.json` | `ui_context` |
 
 From a checkout the binary is `target/release/edits` after
 `cargo build --release -p edits-cli -p edits-analyze -p edits-mcp`
@@ -57,29 +63,89 @@ A project is **slots + layers + keyframes + effects**.
   covers `rate` of the remaining distance (a fast start that settles).
 - **Effects** are `{ "kind": "exposure", "params": { "stops": ... } }` in a
   layer's `effects` list, applied in order. `edits effects` lists them all.
+- **Transitions** sit on the incoming layer: `"transition": { "kind": "whip_pan", "duration": 0.5 }`
+  mixes the picture beneath into this one over `duration` from its `in`
+  (`edits transitions` lists 22). The outgoing layer must last until the end.
+- **Presets** are named building blocks (`flash`, `punch`, `shake`,
+  `rgb_split`, `slide_in`, `flip_3d`, `cube_turn`, `velocity`, `letterbox`,
+  `transition:<kind>`, ...) with typed variables. Applying one writes ordinary
+  keys, effects and layers: you can read and change the result like anything
+  you wrote, and undo it in one step.
+- **Times can be text** wherever a time is taken: `"b12.5"`, `"bar 4"`,
+  `"4:3"` (bar 4, beat 3), `"2.5s"`, `"f60"`, markers such as `"drop"`, and
+  offsets: `"drop+2b"`, `"bar 3-0.5b"`.
 
 Full references: `docs/FORMAT.md`, `docs/EFFECTS.md`, `docs/CLI.md`,
 `docs/ANALYSIS.md`, `docs/AGENTS.md`. A complete example: `examples/beat-loop.json`
 (`edits demo demo` writes it with pictures and audio).
 
-## Workflow 1: an edit from a song and a folder of pictures
+## Workflow 1: an edit from a song and pictures, with presets and beat operations
 
-1. **Check the machine.** `edits doctor` (MCP: `doctor`). It must end with
+The fast route: build the skeleton and the hits with a handful of commands,
+look, then refine individual values. Every command below is one validated,
+undoable step (`project_undo`, or Ctrl+Z in the window).
+
+1. **Check the machine.** `edits doctor` (MCP: `doctor`); it must end with
    `ready to render`.
-2. **Get the tempo.** Ask for the BPM if the user knows it. Otherwise measure
-   it: wrap the song in a blank video and analyse that.
+2. **Start a project** next to the pictures: a minimal file with the size,
+   fps, a beats time base and one slot per picture (copy the `settings` and
+   `slots` of the skeleton in Workflow 1b; `"layers": []` is fine).
+3. **Analyse the song and sync the project to it.**
+   `edits audio song.mp3 -o song.json --project project.json` (MCP:
+   `audio_analyze` with `project`). It prints the tempo, bars, the number of
+   kicks, snares and hats, the sections and the drop, writes them all to
+   `song.json`, and writes the tempo, `beat_offset`, the song as `audio` and
+   the markers (`drop`, sections) into the project. Read its notes: a low
+   tempo confidence means pass `--bpm`; a low bar confidence means bar 1 may
+   be on another beat (listen, or count bars from the drop).
+4. **Look at the pictures** (view each file): order, which ones deserve a
+   long hold, and where each subject is (`set_slot` with `focus`).
+5. **Cut to the beat.** One picture per beat up to the drop, two per beat after it:
    ```
-   ffmpeg -v error -y -f lavfi -i color=c=black:s=64x64:r=25 -i song.mp3 -shortest -c:v libx264 -pix_fmt yuv420p -c:a aac tempo.mp4
-   edits analyze tempo.mp4 -o tempo_analysis      # prints: tempo 123.00 bpm (confidence 0.56, audio), beat 0 at -0.009 s
+   edits beats cut project.json --slots p1,p2,p3,p4 --every 1 --from 0 --to drop
+   edits beats cut project.json --slots p5,p6,p7,p8 --every 0.5 --from drop --to drop+16b
    ```
-   Use the printed tempo as `settings.bpm` and the printed "beat 0 at" as
-   `settings.beat_offset` (seconds from the start of the video to beat 0; it
-   may be slightly negative). To start the edit N seconds into the song, set
+   (MCP: `beats_cut`.) Or cut on the song itself: `--on kicks --audio song.json`.
+   Layers are `cut1`, `cut2`, ...; they go below the adjustment layers at the
+   top, or `--above` / `--below` a layer you name.
+6. **Accent.** `edits presets` lists the building blocks (MCP: `presets_list`;
+   with a name, its variables). Typical:
+   ```
+   edits beats accent project.json --preset flash_burn --on downbeats --var stops=3
+   edits beats accent project.json --preset punch --on kicks --audio song.json --var amount=1.12
+   edits beats accent project.json --preset shake --on drop --audio song.json --layer fx
+   edits apply project.json transition:whip_pan --layer cut9          # at the cut into cut9
+   edits apply project.json rgb_split --layer cut12 --at "bar 6+2b"
+   ```
+   (MCP: `beats_accent`, `preset_apply`.) `--layer auto` (default) changes the
+   picture on screen at each time; `--layer fx` puts the hit on one adjustment
+   layer on top, so it covers everything (flashes look best there). A second
+   hit of the same kind goes into the same effect's keys.
+7. **Look.** `edits sheet project.json -o sheet.png` and view it (MCP:
+   `render_sheet`), then every frame around the drop and each transition:
+   `edits sheet project.json --from drop-1b --to drop+1b --every-frame --cols 5 -o drop.png`.
+   Check that cuts, flashes and punches start on the same frame, that flashes
+   fade within about a beat, that no picture shows its edges, and that
+   transitions read as one move.
+8. **Refine.** Change a value with `project_edit` (or `edits apply ... --var`
+   again on another layer); undo a whole preset with `project_undo`. When the
+   person is watching in the window, `ui_context` tells you which layer they
+   selected and what they asked for in their note.
+9. **Render.** `edits render project.json -o out.mp4 --scale 0.5` for a
+   preview, then full size (MCP: `render_video`, then `job_status`).
+
+## Workflow 1b: writing the JSON by hand
+
+When you need full control (or to understand what the presets write):
+
+1. **Get the tempo**: `edits audio song.mp3` prints it and "beat 0 at"
+   (seconds into the song). Use them as `settings.bpm` and
+   `settings.beat_offset`. To start the edit N seconds into the song, set
    `audio.offset` to N and `beat_offset` to the time of the first beat at or
    after N, minus N.
-3. **Look at the pictures** (view each file) and decide the order, which ones
-   deserve a long hold, and where each one's subject is (`focus`).
-4. **Write the project** next to the pictures. Start from this skeleton: one
+2. **Look at the pictures** and decide the order.
+3. **Write the project** as below.
+   Start from this skeleton: one
    image layer per shot cut on the beat, each with a scale punch and a blur
    that clears; an overlay texture; and one adjustment layer on top that
    carries every flash and the vignette.
@@ -112,16 +178,16 @@ Full references: `docs/FORMAT.md`, `docs/EFFECTS.md`, `docs/CLI.md`,
    }
    ```
    No overlay texture? Leave out the `tex` slot and layer.
-5. **Check.** `edits check project.json` (MCP: `project_check`). Fix every
+4. **Check.** `edits check project.json` (MCP: `project_check`). Fix every
    error; read the warnings.
-6. **Look.** `edits sheet project.json -o sheet.png` and view the image (MCP:
+5. **Look.** `edits sheet project.json -o sheet.png` and view the image (MCP:
    `render_sheet`). Sixteen frames of the whole edit, each labelled with frame
    number, beat and seconds. Then look at each hit frame by frame:
    `edits sheet project.json --from 3.9 --to 4.5 --every-frame --cols 4 -o hit.png`
    (MCP: `render_sheet` with `from`, `to`, `every_frame: true`). Check that the
    cut, the flash and the punch start on the same frame, that the flash is
    gone within about a beat, and that no picture shows its edges.
-7. **Change and repeat.** Shell: edit the JSON, then `edits check`. MCP:
+6. **Change and repeat.** Shell: edit the JSON, then `edits check`. MCP:
    ```json
    { "project": "my-edit/project.json", "ops": [
      { "op": "set", "pointer": "/layers/@shot2/out", "value": 6 },
@@ -134,7 +200,7 @@ Full references: `docs/FORMAT.md`, `docs/EFFECTS.md`, `docs/CLI.md`,
    The batch is applied as one step. If the result has an error, nothing is
    written and the findings say where. `project_undo` restores the previous
    version.
-8. **Render.** `edits render project.json -o out.mp4` (MCP: `render_video`
+7. **Render.** `edits render project.json -o out.mp4` (MCP: `render_video`
    with `output`, then `job_status` with the returned job id until
    `completed`). Preview first with `--scale 0.5`; render full size once.
 
@@ -214,7 +280,18 @@ blur, tone hits, overlay, vignette) and replay it on other pictures.
    build them yourself), rotations, colour grades. Render, compare, look
    again. Stop when the listed differences are small and the sheet looks
    right next to the reference.
-10. **Final render** at full size: `edits render edit/project.json -o final.mp4`.
+10. **Build the moves the analysis cannot measure with presets** instead of
+    keyframes: a cube turn (`cube_turn` on a `cube` layer, or
+    `transition:cube` between two pictures), a whip pan
+    (`transition:whip_pan`), a 3D flip (`flip_3d`), a speed ramp (`velocity`),
+    a slide (`slide_in`, `slide_out`). Apply each at the shot's start
+    (`--at b<beat>` from `reference_read` section `shots`), look at the
+    reference frames and the sheet side by side, adjust the variables, then
+    `compare` again. The reference's own soundtrack gives its kicks and
+    snares: `edits audio ref.mp4 -o ref_song.json`; `edits beats accent ...
+    --on snares --audio ref_song.json` puts a hit where the editor did when the
+    analysis missed it.
+11. **Final render** at full size: `edits render edit/project.json -o final.mp4`.
 
 ## Workflow 3: a custom effect shader
 
@@ -237,10 +314,15 @@ blur, tone hits, overlay, vignette) and replay it on other pictures.
    `{ "kind": "custom", "source": "shaders/stripes.wgsl", "params": { "p0": 0.5, "p1": 40 } }`
    (MCP: `project_edit` with `{ "op": "set", "pointer": "/layers/@shot1/effects/-", "value": { ... } }`).
    `p0` to `p7` can be keyframed like any parameter.
-3. Compile it by rendering one frame: `edits frame project.json --at 2 -o f.png --scale 0.5`
-   (MCP: `render_frame`). `check` only verifies that the file exists; a
-   shader that does not compile fails here with the compiler's message and
-   line numbers of your file.
+3. Check it: `edits shader check shaders/stripes.wgsl` compiles it the way
+   the renderer will, without a GPU, and points at the line and column of
+   each problem (exit 1). With MCP, `effect_define {project, name, wgsl,
+   params, layer?}` does steps 1 to 3 at once: it checks the source (nothing
+   is written when it fails), saves `shaders/<name>.wgsl` next to the
+   project and adds the effect to the layer, or to a new adjustment layer on
+   top; `project_undo` takes the effect back out.
+   Then render one frame: `edits frame project.json --at 2 -o f.png --scale 0.5`
+   (MCP: `render_frame`).
 4. Look at the frame. Then render a sheet across a keyed parameter.
 
 Rules: express sizes as fractions of the frame (`uv` units), never pixel
@@ -307,6 +389,14 @@ A black-and-white hit of four frames at beat 6:
   during a move, or end the move at `[0, 0, 0]`.
 - **`decay` takes its length from the keys.** The value reaches the next
   key's value exactly at that key; `rate` sets how front-loaded the move is.
+- **Presets read what is there.** `punch` multiplies the scale the layer has
+  at that moment (`base`), so a punch on top of a zoom is relative to the
+  zoom; `flash` keyed twice shares one `fade` effect. Read `edits describe`
+  after a few presets; it shows the keys they wrote.
+- **A transition needs the outgoing picture underneath.** Apply
+  `transition:<kind>` to the *incoming* layer; it moves that layer's `in`
+  earlier and the previous picture's `out` later so they overlap. Applied to
+  a layer with nothing below it, it is refused.
 - **Never guess effect or parameter names.** `edits effects` (MCP:
   `effects_list`) is the registry; `check` rejects unknown ones and lists the
   valid names.

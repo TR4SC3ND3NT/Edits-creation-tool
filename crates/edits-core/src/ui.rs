@@ -107,7 +107,7 @@ pub enum Found {
     Closed,
     /// The context, how long ago it was written, and whether that is too long
     /// ago for the window to still be open.
-    Open { ctx: UiContext, age: Duration, stale: bool },
+    Open { ctx: Box<UiContext>, age: Duration, stale: bool },
 }
 
 /// Read the context the window wrote for `project`.
@@ -124,7 +124,7 @@ pub fn read(project: &Path) -> Result<Found, String> {
     }
     let written = crate::edit::parse_stamp(&ctx.updated).or_else(|| std::fs::metadata(&p).and_then(|m| m.modified()).ok());
     let age = written.and_then(|w| SystemTime::now().duration_since(w).ok()).unwrap_or_default();
-    Ok(Found::Open { stale: age > STALE, age, ctx })
+    Ok(Found::Open { stale: age > STALE, age, ctx: Box::new(ctx) })
 }
 
 #[cfg(test)]
@@ -153,7 +153,7 @@ mod tests {
             }
             Found::Closed => panic!("written but not found"),
         }
-        let old = UiContext { updated: "20200101T000000.000Z".into(), ..ctx };
+        let old = UiContext { updated: "20200101T000000.000Z".into(), ..ctx.clone() };
         write(&project, &old).unwrap();
         assert!(matches!(read(&project).unwrap(), Found::Open { stale: true, .. }));
         std::fs::remove_dir_all(&dir).ok();

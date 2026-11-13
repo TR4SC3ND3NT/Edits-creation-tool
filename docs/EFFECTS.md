@@ -141,8 +141,24 @@ Shader 'shaders/broken.wgsl' parsing error: no definition in scope for identifie
 (the file must define `fn effect(uv: vec2<f32>) -> vec4<f32>`; see docs/EFFECTS.md)
 ```
 
-`edits check` verifies that the file exists; compiling needs the adapter, so
-use `edits frame` to test a shader.
+`edits check` verifies that the file exists. To check the shader itself
+without a GPU, `edits shader check` compiles it the way the renderer will
+(your file plus the appended contract, through naga, the WGSL compiler wgpu
+uses) and points at the line in your file; it exits 1 when the shader would
+not compile:
+
+```
+$ edits shader check shaders/bad.wgsl
+error: shaders/bad.wgsl:3:24: no definition in scope for identifier: `nope`
+    return c * fx.p0 + nope;
+$ edits shader check examples/shaders/ripple.wgsl
+examples/shaders/ripple.wgsl: ok (reads p0, p1, changes with time)
+```
+
+It also refuses a file without `fn effect(uv: vec2<f32>) -> vec4<f32>` or
+with another signature. With `--json` it prints `{ ok, issues: [{ line,
+column, code, message }], params, animated }`. The MCP tool `effect_define`
+runs it before writing a shader next to a project.
 
 ### Examples
 
@@ -188,3 +204,58 @@ A project that uses both:
 Saved next to a `shaders` folder holding the two files, `edits sheet
 project.json -o sheet.png` shows the ring leaving the centre at every beat.
 The slot is empty, so the picture is the renderer's placeholder.
+
+## Transitions
+
+A transition is not an effect in a layer's `effects` list: it is the layer's
+`transition` field, `{ "kind", "duration", "params", "ease" }`, and it
+replaces the cut into the layer by a mix of two pictures over `duration`
+from the layer's `in`: the frame beneath the layer ("from") and the frame
+with the layer ("to"). See [FORMAT.md](FORMAT.md#transitions). The registry
+is `TRANSITIONS` in `crates/edits-core/src/effects.rs`; `edits transitions`
+prints it (`--json` for machines), `edits check` validates kinds and
+parameters against it, and the MCP `effects_list` lists it too. The preset
+`transition:<kind>` sets the field and overlaps the two layers around the
+cut (`duration` in beats, `align` `center` / `after` / `before`).
+
+The 22 transitions are ported from the
+[gl-transitions](https://gl-transitions.com) collection: the WGSL files of the
+`gl-transitions` crate 2.0.2 are used unchanged (their headers keep source,
+author and licence; all are MIT; see
+`crates/edits-render/src/shaders/transitions/LICENSE.md`). The renderer
+rebinds their textures, reads both pictures in sRGB (the space they were
+written for) and writes the result back in linear light. Colour parameters
+are sRGB 0..1; directions and centres are in the shader's own frame (0..1,
+y up). Default length in beats in brackets.
+
+| Kind | What it looks like | Parameters (defaults) |
+| --- | --- | --- |
+| `fade` (0.5) | A plain crossfade | none |
+| `fade_color` (1) | Dip through a colour between the pictures | `color` [0, 0, 0, 1], `color_phase` 0.4 |
+| `flash_fade` (0.5) | A crossfade that flares toward a colour | `color` [1, 1, 1] |
+| `overexposure` (0.5) | A crossfade through a washed-out white | `strength` 0.6 |
+| `lightning_flash` (1) | Lightning bolts, white strobes, the next picture lit by the last flickers | `bolts` 2, `strike` 0.55, `seed` 0, `color` [0.75, 0.85, 1], `glow` 0.5, `flashes` 3 |
+| `cross_zoom` (0.5) | A crossfade through a strong zoom blur | `strength` 0.4 |
+| `simple_zoom` (0.5) | Zoom into the outgoing picture, then fade | `zoom_quickness` 0.8 |
+| `zoom_in_out` (1) | Zoom in until the picture is flat colour, then out of the next | none |
+| `dreamy_zoom` (1) | Zoom and rotate into a bright flash, then out | `rotation` 6, `scale` 1.2 |
+| `directional` (0.5) | The next picture pushes the outgoing one out (smooth slide) | `direction` [0, 1] |
+| `directional_warp` (0.5) | A diagonal wipe with a smeared edge | `smoothness` 0.1, `direction` [-1, 1] |
+| `whip_pan` (0.5) | A fast pan that streaks both pictures | `direction` [-1, 0], `blur` 0.4 |
+| `whip_spin` (0.75) | A roll that speeds up in a spin blur; the next picture slows to a stop | `turns` 1, `blur` 0.5, `chroma` 0.6, `zoom` 0.25 |
+| `whip_tilt` (0.75) | A fast tilt to the next picture, with perspective | `down` 0, `blur` 0.5, `chroma` 0.5, `perspective` 0.7 |
+| `camera_shake` (0.75) | Violent jolts with blur and colour fringes; the cut at the peak | `strength` 0.5, `jolts` 12, `blur` 0.5, `split` 0.5 |
+| `glitch_memories` (0.5) | A crossfade with glitchy colour-shifted blocks | none |
+| `glitch_displace` (0.5) | Displaced blocks that flash into the next picture | none |
+| `cube` (1) | The pictures are faces of a box that turns, over a reflective floor | `persp` 0.7, `unzoom` 0.3, `reflection` 0.4, `floating` 3, `shading` 0.5 |
+| `swirl` (1) | A swirl that peaks mid-way and untwists on the next picture | `strength` 1, `radius` 0.9, `center` [0.5, 0.5] |
+| `rotate_scale_fade` (1) | The outgoing picture spins and zooms away over a colour | `center` [0.5, 0.5], `rotations` 1, `scale` 8, `back_color` [0.15, 0.15, 0.15, 1] |
+| `pixelize` (0.5) | Both pictures pixelate, crossfade and sharpen | `squares_min` [20, 20], `steps` 50 |
+| `film_burn` (1) | Glowing film-burn light leaks reveal the next picture | `seed` 2.31 |
+
+`crates/edits-render/tests/transitions.rs` renders every one: it starts on the
+picture beneath, ends on the plain cut, does something visible in between and
+stays opaque. To add one: copy its WGSL from the crate (check its licence
+header), add it to `TRANSITIONS` and to the table in
+`crates/edits-render/src/transitions.rs` (parameter offsets come from the
+crate's uniform layout), and document it here.

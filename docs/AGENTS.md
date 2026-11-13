@@ -21,8 +21,11 @@ write the file by hand, check it through MCP, render it from the shell.
 ## The MCP server
 
 `edits-mcp` (crate `crates/edits-mcp`) is a thin adapter. It runs `edits` and
-`edits-analyze` as subprocesses and returns their output; `project_edit` is
-the one tool with logic of its own. It implements MCP revision 2026-07-28
+`edits-analyze` as subprocesses and returns their output; the tools that
+change a project (`project_edit`, `preset_apply`, `beats_cut`,
+`beats_accent`, `effect_define`) call the same `edits_core` functions as the
+CLI (`edits_core::edit`, `preset`, `beatops`) in-process, so they can refuse
+files outside the workspace before anything is written. It implements MCP revision 2026-07-28
 through the official Rust SDK (`rmcp`): no `initialize` handshake, no
 session, every request self-contained. Clients that still send `initialize`
 (2025-11-25 and earlier) are served too. Because the protocol is stateless,
@@ -36,10 +39,16 @@ files, D = can overwrite or remove something.
 
 | Tool | | Purpose |
 | --- | --- | --- |
+| `audio_analyze(input, output?, bpm?, beats_per_bar?, project?)` | W | Song → tempo, beats, bars, kick/snare/hat onsets, energy, sections, the drop; written as JSON; with `project`, tempo and markers go into it |
+| `beats_accent(project, preset, on, audio?, layer?, vars?, from?, to?, min_strength?, every_nth?, dry_run?)` | D | A preset on every beat, offbeat, downbeat, kick, snare, hat or the drop, as one step |
+| `beats_cut(project, slots, every? or on?, from?, to?, audio?, min_strength?, prefix?, above? or below?, dry_run?)` | D | One image layer per beat (or bar, or onset), cycling through slots, as one step |
 | `doctor()` | R | Workspace root, the executables found, graphics adapter and backend, ffmpeg encoders |
-| `effects_list(kind?)` | R | The effect registry: parameters, defaults, units, meaning |
+| `effect_define(project, name, wgsl, params?, layer?)` | D | Check a WGSL custom effect (line numbers on error, nothing written), save it as `shaders/<name>.wgsl` and add it to a layer or a new adjustment layer |
+| `effects_list(kind?)` | R | The effect registry and the transitions: parameters, defaults, units, meaning |
 | `job_cancel(job)` | D | Stop a background job; a cancelled render's partial file is removed |
 | `job_status(job?)` | R | State, progress and result of a job; without `job`, the recent jobs |
+| `preset_apply(project, preset, layer?, at?, vars?, audio?, dry_run?)` | D | Apply a preset (or `transition:<kind>` on the incoming layer) at one or more times, as one step |
+| `presets_list(name?, tag?, project?)` | R | The presets with their typed variables; with `name`, one in full |
 | `project_check(project)` | R | Errors and warnings, each with a JSON pointer and a hint |
 | `project_describe(project)` | R | Compact text outline: read this first |
 | `project_edit(project, ops, dry_run?)` | D | Apply a batch of edits as one validated step |
@@ -54,6 +63,13 @@ files, D = can overwrite or remove something.
 | `render_frame(project, at? or frame?, scale?, samples?)` | R | One frame, returned as an image |
 | `render_sheet(project, from?, to?, count? or every_frame?, cols?, scale?, samples?)` | R | A labelled grid of frames, returned as one image |
 | `render_video(project, output, from?, to?, scale?, samples?)` | D | Background job: render the MP4 |
+| `ui_context(project)` | R | What the person has selected and is looking at in the preview window, and their note for you; or that the window is not open |
+
+Every time argument (`at`, `from`, `to`) is a number in the project's time
+base or text: `"b12.5"`, `"bar 4"`, `"4:3"`, `"2.5s"`, `"f60"`, a marker such
+as `"drop"`, `"drop+2b"` ([FORMAT.md](FORMAT.md#times-as-text)). In
+`project_edit`, a layer's `in` / `out` and a key's `t` can be written the same
+way.
 
 Results carry a text block written to be read, and for data tools the same
 facts as `structuredContent`. `render_frame` and `render_sheet` return an
@@ -100,6 +116,63 @@ answers inline when it is quick and hands back a job id when it is not.
 A job is a folder, `<root>/.edits/jobs/<id>/` (command, pid, stdout, log,
 exit code), so any later call, even to a restarted server, can report on it,
 and the job keeps running if the client disconnects.
+
+### Making an edit from a song: the high-level tools
+
+Instead of writing keyframes by hand, build the skeleton and the hits with a
+few calls, then refine with `project_edit`:
+
+1. `audio_analyze {input: "song.mp3", project: "edit/project.json"}`: the
+   tempo, bars, onsets and the drop, written to `song.audio.json`; the
+   project gets the tempo and markers (`drop`, the sections).
+2. `beats_cut {project, slots: ["p1", "p2", "p3"], every: 1, from: "bar 1", to: "drop"}`,
+   then a faster cut after the drop: `{every: 0.5, from: "drop", to: "drop+16b"}`,
+   or `{on: "kicks", audio: "song.audio.json"}`.
+3. `beats_accent {project, preset: "flash", on: "downbeats"}`,
+   `{preset: "punch", on: "kicks", audio}`, `{preset: "shake", on: "drop", audio}`.
+   `layer: "fx"` puts the accents on one adjustment layer instead of each picture.
+4. `preset_apply {project, preset: "transition:whip_pan", layer: "cut9"}` at a
+   cut; `presets_list` shows the rest (`velocity`, `flip_3d`, `rgb_split`,
+   `letterbox`, ...) and `presets_list {name}` their variables.
+5. `render_sheet` (16 frames), or `{from: "drop-1b", to: "drop+1b", every_frame: true}`
+   around a hit, and look. Every step above is one history entry:
+   `project_undo` takes back the last one whole.
+
+### What the person is looking at: `.edits/ui.json`
+
+The preview window (`edits-gui`) shares what the person has selected and
+where they are, through a file next to the project. `ui_context` reads it, so
+"make *this* hit stronger" can be resolved to a layer and a time. The format,
+`edits.ui/1` (type `edits_core::ui::UiContext`, with `edits_core::ui::write`
+for the writing side):
+
+```json
+{
+  "format": "edits.ui/1",
+  "project": "project.json",
+  "updated": "20261113T120000.000Z",
+  "pid": 41213,
+  "playhead": { "t": 4.25, "seconds": 2.07, "frame": 51 },
+  "playing": false,
+  "selection": { "layer": "cut5", "effect": 0, "property": "/layers/@cut5/transform/scale", "key": 2 },
+  "visible": { "from": 0, "to": 16 },
+  "loop": { "from": 4, "to": 8 },
+  "note": "make this hit stronger",
+  "note_at": "20261113T115930.000Z"
+}
+```
+
+- Written to `<project dir>/.edits/ui.json` atomically (write a temporary
+  file, rename), whenever the selection, playhead, view or note changes, and
+  at least every 5 s while the window is open; removed when it closes.
+- `format`, `project` (the project's file name) and `updated` (UTC, in the
+  format of `edits_core::edit::utc_stamp`) are required; everything else is
+  optional and omitted when unknown. Times are project time (beats or
+  seconds, as the project's `time_base`); `property` is a pointer
+  `project_edit` accepts; `effect` and `key` are indices.
+- `ui_context` answers "the window is not open" when there is no file, and
+  "the window seems closed" (with the last state) when `updated` is more than
+  30 s old.
 
 ## The perception ladder
 
@@ -199,7 +272,9 @@ for the project, not one per side:
   time limit (`EDITS_MCP_TIMEOUT`, default 50 s for foreground tools) and a
   cap on the output that is kept.
 - **Custom shaders are validated.** A `custom` effect is a WGSL fragment
-  function. It is parsed and validated when the project is loaded and runs
+  function. `effect_define` checks it (without a GPU) before writing it, and
+  writes only `shaders/<name>.wgsl` next to the project. It is parsed and
+  validated again when the project is loaded and runs
   on the GPU (or the CPU rasteriser) with no access to files or the network;
   it can read the layer's picture and eight numbers. A shader that does not
   validate stops the render with the compiler's message.
@@ -208,7 +283,8 @@ for the project, not one per side:
   only network use is `cargo` downloading crates when you build from source.)
 - **What an agent can do through the server**: write and overwrite files
   inside the root (project files, renders, analysis folders, `.edits/`), and
-  spend CPU time. `project_edit`, `project_undo`, `reference_draft`,
+  spend CPU time. `project_edit`, `project_undo`, `preset_apply`,
+  `beats_cut`, `beats_accent`, `effect_define`, `reference_draft`,
   `render_video` and `job_cancel` are annotated as destructive so that a
   client can ask before running them.
 
@@ -294,6 +370,10 @@ has no `main`-only assumptions, so a subcommand of another binary can call it.
 - MCP tasks (the `io.modelcontextprotocol/tasks` extension) are not used;
   jobs are ordinary tools, which every client can call.
 - No MCP resources or prompts; the skill is a file, not served over MCP.
+- The window does not write `.edits/ui.json` yet: the format above is the
+  contract for it, and `ui_context` already reads it.
+- Presets are applied, not previewed: there are no poster images; look with
+  `render_sheet` after `preset_apply` (`dry_run` reports the changes only).
 - No tool isolates a single layer in a render, overlays ids or motion paths
   on a frame, or shows a frame side by side with the reference. Use
   `enabled: false` on other layers (and `project_undo`) for the first.

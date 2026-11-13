@@ -21,6 +21,17 @@ edits-analyze probe    ref.mp4 [--json]                # per-frame luminance, sa
 (seconds to beat 0), `--whole` (do not stop at one loop period), `--samples`
 (keep raw per-frame track samples). Set `EDITS_ANALYZE_TIMING=1` for stage timings.
 
+The library also analyses a song for cutting to it (`song::analyze_file`,
+behind `edits audio`; see [CLI.md](CLI.md#audio)): from one short-time
+Fourier transform it takes the spectral flux of the whole spectrum (the same
+onset envelope the reference analysis uses for the tempo) and of three bands
+(30–150, 200–3500 and 6000–11000 Hz). The tempo is estimated on the bands
+added with equal weight (busy hats otherwise pull it to 2/3 or 3/2), the bar
+phase from where the kicks, backbeat snares and changes of loudness fall,
+onsets by peak picking each band, sections from changes of loudness per bar,
+and the drop as the largest rise. `cargo test -p edits-analyze song` runs it
+on synthetic songs with known tempo, bars, onsets and drop.
+
 Needs `ffmpeg` and `ffprobe` on `PATH` (used as subprocesses). The library
 (`crates/edits-analyze`) exposes every stage as a plain function returning
 serialisable structs: `pipeline::analyze_video`, `pipeline::analyze_frames`,

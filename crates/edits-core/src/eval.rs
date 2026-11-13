@@ -187,7 +187,7 @@ impl<'a> Evaluator<'a> {
     pub fn transition(&self, layer: &Layer, t: f64) -> Option<ResolvedTransition> {
         let tr = layer.transition.as_ref()?;
         let spec = effects::transition(&tr.kind)?;
-        if !(tr.duration > 0.0) || t < layer.start - 1e-9 || t >= layer.start + tr.duration - 1e-9 {
+        if tr.duration.is_nan() || tr.duration <= 0.0 || t < layer.start - 1e-9 || t >= layer.start + tr.duration - 1e-9 {
             return None;
         }
         let u = ((t - layer.start) / tr.duration).clamp(0.0, 1.0);

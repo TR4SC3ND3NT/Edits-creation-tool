@@ -83,7 +83,7 @@ pub fn cut(doc: &Value, o: &CutOpts, tc: &TimeCtx) -> Result<(Value, CutReport),
             return Err(format!("slot \"{s}\" is not defined; slots: {}", if defined.is_empty() { "(none)".into() } else { defined.join(", ") }));
         }
     }
-    if !(o.to > o.from) {
+    if o.to.is_nan() || o.from.is_nan() || o.to <= o.from {
         return Err(format!("the range {}..{} is empty", o.from, o.to));
     }
     let mut starts: Vec<f64> = match &o.times {
@@ -93,7 +93,7 @@ pub fn cut(doc: &Value, o: &CutOpts, tc: &TimeCtx) -> Result<(Value, CutReport),
             v
         }
         None => {
-            if !(o.every > 0.0) {
+            if o.every.is_nan() || o.every <= 0.0 {
                 return Err("--every must be a positive number of beats".into());
             }
             let step = o.every * tc.beat_len();
@@ -182,6 +182,18 @@ pub fn times(on: &str, song: Option<&SongInfo>, tc: &TimeCtx, from: f64, to: f64
         },
         list => list.split(',').map(|t| tc.resolve(t)).collect::<Result<Vec<_>, _>>().map_err(|e| format!("--on is one of {} or a list of times: {e}", ON.join(", ")))?,
     };
+    // Onsets and the song's beats land within a few milliseconds of the grid
+    // the project is synced to: put them on it (a sixteenth), so that a kick
+    // 0.4 ms before a cut belongs to the picture after the cut.
+    if tc.bpm.is_some() {
+        let q = tc.beat_len() / 4.0;
+        for t in out.iter_mut() {
+            let g = (*t / q).round() * q;
+            if (tc.units_to_seconds(g) - tc.units_to_seconds(*t)).abs() < 0.035 {
+                *t = g;
+            }
+        }
+    }
     out.retain(|t| *t >= from - 1e-9 && *t < to - 1e-9);
     out.sort_by(|a, b| a.total_cmp(b));
     out.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
@@ -270,6 +282,9 @@ mod tests {
         // A song: 120 BPM, beat 0 at 0.25 s; the project starts 0.25 s into it.
         let song = SongInfo { bpm: 120.0, beat_offset: 0.25, beat_seconds: 0.5, beats_per_bar: 4, kick: vec![(0.25, 1.0), (0.75, 0.2), (1.25, 0.9)], drop: Some(2.25), ..Default::default() };
         assert_eq!(times("kicks", Some(&song), &tc, 0.0, 8.0, 0.5, 0.25).unwrap(), vec![0.0, 2.0]);
+        // An onset a few milliseconds off the grid is put on it.
+        let early = SongInfo { kick: vec![(1.247, 1.0)], ..song.clone() };
+        assert_eq!(times("kicks", Some(&early), &tc, 0.0, 8.0, 0.5, 0.25).unwrap(), vec![2.0]);
         assert_eq!(times("drop", Some(&song), &tc, 0.0, 8.0, 0.0, 0.25).unwrap(), vec![4.0]);
     }
 

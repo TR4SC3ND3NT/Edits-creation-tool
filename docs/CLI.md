@@ -9,7 +9,10 @@ are data go to **stdout** as JSON; progress and error messages go to **stderr**;
 a failure always ends with a non-zero exit code and a line starting `error:`.
 
 Times on the command line (`--from`, `--to`, `--at`) are in the project's
-`time_base`: beats for a beats project, seconds otherwise. Frame numbers start
+`time_base`: beats for a beats project, seconds otherwise; they can also be
+written `b12.5` (beat), `bar 4`, `4:3` (bar 4, beat 3), `2.5s`, `f60`, a
+marker such as `drop`, or with offsets, `drop+2b` (all of them in
+[FORMAT.md](FORMAT.md#times-as-text)). Frame numbers start
 at 0. `--scale 0.5` renders at half the project's width and height (sizes are
 rounded to even numbers); effect sizes follow, so a small render is a faithful
 preview of the full one.
@@ -30,6 +33,14 @@ preview of the full one.
 | [`compare`](#compare) | Score a video against a recipe in signature space (any pictures) |
 | [`probe`](#probe) | Per-frame signatures of a video |
 | [`fit`](#fit) | Tune a project's effect values until its render matches a reference |
+| [`audio`](#audio) | Song → tempo, beat grid, bars, kick/snare/hat onsets, energy, sections, the drop |
+| [`presets`](#presets) | The preset library: flashes, punches, shakes, slides, 3D flips, transitions... |
+| [`apply`](#apply) | Apply a preset at one or more times, as one undoable edit |
+| [`save-preset`](#save-preset) | Save what a layer does over a time range as a preset |
+| [`beats cut`](#beats-cut) | One picture per beat (or bar, or kick) between two times |
+| [`beats accent`](#beats-accent) | A preset on every beat, bar, kick, snare, hat or the drop |
+| [`transitions`](#transitions) | The transitions between two layers, with their parameters |
+| [`shader check`](#shader-check) | Check a custom effect shader without a GPU, with line numbers |
 | [`gui`](#gui-and-mcp) | Open the preview window (`edits-gui`) |
 | [`mcp`](#gui-and-mcp) | Serve the MCP tools over stdio (`edits-mcp`) |
 
@@ -204,7 +215,8 @@ edits effects [--json]
 The registry from `edits-core`: every effect kind with its parameters, their
 defaults and what they mean. `--json` gives
 `[{ "kind", "doc", "params": [{ "name", "default", "doc" }] }]`.
-[EFFECTS.md](EFFECTS.md) has the details.
+[EFFECTS.md](EFFECTS.md) has the details. The text ends with the names of the
+transitions, which are listed by [`edits transitions`](#transitions).
 
 ## doctor
 
@@ -336,6 +348,185 @@ minutes on four CPU cores. Details and measured accuracy: [CALIBRATION.md](CALIB
 $ edits fit edit/project.json -r an/reference_analysis.json --dry-run
   shot  2 shot02     frames   25..  43: 9 params, 10 renders, objective 1.734 -> 1.576
   shot02 exposure_decay: exposure.stops key 2 decay rate: 0.21 -> 0.394
+```
+
+## audio
+
+```
+edits audio <song or video> [-o song.json] [--bpm N] [--beats-per-bar 4] [--project project.json] [--json]
+```
+
+Analyses the soundtrack for cutting to it: the tempo and a regular beat grid
+(with the confidence of the estimate), the bars, onsets in three bands with
+their strengths (low 30–150 Hz `kick`, mid 200–3500 Hz `snare`, high
+6–11 kHz `hat`), the loudness of each beat (0..1), sections where the
+loudness changes, and the drop, the largest rise in loudness, on a downbeat.
+It is plain signal processing over one Fourier transform (no model, no GPL
+code); the band onsets are what each band's flux says, not a drum
+transcription. With `-o` the whole analysis is written as JSON (format
+`edits.audio/1`: every time in seconds `t` and in beats `b`); `--json` then
+prints a summary, and without `-o` it prints the analysis itself.
+
+`--project` also writes the song's tempo into the project
+(`settings.bpm`; beat 0 moves to the song's beat nearest to where it was),
+its markers (`drop` and the sections) and, when the project has no audio, the
+song as its audio: one undoable edit. After that, `--at drop` and `bar 9`
+work in every command.
+
+```
+$ edits audio audio/beat.wav -o song.json --project project.json
+audio/beat.wav: 3.90 s, 123 BPM (confidence 0.76), beat 0 at -0.006 s, 9 beats, 2 bars of 4 (bar 1 on beat 2, confidence 0.03)
+onsets: 8 kick, 16 snare, 10 hat; 100% of kicks and snares on the grid
+drop: none found
+sections: high 0.00-3.90 s (bar 1, 2 bars, energy 0.83);
+loudness: -15.5 dBFS RMS, peak -1.1 dBFS
+note: the bar phase is a guess (confidence 0.03): bar 1 may start on another beat; check by ear
+note: no clear drop: the energy does not rise sharply anywhere
+wrote song.json in 0.1 s
+project.json: tempo 123 BPM, beat 0 at -0.006 s
+```
+
+The bar phase comes from where the kicks, the backbeat snares and the
+loudness changes fall; a loop with a kick on every beat is ambiguous (the
+note says so). Loudness is RMS in dBFS, not LUFS.
+
+## presets
+
+```
+edits presets [<name>] [--tag hit] [--project project.json] [--json]
+```
+
+Lists the presets: named building blocks that expand into ordinary keys,
+effects and layers. 22 are built in (files in `presets/`), one
+`transition:<kind>` per transition, and a project's own in
+`<project dir>/presets/` with `--project`. With a name, every variable:
+
+```
+$ edits presets shake
+shake: Camera shake on the hit that dies away: the picture jitters and rolls, zoomed in just enough that its edges never show.
+  tags: hit, camera, shake, accent; target: a layer (--layer id, auto or fx)
+  amplitude (number, default 0.03, 0..0.5) How far it jitters at the start, in frame heights.
+  decay (number, default 1, 0.05..8, beats) Time to fall back to the picture.
+  frequency (number, default 14, 1..60) Jitters per second.
+  rotation (number, default 2, 0..45) How far it rolls at the start, in degrees.
+```
+
+Built in: `flash`, `flash_burn`, `punch`, `zoom_out`, `push_in`, `shake`,
+`rgb_split`, `blur_in`, `blur_out`, `bw_hit`, `invert_hit`, `threshold_hit`,
+`slide_in`, `slide_out`, `flip_3d`, `cube_turn`, `spin`, `velocity`,
+`glow_pulse`, `vignette_pulse`, `overlay_texture`, `letterbox`. The file
+format is in [FORMAT.md](FORMAT.md#presets-editspreset1).
+
+## apply
+
+```
+edits apply <project> <preset> [--layer <id>|auto|fx] [--at <time>[,<time>...]] [--var name=value]... [--audio song.json] [--dry-run] [--json]
+```
+
+Applies a preset as one validated step of the project's history (the window's
+undo, or the MCP `project_undo`, takes it back). `--layer auto` (the default)
+picks the picture on screen at each time; `fx` uses an adjustment layer
+`accents` on top (created when missing), so the preset changes everything
+beneath; a transform preset on an adjustment layer uses `transform2d`
+instead. `--at` defaults to the layer's `in`, which is what a
+`transition:<kind>` wants: given the incoming layer, it overlaps the cut.
+
+```
+$ edits apply project.json transition:whip_pan --layer cut5 --var duration=0.5
+at 4: set cut4/out = 4.25; set cut5/in = 3.75; set cut5/transition = { "kind": "whip_pan", "params": { "blur": 0.4, "direction":…
+wrote project.json: 3 change(s) (undo restores the previous version)
+```
+
+A second hit of the same kind goes into the same effect's keys; keys before
+the hit are held until it, keys after it are kept. Unknown presets,
+variables and times are refused with the list of what exists; a result that
+would not pass `check` is not written (exit 1).
+
+## save-preset
+
+```
+edits save-preset <project> --layer <id> --from <time> --to <time> --name <name> [--description "..."] [--force] [--json]
+```
+
+Turns what a layer does between two times (its keyed transform and effect
+parameters, and its constant effects) into a preset in
+`<project dir>/presets/<name>.json`, with times as offsets from where it is
+applied. Values are copied as they are; add `variables` to the file by hand
+to make it adjustable.
+
+## beats cut
+
+```
+edits beats cut <project> --slots a,b,c [--every 1 | --on kicks] [--from T] [--to T] [--audio song.json] [--above <id> | --below <id>] [--prefix cut] [--dry-run] [--json]
+```
+
+Adds one image layer per step between `--from` and `--to`, cycling through
+the slots: every `--every` beats (4 = a bar, 0.5 = twice a beat), or on each
+`beats`, `offbeats`, `downbeats`, `kicks`, `snares` or `hats` of a song
+analysis, or on a list of times. Layers are named `cut1`, `cut2`, ... (after
+the last existing one) and go on top, below the adjustment layers at the top
+of the stack, unless `--above` / `--below` says otherwise. A range past the end
+of the project makes it longer.
+
+```
+$ edits beats cut project.json --slots a,b,c,d --to 16 --below tex
+16 layer(s): cut1=a@0..1 cut2=b@1..2 cut3=c@2..3 cut4=d@3..4 cut5=a@4..5 ... cut16=d@15..16
+the project now runs to 16
+wrote project.json: 17 change(s) (undo restores the previous version)
+```
+
+## beats accent
+
+```
+edits beats accent <project> --preset <name> --on beats|offbeats|downbeats|kicks|snares|hats|drop|<times> [--audio song.json] [--layer auto|fx|<id>] [--var name=value]... [--from T] [--to T] [--min-strength 0.3] [--every-nth N] [--dry-run] [--json]
+```
+
+Applies a preset at every time of `--on`, as one step. Beats and downbeats
+come from the song analysis when given, else from the project's grid;
+onsets and the drop need `--audio`. Onsets within 35 ms of a sixteenth note of
+the project's grid are put on it, so a kick a few milliseconds before a cut
+belongs to the picture after the cut.
+
+```
+$ edits beats accent project.json --preset punch --on kicks --audio song.json
+punch on 8 time(s): cut1@0 cut2@1 cut3@2 cut4@3 cut5@4 cut6@5 cut7@6 cut8@7
+wrote project.json: 8 change(s) (undo restores the previous version)
+```
+
+## transitions
+
+```
+edits transitions [--json]
+```
+
+The transitions a layer can come in with (its `transition` field), their
+default length in beats and their parameters. See
+[EFFECTS.md](EFFECTS.md#transitions).
+
+```
+$ edits transitions
+A transition sits on the incoming layer: "transition": { "kind", "duration", "params", "ease" }; the preset transition:<kind> sets it and overlaps the cut.
+fade (0.5 beats): A plain crossfade.
+fade_color (1 beats): Dip through a colour (black by default) between the pictures.
+    color          default [0.0, 0.0, 0.0, 1.0] Colour to dip through (sRGB, with alpha).
+    color_phase    default 0.4                  How long the colour holds in the middle.
+...
+```
+
+## shader check
+
+```
+edits shader check <file.wgsl> [--json]
+```
+
+Compiles a custom effect the way the renderer will, without a GPU, and
+reports problems at their line in the file; exits 1 when it would not
+compile. See [EFFECTS.md](EFFECTS.md#errors).
+
+```
+$ edits shader check shaders/bad.wgsl
+error: shaders/bad.wgsl:3:24: no definition in scope for identifier: `nope`
+    return c * fx.p0 + nope;
 ```
 
 ## gui and mcp

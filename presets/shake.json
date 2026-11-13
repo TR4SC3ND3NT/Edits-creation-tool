@@ -1,7 +1,7 @@
 {
   "format": "edits.preset/1",
   "name": "shake",
-  "description": "Camera shake on the hit that dies away: the picture jitters and rolls.",
+  "description": "Camera shake on the hit that dies away: the picture jitters and rolls, zoomed in just enough that its edges never show.",
   "tags": [
     "hit",
     "camera",
@@ -91,6 +91,27 @@
               0,
               0
             ]
+          }
+        ]
+      }
+    },
+    {
+      "pulse": {
+        "transform": "scale",
+        "adjustment": {
+          "effect": "transform2d",
+          "param": "scale",
+          "base": 1
+        },
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=base * (1 + 2 * $amplitude + 0.03 * $rotation)",
+            "ease": "out"
+          },
+          {
+            "dt": "=$decay * beat",
+            "v": "=orig"
           }
         ]
       }
