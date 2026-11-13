@@ -353,7 +353,12 @@ pub fn flashes(stops: &[f64], conf: &[f64], lum: &[f64], bound: &[bool]) -> Vec<
         let lower = if peak_bound { Some(stops[i]) } else { None };
         // Candidate lengths: back at 0 on the first frame below the floor, or,
         // when the cut comes first, somewhere past it.
-        let lengths: Vec<f64> = if cut_short { [0.0, 1.0, 2.0, 4.0, 8.0].iter().map(|e| (end - i) as f64 + e).collect() } else { vec![(end - i) as f64] };
+        // A decay that falls below the floor has not reached 0 yet: it may end a few frames later.
+        let lengths: Vec<f64> = if cut_short {
+            [0.0, 1.0, 2.0, 4.0, 8.0].iter().map(|e| (end - i) as f64 + e).collect()
+        } else {
+            [0.0, 1.0, 2.0, 3.0, 4.0].iter().map(|e| (end - i) as f64 + e).collect()
+        };
         let (mut peak_stops, mut rate, mut sse, mut len) = (stops[i], 0.3, f64::MAX, lengths[0]);
         let mut extrapolated = false;
         if usable >= 3 || (usable >= 2 && peak_bound) {

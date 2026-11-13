@@ -385,16 +385,22 @@ pub fn compare_analyses(reference: &Analysis, cand: &Analysis, cand_tempo: Optio
                 let cf = (f as f64 * ratio).round() as usize;
                 cv.get(cf.wrapping_sub(cs.f0)).copied().flatten()
             };
-            // Re-base the candidate at the reference's reference frame, so both curves
-            // are relative to the same instant.
-            let base = get_c(shot.ref_frame);
-            let rebase = |f: usize, v: f64| match (base, home, cand_shot(f)) {
-                (Some(b), Some(h), Some(here)) if h == here => match s.name {
-                    "exposure" => v - b,
-                    "blur" => (v * v - b * b).max(0.0).sqrt(),
-                    _ if b.abs() > 0.05 => v / b,
-                    _ => v,
-                },
+            // Re-base both curves at the reference's reference frame, so they are
+            // relative to the same instant (each analysis measures a shot against
+            // its own baseline, which need not be that frame).
+            let relative = |v: f64, b: f64| match s.name {
+                "exposure" => v - b,
+                "blur" => (v * v - b * b).max(0.0).sqrt(),
+                _ if b.abs() > 0.05 => v / b,
+                _ => v,
+            };
+            let (base_r, base) = (get_r(shot.ref_frame), get_c(shot.ref_frame));
+            let rebase = |f: usize, v: f64| match (base_r, base, home, cand_shot(f)) {
+                (Some(_), Some(b), Some(h), Some(here)) if h == here => relative(v, b),
+                _ => v,
+            };
+            let rebase_r = |v: f64| match (base_r, base, home) {
+                (Some(b), Some(_), Some(_)) => relative(v, b),
                 _ => v,
             };
             let frames: Vec<usize> = (shot.f0..shot.f1).filter(|f| get_r(*f).is_some() && get_c(*f).is_some()).collect();
@@ -411,7 +417,7 @@ pub fn compare_analyses(reference: &Analysis, cand: &Analysis, cand_tempo: Optio
                 }
                 continue;
             }
-            let r: Vec<f64> = frames.iter().map(|f| get_r(*f).unwrap()).collect();
+            let r: Vec<f64> = frames.iter().map(|f| rebase_r(get_r(*f).unwrap())).collect();
             let c: Vec<f64> = frames.iter().map(|f| rebase(*f, get_c(*f).unwrap())).collect();
             let cmp = curve_cmp(&r, &c, s, fpb);
             let e = acc.entry(s.name).or_insert((0.0, 0.0));
