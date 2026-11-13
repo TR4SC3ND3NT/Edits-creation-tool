@@ -23,10 +23,11 @@ the shell. They can be mixed: the project file is the only state.
 | One frame | `edits frame p.json --at T -o f.png --scale 0.5`, then view `f.png` | `render_frame` (returns the image) |
 | Many frames in one image | `edits sheet p.json -o s.png`, then view `s.png` | `render_sheet` (returns the image) |
 | The video | `edits render p.json -o out.mp4` | `render_video`, then `job_status` |
-| Recipe of a reference edit | `edits-analyze analyze / draft / compare / probe` | `reference_analyze`, `reference_read`, `reference_draft`, `reference_compare`, `reference_probe` |
+| Recipe of a reference edit | `edits analyze / draft / compare / probe` | `reference_analyze`, `reference_read`, `reference_draft`, `reference_compare`, `reference_probe` |
 
-From a checkout the binaries are `target/release/edits` and
-`target/release/edits-analyze` after `cargo build --release`. With MCP every
+From a checkout the binary is `target/release/edits` after
+`cargo build --release -p edits-cli -p edits-analyze -p edits-mcp`
+(`edits-analyze` still exists as a separate binary with the same four commands). With MCP every
 path must be inside the workspace root (`doctor` prints it); relative paths
 start there.
 
@@ -69,7 +70,7 @@ Full references: `docs/FORMAT.md`, `docs/EFFECTS.md`, `docs/CLI.md`,
    it: wrap the song in a blank video and analyse that.
    ```
    ffmpeg -v error -y -f lavfi -i color=c=black:s=64x64:r=25 -i song.mp3 -shortest -c:v libx264 -pix_fmt yuv420p -c:a aac tempo.mp4
-   edits-analyze analyze tempo.mp4 -o tempo_analysis      # prints: tempo 123.00 bpm (confidence 0.56, audio), beat 0 at -0.009 s
+   edits analyze tempo.mp4 -o tempo_analysis      # prints: tempo 123.00 bpm (confidence 0.56, audio), beat 0 at -0.009 s
    ```
    Use the printed tempo as `settings.bpm` and the printed "beat 0 at" as
    `settings.beat_offset` (seconds from the start of the video to beat 0; it
@@ -143,12 +144,12 @@ The goal is not to copy pixels. It is to recover **what the editor did**
 (tempo, where the cuts fall, how hard and how fast each flash and punch is,
 blur, tone hits, overlay, vignette) and replay it on other pictures.
 
-1. **Probe** (seconds): `edits-analyze probe ref.mp4` (MCP: `reference_probe`).
+1. **Probe** (seconds): `edits probe ref.mp4` (MCP: `reference_probe`).
    A per-frame table of luminance, saturation, sharpness and frame difference.
    Big frame differences are cuts or hits; brightness jumps are flashes. Use
    it to see whether the clip is the kind of edit this engine makes.
 2. **Analyse** (about a second per ten frames):
-   `edits-analyze analyze ref.mp4 -o analysis/` (MCP: `reference_analyze`, then
+   `edits analyze ref.mp4 -o analysis/` (MCP: `reference_analyze`, then
    `job_status`). Writes `analysis/reference_analysis.json`, `overlay.png` and
    `proxies/` (one still per picture). Pass `--bpm` if you know the tempo.
 3. **Read the analysis** (MCP: `reference_read`, sections `summary`, `grid`,
@@ -166,7 +167,7 @@ blur, tone hits, overlay, vignette) and replay it on other pictures.
    (twelve consecutive frames in one image; `-ss` is the shot's first frame
    divided by fps), view it, and build the shot by hand (a `cube` layer,
    keyed `rotation`, a second image layer).
-4. **Draft**: `edits-analyze draft analysis/reference_analysis.json -o edit/project.json --proxies`
+4. **Draft**: `edits draft analysis/reference_analysis.json -o edit/project.json --proxies`
    (MCP: `reference_draft` with `proxies: true`). One image layer per shot on
    the beat grid, with the measured flashes, blur, tone hits and motion as
    keyframes. With `--proxies` the slots point at stills taken from the
@@ -182,7 +183,7 @@ blur, tone hits, overlay, vignette) and replay it on other pictures.
    analysis:
    ```
    edits render edit/project.json -o edit/preview.mp4 --scale 0.5
-   edits-analyze compare analysis/reference_analysis.json edit/preview.mp4
+   edits compare analysis/reference_analysis.json edit/preview.mp4
    ```
    (MCP: `render_video`, `job_status`, then `reference_compare`.) It prints
    scores from 0 to 1 (cuts, flashes, tone hits, exposure, blur, saturation,
