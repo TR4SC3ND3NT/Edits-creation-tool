@@ -6,7 +6,10 @@
 //! the layer's matrix: its outline (skrifa) is rasterised to a coverage mask
 //! (zeno) at the size the glyph has on screen, the masks of the layer are
 //! packed into an atlas, and the quads sample their cell of it. One quad and
-//! one matrix per glyph is what per-character animation builds on.
+//! one matrix per glyph is what per-character animation builds on: the
+//! layer's animators (`edits_core::text_select`, evaluated in the core) give
+//! each glyph an offset, scale, turn, opacity, colour, extra tracking and
+//! blur, and the glyph's quad is drawn through its own matrix.
 //!
 //! Sharpness: the em is rasterised at its size in output pixels (to a
 //! quarter pixel), so text is as sharp at `--scale 0.5` as at 4K. When the
@@ -21,7 +24,8 @@
 use crate::assets;
 use crate::renderer::{Renderer, Samp, Tex};
 use anyhow::{anyhow, Context, Result};
-use edits_core::{Align, Text};
+use edits_core::text_select::{GlyphRef, GlyphState};
+use edits_core::{Align, Evaluator, Text};
 use glam::{DMat4, DVec3, DVec4};
 use harfrust::{ShapeOptions, ShaperData, ShaperInstance, UnicodeBuffer};
 use skrifa::instance::{Location, Size};
@@ -46,6 +50,8 @@ const MASK_BUDGET: usize = 64 << 20;
 const ATLASES: usize = 8;
 /// Draws per render pass (each takes a uniform block).
 const DRAWS_PER_PASS: usize = 1024;
+/// Largest blur sigma of an animated glyph, in mask pixels.
+const MAX_BLUR_PX: f64 = 96.0;
 
 /// A font file a text layer uses.
 pub(crate) struct Font {
@@ -81,7 +87,6 @@ fn location(font: &FontRef, weight: Option<f64>) -> Location {
 
 /// One glyph of a laid-out text.
 #[derive(Clone, Debug)]
-#[cfg_attr(not(test), allow(dead_code))] // `advance`, `char_index` and `line` are for per-character animation
 pub(crate) struct Glyph {
     pub id: u32,
     /// Its origin on the baseline, in layer units (composition height = 1,
@@ -106,6 +111,9 @@ pub(crate) struct Layout {
     pub size: [f64; 2],
     /// Font size in layer units.
     pub em: f64,
+    /// Cap height in layer units: glyphs turn and scale about the middle of
+    /// their advance, half a cap height above the baseline.
+    pub cap: f64,
 }
 
 /// A glyph out of the shaper, in logical order.
@@ -207,7 +215,7 @@ pub(crate) fn layout(font: &Font, t: &Text) -> Layout {
             pen += g.advance;
         }
     }
-    Layout { glyphs, lines: lines.len(), size: [box_width, cap + (count - 1) as f64 * line_height], em }
+    Layout { glyphs, lines: lines.len(), size: [box_width, cap + (count - 1) as f64 * line_height], em, cap }
 }
 
 /// The glyphs a line shows (without its trailing spaces) and their width
@@ -292,6 +300,8 @@ struct MaskKey {
     stroke: u32,
     /// Sub-pixel offset of the origin in quarter pixels.
     sub: [u8; 2],
+    /// Gaussian blur sigma in quarter pixels.
+    blur: u32,
 }
 
 /// The coverage of one glyph: two bytes per pixel, the letter and the
@@ -367,7 +377,83 @@ fn rasterise(font: &Font, key: &MaskKey) -> Mask {
         data.push(f);
         data.push(outer.as_ref().map_or(0, |o| o[i].max(f)));
     }
-    Mask { left: place.left, top: place.top, w: place.width, h: place.height, data }
+    let mask = Mask { left: place.left, top: place.top, w: place.width, h: place.height, data };
+    if key.blur >= 2 {
+        blurred(&mask, key.blur as f64 / 4.0)
+    } else {
+        mask
+    }
+}
+
+/// The widths of three box filters whose sequence approximates a gaussian
+/// of `sigma` pixels (odd widths, the standard "boxes for gauss").
+fn boxes_for_gauss(sigma: f64) -> [usize; 3] {
+    let n = 3.0;
+    let ideal = (12.0 * sigma * sigma / n + 1.0).sqrt();
+    let mut wl = ideal.floor() as i64;
+    if wl % 2 == 0 {
+        wl -= 1;
+    }
+    let wl = wl.max(1);
+    let wu = wl + 2;
+    let wlf = wl as f64;
+    let m = ((12.0 * sigma * sigma - n * wlf * wlf - 4.0 * n * wlf - 3.0 * n) / (-4.0 * wlf - 4.0)).round() as i64;
+    [0, 1, 2].map(|i| if i < m { wl as usize } else { wu as usize })
+}
+
+/// `mask` blurred by a gaussian of `sigma` pixels (three box passes each
+/// way), grown by the reach of the blur on every side.
+fn blurred(mask: &Mask, sigma: f64) -> Mask {
+    let boxes = boxes_for_gauss(sigma);
+    let pad: usize = boxes.iter().map(|b| b / 2).sum::<usize>() + 1;
+    let (w, h) = (mask.w as usize + 2 * pad, mask.h as usize + 2 * pad);
+    let mut out = vec![0u8; w * h * 2];
+    let mut buf = vec![0f32; w * h];
+    let mut tmp = vec![0f32; w.max(h)];
+    for c in 0..2 {
+        buf.iter_mut().for_each(|v| *v = 0.0);
+        for y in 0..mask.h as usize {
+            for x in 0..mask.w as usize {
+                buf[(y + pad) * w + x + pad] = mask.data[(y * mask.w as usize + x) * 2 + c] as f32;
+            }
+        }
+        for b in boxes {
+            let r = b / 2;
+            // Rows, then columns: a running sum over 2r + 1 pixels, zero outside.
+            for y in 0..h {
+                box_line(&mut buf, y * w, 1, w, r, &mut tmp);
+            }
+            for x in 0..w {
+                box_line(&mut buf, x, w, h, r, &mut tmp);
+            }
+        }
+        for (i, v) in buf.iter().enumerate() {
+            out[i * 2 + c] = v.round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    Mask { left: mask.left - pad as i32, top: mask.top - pad as i32, w: w as u32, h: h as u32, data: out }
+}
+
+/// A box filter of radius `r` along `len` values of `buf` from `start`, `step` apart.
+fn box_line(buf: &mut [f32], start: usize, step: usize, len: usize, r: usize, tmp: &mut [f32]) {
+    if r == 0 {
+        return;
+    }
+    let at = |i: usize| start + i * step;
+    let norm = 1.0 / (2 * r + 1) as f32;
+    let mut sum: f32 = (0..=r.min(len - 1)).map(|i| buf[at(i)]).sum();
+    for i in 0..len {
+        tmp[i] = sum * norm;
+        if i + r + 1 < len {
+            sum += buf[at(i + r + 1)];
+        }
+        if i >= r {
+            sum -= buf[at(i - r)];
+        }
+    }
+    for (i, v) in tmp.iter().take(len).enumerate() {
+        buf[at(i)] = *v;
+    }
 }
 
 // ---- atlas -----------------------------------------------------------------------
@@ -456,11 +542,50 @@ fn placement(mvp: &DMat4, w: u32, h: u32, em: f64) -> Placement {
 /// A glyph draw: atlas bind group, matrix, parameters (`shaders/text.wgsl`).
 type GlyphDraw = (wgpu::BindGroup, [f32; 16], [[f32; 4]; 3]);
 
-/// One glyph quad: where in layer space, which atlas cell.
+/// One glyph quad: where in layer space, which atlas cell, and what the
+/// animators made of the glyph.
 struct GlyphQuad {
     /// Left, top, width, height in layer units.
     rect: [f64; 4],
     mask: usize,
+    /// The glyph's own matrix in layer space (its animated offset, turn and
+    /// scale), when it has one.
+    matrix: Option<DMat4>,
+    /// Straight sRGB.
+    fill: [f32; 4],
+    opacity: f32,
+}
+
+/// Degrees X, then Y, then Z, as for layers (`geometry.rs`).
+fn rotation(deg: [f64; 3]) -> DMat4 {
+    DMat4::from_rotation_z(deg[2].to_radians()) * DMat4::from_rotation_y(deg[1].to_radians()) * DMat4::from_rotation_x(deg[0].to_radians())
+}
+
+/// How far each glyph moves sideways for the animators' tracking: the extra
+/// advances of the glyphs before it on its line, with the line kept aligned
+/// (a centred line grows both ways).
+fn tracking_shifts(layout: &Layout, states: &[GlyphState], align: Align) -> Vec<f64> {
+    let g = &layout.glyphs;
+    let mut out = vec![0.0; g.len()];
+    let mut i = 0;
+    while i < g.len() {
+        let (start, line) = (i, g[i].line);
+        let mut acc = 0.0;
+        while i < g.len() && g[i].line == line {
+            out[i] = acc;
+            acc += states[i].tracking / 100.0;
+            i += 1;
+        }
+        // The extra after the last glyph does not widen the line.
+        let total = acc - states[i - 1].tracking / 100.0;
+        let shift = match align {
+            Align::Left => 0.0,
+            Align::Center => -total / 2.0,
+            Align::Right => -total,
+        };
+        out[start..i].iter_mut().for_each(|v| *v += shift);
+    }
+    out
 }
 
 /// Straight sRGB to premultiplied linear.
@@ -514,7 +639,9 @@ impl Renderer {
 
     /// The layout of `text` set in `font`, from the cache when it was made before.
     fn text_layout(&mut self, font: &Font, text: &Text) -> Arc<Layout> {
-        let key = format!("{}|{text:?}", font.key);
+        // Everything the layout depends on (not the colours or the animators).
+        let t = text;
+        let key = format!("{}|{:?}", font.key, (&t.text, t.size, t.weight, t.align, t.line_height, t.tracking, t.max_width));
         if let Some(l) = self.text.layouts.get(&key) {
             return l.clone();
         }
@@ -567,8 +694,10 @@ impl Renderer {
     }
 
     /// The masks and quads of `layout` drawn with `mvp` into a `w` x `h`
-    /// frame, with the em rasterised at no more than `max_em` pixels.
-    fn glyph_quads(&mut self, font: &Font, text: &Text, layout: &Layout, mvp: &DMat4, (w, h): (u32, u32), max_em: f64) -> (Vec<MaskKey>, Vec<Arc<Mask>>, Vec<GlyphQuad>) {
+    /// frame, with the em rasterised at no more than `max_em` pixels, and
+    /// each glyph as the animators left it (`states`, one per glyph).
+    #[allow(clippy::too_many_arguments)]
+    fn glyph_quads(&mut self, font: &Font, text: &Text, layout: &Layout, states: Option<&[GlyphState]>, mvp: &DMat4, (w, h): (u32, u32), max_em: f64) -> (Vec<MaskKey>, Vec<Arc<Mask>>, Vec<GlyphQuad>) {
         let em = layout.em;
         let place = match placement(mvp, w, h, em) {
             Placement::Snap { scale, .. } if em * scale > max_em => Placement::Free { scale },
@@ -577,22 +706,40 @@ impl Renderer {
         let wanted = match place {
             Placement::Snap { scale, .. } | Placement::Free { scale } => em * scale,
         };
-        let em_q = (wanted.min(max_em) * 4.0).round().max(4.0);
-        // Pixels per layer unit of the masks.
-        let k = em_q / 4.0 / em.max(1e-12);
-        let stroke_q = match &text.stroke {
-            Some(s) if s.width.is_finite() && s.width > 0.0 && s.color[3] > 0.0 => (s.width / 100.0 * k * 4.0).round().max(1.0),
-            _ => 0.0,
-        };
         let weight = text.weight.filter(|w| w.is_finite()).map(f64::to_bits);
+        let shifts = states.map(|s| tracking_shifts(layout, s, text.align));
         let mut keys: Vec<MaskKey> = Vec::new();
         let mut index: HashMap<MaskKey, usize> = HashMap::new();
         let mut masks = Vec::new();
         let mut quads = Vec::new();
-        for g in &layout.glyphs {
-            let (sub, base) = match place {
-                Placement::Snap { origin, scale } => {
-                    let p = [origin[0] + scale * g.origin[0], origin[1] + scale * g.origin[1]];
+        for (gi, g) in layout.glyphs.iter().enumerate() {
+            let st = states.map(|s| &s[gi]);
+            let opacity = st.map_or(1.0, |s| s.opacity);
+            if opacity.is_nan() || opacity <= 1e-4 || st.is_some_and(|s| s.scale.iter().any(|v| v.is_nan() || v.abs() <= 1e-6)) {
+                continue;
+            }
+            let off = st.map_or([0.0; 3], |s| s.offset);
+            let shift = [off[0] + shifts.as_ref().map_or(0.0, |v| v[gi]), off[1], off[2]];
+            // Glyphs scaled up are rasterised bigger (in steps of half an octave).
+            let grow = st.map_or(1.0, |s| s.scale[0].abs().max(s.scale[1].abs())).clamp(1.0, 64.0);
+            let grow = if grow > 1.0 { 2f64.powf((grow.log2() * 2.0).ceil() / 2.0) } else { 1.0 };
+            let em_q = ((wanted * grow).min(max_em) * 4.0).round().max(4.0);
+            // Pixels per layer unit of the mask.
+            let k = em_q / 4.0 / em.max(1e-12);
+            let stroke_q = match &text.stroke {
+                Some(s) if s.width.is_finite() && s.width > 0.0 && s.color[3] > 0.0 => (s.width / 100.0 * k * 4.0).round().max(1.0),
+                _ => 0.0,
+            };
+            let blur_q = st.map_or(0.0, |s| (s.blur / 100.0 * k * 4.0).round().clamp(0.0, 4.0 * MAX_BLUR_PX));
+            // Moved only (in the plane): the quad can still sit on whole pixels.
+            let moved_only = st.is_none_or(|s| s.is_translation() && s.offset[2] == 0.0);
+            let snap = match place {
+                Placement::Snap { origin, scale } if moved_only => Some((origin, scale)),
+                _ => None,
+            };
+            let (sub, base) = match snap {
+                Some((origin, scale)) => {
+                    let p = [origin[0] + scale * (g.origin[0] + shift[0]), origin[1] + scale * (g.origin[1] + shift[1])];
                     let mut base = [p[0].floor(), p[1].floor()];
                     let mut sub = [0u8; 2];
                     for i in 0..2 {
@@ -605,9 +752,9 @@ impl Renderer {
                     }
                     (sub, Some(base))
                 }
-                Placement::Free { .. } => ([0, 0], None),
+                None => ([0, 0], None),
             };
-            let key = MaskKey { font: font.key.clone(), weight, glyph: g.id, em: em_q as u32, stroke: stroke_q as u32, sub };
+            let key = MaskKey { font: font.key.clone(), weight, glyph: g.id, em: em_q as u32, stroke: stroke_q as u32, sub, blur: blur_q as u32 };
             let i = match index.get(&key) {
                 Some(&i) => i,
                 None => {
@@ -623,14 +770,21 @@ impl Renderer {
             };
             let m = &masks[i];
             let (cw, ch) = ((m.w + 2) as f64, (m.h + 2) as f64);
-            let rect = match (place, base) {
-                (Placement::Snap { origin, scale }, Some(base)) => {
+            let (rect, matrix) = match (snap, base) {
+                (Some((origin, scale)), Some(base)) => {
                     let (x, y) = (base[0] + (m.left - 1) as f64, base[1] + (m.top - 1) as f64);
-                    [(x - origin[0]) / scale, (y - origin[1]) / scale, cw / scale, ch / scale]
+                    ([(x - origin[0]) / scale, (y - origin[1]) / scale, cw / scale, ch / scale], None)
                 }
-                _ => [g.origin[0] + (m.left - 1) as f64 / k, g.origin[1] + (m.top - 1) as f64 / k, cw / k, ch / k],
+                _ => {
+                    let rect = [g.origin[0] + (m.left - 1) as f64 / k, g.origin[1] + (m.top - 1) as f64 / k, cw / k, ch / k];
+                    let matrix = st.map(|s| {
+                        let pivot = DVec3::new(g.origin[0] + g.advance / 2.0, g.origin[1] - layout.cap / 2.0, 0.0);
+                        DMat4::from_translation(pivot + DVec3::from(shift)) * rotation(s.rotation) * DMat4::from_scale(DVec3::from(s.scale)) * DMat4::from_translation(-pivot)
+                    });
+                    (rect, matrix)
+                }
             };
-            quads.push(GlyphQuad { rect, mask: i });
+            quads.push(GlyphQuad { rect, mask: i, matrix, fill: st.map_or(text.fill, |s| s.fill), opacity: opacity as f32 });
         }
         (keys, masks, quads)
     }
@@ -647,8 +801,9 @@ impl Renderer {
     }
 
     /// A text layer's picture: its glyphs drawn through `mvp` (the layer's
-    /// matrix through the camera) into a fresh frame-sized texture.
-    pub(crate) fn draw_text(&mut self, layer_id: &str, text: &Text, mvp: DMat4) -> Result<Tex> {
+    /// matrix through the camera) into a fresh frame-sized texture, each as
+    /// the layer's animators make it at `t` (the layer's own time).
+    pub(crate) fn draw_text(&mut self, layer_id: &str, text: &Text, mvp: DMat4, t: f64) -> Result<Tex> {
         let scene = self.scene.clone().ok_or_else(|| anyhow!("no project prepared: call prepare() first"))?;
         let font = scene
             .fonts
@@ -657,9 +812,13 @@ impl Renderer {
             .ok_or_else(|| anyhow!("layer \"{layer_id}\": its font was not loaded (prepare the project the layer belongs to)"))?;
         let (w, h) = (self.ctx.w, self.ctx.h);
         let layout = self.text_layout(&font, text);
+        let states = text.animators.iter().any(|a| a.enabled).then(|| {
+            let refs: Vec<GlyphRef> = layout.glyphs.iter().map(|g| GlyphRef { char_index: g.char_index, line: g.line }).collect();
+            Evaluator::new(&scene.project).text_glyphs(text, &refs, t)
+        });
         let mut max_em = MAX_EM_PX;
         let (atlas, masks, quads) = loop {
-            let (keys, masks, quads) = self.glyph_quads(&font, text, &layout, &mvp, (w, h), max_em);
+            let (keys, masks, quads) = self.glyph_quads(&font, text, &layout, states.as_deref(), &mvp, (w, h), max_em);
             if quads.is_empty() {
                 break (None, masks, quads);
             }
@@ -678,16 +837,22 @@ impl Renderer {
         };
         let (aw, ah) = (atlas.tex.w as f32, atlas.tex.h as f32);
         let bind = self.bind(&atlas.tex, None, Samp::Linear);
-        let fill = premultiplied(text.fill);
         let stroke = text.stroke.as_ref().filter(|s| s.width.is_finite() && s.width > 0.0).map(|s| premultiplied(s.color));
         // Every outline beneath every letter, so that outlines never cover a neighbour.
         let mut draws: Vec<([f32; 16], [[f32; 4]; 3])> = Vec::with_capacity(quads.len() * 2);
-        let passes: Vec<([f32; 4], [f32; 4])> = stroke.map(|c| (c, [0.0, 1.0, 0.0, 0.0])).into_iter().chain([(fill, [1.0, 0.0, 0.0, 0.0])]).filter(|(c, _)| c[3] > 0.0).collect();
-        for (colour, channel) in passes {
+        let passes: Vec<(Option<[f32; 4]>, [f32; 4])> = stroke.map(|c| (Some(c), [0.0, 1.0, 0.0, 0.0])).into_iter().chain([(None, [1.0, 0.0, 0.0, 0.0])]).collect();
+        for (stroke, channel) in passes {
             for q in &quads {
+                let colour = stroke.unwrap_or_else(|| premultiplied(q.fill)).map(|c| c * q.opacity);
+                if colour[3].is_nan() || colour[3] <= 0.0 {
+                    continue;
+                }
                 let m = &masks[q.mask];
                 let cell = atlas.cells[q.mask];
-                let model = DMat4::from_translation(DVec3::new(q.rect[0] + q.rect[2] / 2.0, q.rect[1] + q.rect[3] / 2.0, 0.0)) * DMat4::from_scale(DVec3::new(q.rect[2], q.rect[3], 1.0));
+                let mut model = DMat4::from_translation(DVec3::new(q.rect[0] + q.rect[2] / 2.0, q.rect[1] + q.rect[3] / 2.0, 0.0)) * DMat4::from_scale(DVec3::new(q.rect[2], q.rect[3], 1.0));
+                if let Some(g) = q.matrix {
+                    model = g * model;
+                }
                 let uv = [cell[0] as f32 / aw, cell[1] as f32 / ah, (m.w + 2) as f32 / aw, (m.h + 2) as f32 / ah];
                 draws.push(((mvp * model).as_mat4().to_cols_array(), [uv, colour, channel]));
             }
@@ -808,7 +973,7 @@ mod tests {
     fn masks_have_a_wider_outline_channel() {
         let font = Font::builtin();
         let id = font.font_ref().charmap().map('O').unwrap().to_u32();
-        let key = |stroke| MaskKey { font: font.key.clone(), weight: None, glyph: id, em: 400, stroke, sub: [0, 0] };
+        let key = |stroke| MaskKey { font: font.key.clone(), weight: None, glyph: id, em: 400, stroke, sub: [0, 0], blur: 0 };
         let plain = rasterise(&font, &key(0));
         let outlined = rasterise(&font, &key(16));
         assert!(plain.w > 50 && plain.h > 50);

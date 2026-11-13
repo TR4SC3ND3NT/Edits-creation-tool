@@ -1,0 +1,66 @@
+{
+  "format": "edits.preset/1",
+  "name": "random_flicker",
+  "description": "The letters of a text layer switch on in a random order, flickering until they settle.",
+  "tags": ["text", "reveal", "caption", "glitch"],
+  "layer_kind": "text",
+  "variables": {
+    "duration": {
+      "type": "number",
+      "default": 2,
+      "min": 0.05,
+      "max": 64,
+      "unit": "beats",
+      "doc": "Time until every letter is on."
+    },
+    "flicker": {
+      "type": "number",
+      "default": 100,
+      "min": 0,
+      "max": 100,
+      "unit": "%",
+      "doc": "How deep the letters flicker while they come on (0: no flicker)."
+    },
+    "speed": {
+      "type": "number",
+      "default": 12,
+      "min": 0.5,
+      "max": 60,
+      "unit": "per second",
+      "doc": "Flickers per second."
+    },
+    "seed": {
+      "type": "integer",
+      "default": 1,
+      "doc": "Another number gives another order."
+    }
+  },
+  "apply": [
+    {
+      "animator": {
+        "name": "flicker on",
+        "selector": {
+          "kind": "range",
+          "randomize": true,
+          "seed": "$seed",
+          "smoothness": 0,
+          "start": { "keys": [ { "t": "=at", "v": 0 }, { "t": "=at + $duration * beat", "v": 100 } ] }
+        },
+        "opacity": 0
+      }
+    },
+    {
+      "animator": {
+        "name": "flicker",
+        "selector": {
+          "kind": "wiggly",
+          "seed": "$seed",
+          "frequency": "$speed",
+          "correlation": 0,
+          "amount": { "keys": [ { "t": "=at", "v": "$flicker" }, { "t": "=at + $duration * beat", "v": "=$flicker / 2", "ease": "out" }, { "t": "=at + 1.5 * $duration * beat", "v": 0 } ] }
+        },
+        "opacity": 0
+      }
+    }
+  ]
+}

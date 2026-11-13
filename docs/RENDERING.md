@@ -271,6 +271,23 @@ system fonts), so a frame depends only on the project and its files.
   quads, blended premultiplied "over" into a transparent frame-sized
   texture; that picture then goes through the layer's effects and blend like
   any other layer's.
+- **Animators.** The core evaluates the animators
+  (`edits_core::text_select`, `Evaluator::text_glyphs`) at the layer's time
+  into one state per glyph: offset, scale, turn, opacity, colour, tracking
+  and blur. Each glyph's quad then gets a matrix of its own (pivot at the
+  middle of its advance, half a cap height above the baseline; offset,
+  turn X-Y-Z, scale) between its quad and the layer's matrix, so a turned
+  letter is seen in perspective through the camera. A glyph that is only
+  moved in the plane is still put on whole pixels and rasterised at its
+  quarter-pixel offset; a scaled or turned one is rasterised at the layer's
+  size (larger when scaled up, in steps of half an octave) and drawn through
+  its matrix. Opacity and colour are the draw's colour; a glyph with opacity
+  or scale 0 is not drawn. Blur is done on the CPU on the glyph's mask
+  (three box passes each way approximating a gaussian, sigma to a quarter
+  pixel, at most 96 pixels), so it costs one small mask per glyph and blur
+  value, not a pass over the frame. Glyphs do not hide each other by depth:
+  they are drawn in reading order. A text layer with animators changes at
+  every instant, so its picture is never reused from the previous frame.
 
 Why not parley: parley (layout, shaping and font fallback in one crate) would
 do the shaping and line breaking, but it needs the ICU4X crates, which are

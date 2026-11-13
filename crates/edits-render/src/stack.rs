@@ -96,7 +96,7 @@ impl Renderer {
         let drawn = match &layer.kind {
             LayerKind::Text(text) => {
                 let mvp = self.layer_mvp(ev, at, t);
-                self.draw_text(&layer.id, text, mvp)?
+                self.draw_text(&layer.id, text, mvp, ev.layer_time(layer, t))?
             }
             _ => {
                 let (quads, depth) = self.quads_at(ev, layer, at, t)?;
@@ -338,6 +338,12 @@ fn signature(ev: &Evaluator, scene: &Scene, layer: &Layer, t: f64, depth: u32) -
     if let LayerKind::Particles(_) = &layer.kind {
         // Particles move at every instant.
         out.push(lt.to_bits());
+    }
+    if let LayerKind::Text(text) = &layer.kind {
+        // Animated letters change at every instant.
+        if text.animators.iter().any(|a| a.enabled) {
+            out.push(lt.to_bits());
+        }
     }
     for e in layer.effects.iter().filter(|e| e.enabled) {
         if effect_reads_time(&e.kind) {

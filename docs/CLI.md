@@ -451,8 +451,10 @@ Built in: `flash`, `flash_burn`, `punch`, `zoom_out`, `push_in`, `shake`,
 `slide_in`, `slide_out`, `flip_3d`, `cube_turn`, `spin`, `velocity`,
 `glow_pulse`, `vignette_pulse`, `overlay_texture`, `letterbox`, the masks
 `iris_in` (a circle opening on the picture) and `split_panels` (a slanted
-split-screen panel), and the
-particle layers `sakura`, `sparkles`, `dust`, `beat_burst`. The file
+split-screen panel), the
+particle layers `sakura`, `sparkles`, `dust`, `beat_burst`, and the text
+animations `typewriter`, `pop_in`, `random_flicker`, `wave` (target: a text
+layer; `auto` takes the text layer on screen at `--at`). The file
 format is in [FORMAT.md](FORMAT.md#presets-editspreset1).
 
 ## apply

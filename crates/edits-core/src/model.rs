@@ -313,6 +313,11 @@ pub struct Text {
     /// spaces and between CJK characters. A word longer than the line stays whole.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_width: Option<f64>,
+    /// Per-character animation: each animator selects characters, words or
+    /// lines and moves, scales, turns, fades, colours, spaces or blurs them.
+    /// See `crate::text_select`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub animators: Vec<crate::text_select::TextAnimator>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

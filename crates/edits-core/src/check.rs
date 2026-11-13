@@ -351,12 +351,69 @@ fn check_text(t: &Text, lp: &str, base_dir: Option<&Path>, err: &mut impl FnMut(
             warn.push(Finding { severity: Severity::Warning, path: format!("{lp}.{name}"), message: format!("{c:?} is outside 0..1; the renderer clamps it"), hint: Some("sRGB components and alpha in 0..1".into()) });
         }
     }
+    for (ai, a) in t.animators.iter().enumerate() {
+        check_animator(a, &format!("{lp}.animators[{ai}]"), err, warn);
+    }
     if t.text.trim().is_empty() {
         warn.push(Finding { severity: Severity::Warning, path: format!("{lp}.text"), message: "the text is empty: the layer draws nothing".into(), hint: None });
     }
     if let (Some(font), Some(dir)) = (&t.font, base_dir) {
         if !dir.join(font).is_file() {
             err(format!("{lp}.font"), format!("font not found: {font}"), Some("a .ttf or .otf file, relative to the project file; remove \"font\" to use the built-in Inter"));
+        }
+    }
+}
+
+/// A text animator: its properties and its selector's values.
+fn check_animator(a: &crate::text_select::TextAnimator, ap: &str, err: &mut impl FnMut(String, String, Option<&str>), warn: &mut Vec<Finding>) {
+    use crate::text_select::Selector;
+    let props = [("position", &a.position), ("scale", &a.scale), ("rotation", &a.rotation), ("opacity", &a.opacity), ("fill", &a.fill), ("tracking", &a.tracking), ("blur", &a.blur)];
+    for (name, p) in props {
+        let Some(p) = p else { continue };
+        let pp = format!("{ap}.{name}");
+        check_prop(p, &pp, err);
+        let values = written_values(p);
+        if name == "fill" && values.iter().any(|v| v.len() != 3 && v.len() != 4) {
+            err(pp.clone(), "fill is a colour: [r, g, b] or [r, g, b, a] in 0..1".into(), None);
+        }
+        if name == "blur" && values.iter().flatten().any(|v| *v < 0.0) {
+            err(pp, "blur must be 0 or more".into(), Some("a sigma in percent of the composition height"));
+        }
+    }
+    if a.properties().is_empty() {
+        warn.push(Finding { severity: Severity::Warning, path: ap.into(), message: "the animator sets no property: it does nothing".into(), hint: Some("give position, scale, rotation, opacity, fill, tracking or blur".into()) });
+    }
+    let ranged = |name: &str, p: &Option<Prop>, lo: f64, hi: f64, err: &mut dyn FnMut(String, String, Option<&str>)| {
+        let Some(p) = p else { return };
+        if let Some(bad) = written_values(p).iter().flatten().find(|v| !(lo..=hi).contains(*v)) {
+            err(format!("{ap}.selector.{name}"), format!("{name} must be between {lo} and {hi}, got {bad}"), Some("percent"));
+        }
+    };
+    let mut e = |path: String, msg: String, hint: Option<&str>| err(path, msg, hint);
+    match &a.selector {
+        Selector::Range(r) => {
+            for (name, p) in [("start", &r.start), ("end", &r.end), ("offset", &r.offset), ("smoothness", &r.smoothness), ("ease_high", &r.ease_high), ("ease_low", &r.ease_low), ("amount", &r.amount)] {
+                if let Some(p) = p {
+                    check_prop(p, &format!("{ap}.selector.{name}"), &mut e);
+                }
+            }
+            ranged("smoothness", &r.smoothness, 0.0, 100.0, &mut e);
+            ranged("ease_high", &r.ease_high, -100.0, 100.0, &mut e);
+            ranged("ease_low", &r.ease_low, -100.0, 100.0, &mut e);
+            ranged("amount", &r.amount, -100.0, 100.0, &mut e);
+            if let Some(ease) = r.ease.as_ref().filter(|x| !ease::is_known(x)) {
+                e(format!("{ap}.selector.ease"), format!("unknown ease {ease:?}"), Some(&format!("names: {}; or [x1, y1, x2, y2]", ease::NAMES.join(", "))));
+            }
+        }
+        Selector::Wiggly(w) => {
+            for (name, p) in [("amount", &w.amount), ("frequency", &w.frequency), ("correlation", &w.correlation)] {
+                if let Some(p) = p {
+                    check_prop(p, &format!("{ap}.selector.{name}"), &mut e);
+                }
+            }
+            ranged("amount", &w.amount, -100.0, 100.0, &mut e);
+            ranged("correlation", &w.correlation, 0.0, 100.0, &mut e);
+            ranged("frequency", &w.frequency, 0.0, 1000.0, &mut e);
         }
     }
 }

@@ -11,7 +11,7 @@
 //! `crates/effects/src/time_fx.rs`. See `THIRD_PARTY.md`.
 
 use crate::model::*;
-use crate::{ease, effects};
+use crate::{ease, effects, text_select};
 use std::collections::BTreeMap;
 
 pub struct Evaluator<'a> {
@@ -285,6 +285,56 @@ impl<'a> Evaluator<'a> {
             params.insert(p.name.to_string(), pad(v, p.default.len()));
         }
         Some(ResolvedTransition { kind: spec.kind, progress, params })
+    }
+
+    /// What the animators of `text` do to each of its `glyphs` at project
+    /// time `t` (the layer's time): one state per glyph, in order. Without
+    /// enabled animators every glyph is at rest with the text's fill.
+    pub fn text_glyphs(&self, text: &Text, glyphs: &[text_select::GlyphRef], t: f64) -> Vec<text_select::GlyphState> {
+        use text_select::*;
+        let mut out = vec![GlyphState::rest(text.fill); glyphs.len()];
+        let opt = |p: &Option<Prop>, d: f64| p.as_ref().map_or(d, |p| self.num(p, t));
+        for a in text.animators.iter().filter(|a| a.enabled) {
+            let props = AnimatorAt {
+                position: a.position.as_ref().map(|p| self.vec3(p, t)),
+                scale: a.scale.as_ref().map(|p| self.scale3(p, t)),
+                rotation: a.rotation.as_ref().map(|p| self.vec3(p, t)),
+                opacity: a.opacity.as_ref().map(|p| self.num(p, t)),
+                fill: a.fill.as_ref().map(|p| {
+                    let v = self.prop(p, t);
+                    let c = pad(v.clone(), 3);
+                    [c[0], c[1], c[2], if v.len() >= 4 { v[3] } else { 1.0 }]
+                }),
+                tracking: a.tracking.as_ref().map(|p| self.num(p, t)),
+                blur: a.blur.as_ref().map(|p| self.num(p, t)),
+            };
+            let (unit, n) = units_of(&text.text, glyphs, a.selector.units());
+            let selection: Vec<f64> = match &a.selector {
+                Selector::Range(r) => {
+                    let at = RangeAt {
+                        start: opt(&r.start, 0.0),
+                        end: opt(&r.end, 100.0),
+                        offset: opt(&r.offset, 0.0),
+                        smoothness: opt(&r.smoothness, 100.0),
+                        ease_high: opt(&r.ease_high, 0.0),
+                        ease_low: opt(&r.ease_low, 0.0),
+                        amount: opt(&r.amount, 100.0),
+                    };
+                    let order = r.randomize.then(|| random_order(n, r.seed));
+                    let values: Vec<f64> = (0..n).map(|u| range_value(r, order.as_ref().map_or(u, |o| o[u]), n, &at)).collect();
+                    unit.iter().map(|&u| values[u]).collect()
+                }
+                Selector::Wiggly(w) => {
+                    let at = WigglyAt { amount: opt(&w.amount, 100.0), frequency: opt(&w.frequency, 2.0), correlation: opt(&w.correlation, 50.0) };
+                    let secs = self.project.to_seconds(t);
+                    unit.iter().map(|&u| wiggly_value(u, secs, w.seed, &at)).collect()
+                }
+            };
+            for (g, s) in out.iter_mut().zip(selection) {
+                apply(g, &props, s);
+            }
+        }
+        out
     }
 
     /// True when `layer` is visible at project time `t`.

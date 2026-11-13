@@ -164,7 +164,41 @@ fn text_summary(t: &Text) -> String {
     if let Some(m) = t.max_width {
         parts.push(format!("wrap {m}"));
     }
+    if !t.animators.is_empty() {
+        let list: Vec<String> = t.animators.iter().map(animator_summary).collect();
+        parts.push(format!("animators [{}]", list.join("; ")));
+    }
     parts.join(" ")
+}
+
+/// `opacity+scale by range characters ramp_up random` or `position by wiggly words`.
+fn animator_summary(a: &crate::text_select::TextAnimator) -> String {
+    use crate::text_select::Selector;
+    let props = a.properties();
+    let mut s = format!("{} by ", if props.is_empty() { "nothing".to_string() } else { props.join("+") });
+    match &a.selector {
+        Selector::Range(r) => {
+            s.push_str(&format!("range {} {}", r.units.name(), r.shape.name()));
+            let keyed = [&r.start, &r.end, &r.offset].iter().any(|p| matches!(p, Some(Prop::Anim(_))));
+            if keyed {
+                s.push_str(" keyed");
+            }
+            if let Some(Ease::Name(n)) = &r.ease {
+                s.push_str(&format!(" {n}"));
+            }
+            if r.randomize {
+                s.push_str(" random");
+            }
+        }
+        Selector::Wiggly(w) => s.push_str(&format!("wiggly {}", w.units.name())),
+    }
+    if let Some(n) = &a.name {
+        s = format!("{n}: {s}");
+    }
+    if !a.enabled {
+        s.push_str(" (disabled)");
+    }
+    s
 }
 
 pub(crate) fn const_text(p: &Prop) -> String {

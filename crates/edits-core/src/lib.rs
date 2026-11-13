@@ -21,6 +21,7 @@ pub mod pointer;
 pub mod preset;
 pub mod beatops;
 pub mod song;
+pub mod text_select;
 pub mod time;
 pub mod ui;
 

@@ -173,3 +173,90 @@ fn fonts_are_files_next_to_the_project() {
     let e = guard.as_mut().unwrap().prepare(&missing, &dir()).unwrap_err();
     assert!(format!("{e:#}").contains("font not found"), "{e:#}");
 }
+
+// ---- animators ------------------------------------------------------------------
+
+/// Pixels brighter than half.
+fn lit(img: &RgbaImage) -> usize {
+    img.pixels().filter(|p| p.0[0].max(p.0[1]).max(p.0[2]) > 127).count()
+}
+
+#[test]
+fn an_opacity_range_hides_half_of_the_characters() {
+    let plain = r#"{"id":"t","kind":"text","text":"HHHHHHHH","size":12}"#;
+    let hide = |start: u32, end: u32| {
+        format!(r#"{{"id":"t","kind":"text","text":"HHHHHHHH","size":12,"animators":[{{"selector":{{"kind":"range","start":{start},"end":{end}}},"opacity":0}}]}}"#)
+    };
+    let (Some(all_img), Some(first), Some(second)) = (draw(&text_project(plain), 1.0), draw(&text_project(&hide(50, 100)), 1.0), draw(&text_project(&hide(0, 50)), 1.0)) else { return };
+    let (a, f, s) = (all(&all_img), all(&first), all(&second));
+    let mid = W as f64 / 2.0;
+    // 50..100 % hidden: the first four letters stay, ending left of the middle.
+    assert_eq!(f[0], a[0], "{a:?} {f:?}");
+    assert!((f[2] as f64) < mid && (f[2] as f64) > mid - 12.0, "{f:?}");
+    // 0..50 % hidden: the last four stay.
+    assert_eq!(s[2], a[2], "{a:?} {s:?}");
+    assert!((s[0] as f64) > mid && (s[0] as f64) < mid + 12.0, "{s:?}");
+    let (n, nf, ns) = (lit(&all_img), lit(&first), lit(&second));
+    assert!(nf.abs_diff(n / 2) <= n / 20 && ns.abs_diff(n / 2) <= n / 20, "{n} {nf} {ns}");
+}
+
+#[test]
+fn a_y_turn_per_character_narrows_every_glyph() {
+    let flat = r#"{"id":"t","kind":"text","text":"HHHH","size":20}"#;
+    let turned = r#"{"id":"t","kind":"text","text":"HHHH","size":20,"animators":[{"rotation":[0,60,0]}]}"#;
+    let (Some(a), Some(b)) = (draw(&text_project(flat), 1.0), draw(&text_project(turned), 1.0)) else { return };
+    // Every glyph turns about its own middle: about cos 60 = half as wide, in place.
+    let ratio = lit(&b) as f64 / lit(&a) as f64;
+    assert!((0.4..0.65).contains(&ratio), "{ratio}");
+    let (ba, bb) = (all(&a), all(&b));
+    assert!((centre(ba)[0] - centre(bb)[0]).abs() <= 2.0, "{ba:?} {bb:?}");
+    assert!(bb[2] - bb[0] > (ba[2] - ba[0]) * 3 / 4, "the glyphs stay where they were: {ba:?} {bb:?}");
+    assert!((bb[3] as i64 - ba[3] as i64).abs() <= 3, "{ba:?} {bb:?}");
+}
+
+#[test]
+fn animator_scale_position_fill_and_blur() {
+    let base = r#"{"id":"t","kind":"text","text":"HI","size":20"#;
+    let with = |animators: &str| text_project(&format!(r#"{base},"animators":[{animators}]}}"#));
+    let plain = text_project(&format!("{base}}}"));
+    let (Some(p), Some(up), Some(gone), Some(red), Some(soft)) = (
+        draw(&plain, 1.0),
+        draw(&with(r#"{"position":[0,-0.2,0]}"#), 1.0),
+        draw(&with(r#"{"scale":0}"#), 1.0),
+        draw(&with(r#"{"fill":[1,0,0]}"#), 1.0),
+        draw(&with(r#"{"blur":1}"#), 1.0),
+    ) else {
+        return;
+    };
+    let (a, b) = (all(&p), all(&up));
+    assert!(((a[1] as f64 - b[1] as f64) - 0.2 * H as f64).abs() <= 1.0, "{a:?} {b:?}");
+    assert_eq!(coverage(&gone, 0..H), None, "scale 0 hides the letters");
+    let c = centre(all(&red));
+    let px = red.get_pixel(all(&red)[0] + 2, c[1] as u32).0;
+    assert!(px[0] > 200 && px[1] < 30 && px[2] < 30, "{px:?}");
+    // Blur spreads the letters: more pixels touched, fewer solid ones.
+    let touched = |img: &RgbaImage| img.pixels().filter(|q| q.0[0] > 8).count();
+    let solid = |img: &RgbaImage| img.pixels().filter(|q| q.0[0] > 250).count();
+    assert!(touched(&soft) > touched(&p) * 3 / 2 && solid(&soft) < solid(&p) / 2, "{} {} {} {}", touched(&soft), touched(&p), solid(&soft), solid(&p));
+}
+
+#[test]
+fn animated_letters_are_deterministic() {
+    let p = text_project(
+        r#"{"id":"t","kind":"text","text":"SAY MY\nNAME","size":15,"stroke":{"color":[0,0,0],"width":0.5},"animators":[
+            {"selector":{"kind":"range","shape":"ramp_up","start":0,"end":30,"offset":{"keys":[{"t":0,"v":-30},{"t":2,"v":100}]},"ease":"back_out","randomize":true,"seed":4},
+             "scale":0,"rotation":[0,0,-30],"blur":0.5},
+            {"selector":{"kind":"wiggly","amount":80,"frequency":6,"seed":2},"position":[0,0.03,0],"opacity":0.2,"fill":[1,0.3,0.6]}]}"#,
+    );
+    let Some(mut guard) = renderer() else { return };
+    let r = guard.as_mut().unwrap();
+    let frames: Vec<RgbaImage> = (0..4).map(|f| render_in(r, &p, &dir(), 3 + f * 5, 1.0)).collect();
+    for (i, f) in frames.iter().enumerate() {
+        let again = render_in(r, &p, &dir(), 3 + i as u64 * 5, 1.0);
+        assert!(again.as_raw() == f.as_raw(), "frame {} differs on a second render", 3 + i * 5);
+    }
+    assert!(frames[0].as_raw() != frames[1].as_raw() && frames[1].as_raw() != frames[3].as_raw());
+    // Consecutive frames differ even though the layer itself does not move.
+    let (a, b) = (render_in(r, &p, &dir(), 9, 1.0), render_in(r, &p, &dir(), 10, 1.0));
+    assert!(a.as_raw() != b.as_raw());
+}
