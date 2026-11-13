@@ -67,10 +67,12 @@ right, y down, z away from the viewer.
 ## A frame
 
 For each motion blur sample, the renderer starts from the background and goes
-through the active layers bottom to top: draw the layer, run its effects,
-blend it with its mode and opacity. An adjustment layer runs its effects on
-the image so far (its opacity and blend mode mix the result with the
-original). The samples are averaged in linear light.
+through the active layers bottom to top (skipping those with `visible:
+false`): draw the layer, cut it to its masks, run its effects, multiply it by
+its track matte, blend it with its mode and opacity. An adjustment layer runs
+its effects on the image so far, cuts the result to its masks and matte, and
+its opacity and blend mode mix that with the original. The samples are
+averaged in linear light.
 
 In the code (`src/stack.rs`) this is two functions of time that everything
 else is built on:
@@ -86,7 +88,8 @@ else is built on:
 A frame is `render_stack(project.layers, t)` at each motion blur instant,
 averaged. A layer's `layer_signature(t)` lists everything its picture at `t`
 depends on (transform, opacity, transition progress, effect values, and `t`
-itself for effects that read the clock), so two instants with equal
+itself for effects that read the clock, mask values, the signature of its
+matte source), so two instants with equal
 signatures share a picture. The public `Renderer::render_layers(layers, t,
 scale)` and `Renderer::render_layer(layer, t, scale)` read these back as
 images, which is how the tests check that a stack of all layers is the frame.
@@ -304,4 +307,35 @@ the area it lacks, so it neither flickers nor disappears. The texture comes
 back to the stack as one quad covering the frame, so the layer's effects,
 opacity, blend mode and transition apply as for any layer. Its signature
 includes its time, so every motion blur instant is rendered.
+
+## Masks and track mattes
+
+Masks are not rasterised paths. Each is a signed distance evaluated per pixel
+(`src/mask.rs`, `shaders/mask.wgsl`; the same formulas as `edits_core::mask`
+on the CPU): the pixel is mapped back onto the layer's plane through the
+inverse of the 3 x 3 homography that the layer's model-view-projection
+matrix gives on its plane z = 0 (so a mask stays on a layer turned in 3D;
+pixels whose ray misses the plane in front of the camera count as outside),
+turned into the mask's own frame, and measured against the shape: exact
+distances for rectangles and rounded rectangles, an approximation that is
+exact on the outline for ellipses (`k0 (k0 - 1) / k1` with `k0 = |q / r|`,
+`k1 = |q / r²|`), and the nearest edge with an even-odd sign for polygons.
+After `expansion` is taken off, the coverage is `clamp(0.5 - d / w, 0, 1)`
+with `w = hypot(feather, fwidth(d))`: a linear ramp `feather` wide centred
+on the outline, or one pixel wide (anti-aliasing) without feather. One
+full-frame pass per mask combines that coverage with the coverage so far
+(read from the previous pass) by the mask's mode; the last pass multiplies
+the layer's drawn picture, before its effects run. Polygon corners travel in
+the pass's uniform block, which is why a polygon has at most 32.
+
+A track matte is one more full-frame pass, after the layer's effects: the
+source is drawn by `layer_content` at the same instant (its own masks,
+effects and matte included; chains are followed at most 16 deep), and the
+layer's premultiplied picture is multiplied by `alpha x opacity`, or by
+`luma(encode(rgb / alpha)) x alpha x opacity` (Rec. 709 weights on the
+display-referred colour, so a mid-grey source gives a half), or one minus
+either. A layer with masks or a matte never takes the single-pass path of
+flat layers that cover the frame. Colour effects at the end of a chain still
+ride along with the blend: they work on straight colour, which a mask or a
+matte does not change.
 

@@ -243,7 +243,7 @@ fn a_picture_inside_letters() {
             } else if text == 255 && x.abs_diff(S / 2) > 2 && y.abs_diff(S / 2) > 2 {
                 inside += 1;
                 for c in 0..3 {
-                    assert!((p[c] as i32 - quadrant[c] as i32).abs() <= 2, "({x}, {y}) {p:?} vs {quadrant:?}");
+                    assert!((p[c] as i32 - quadrant[c]).abs() <= 2, "({x}, {y}) {p:?} vs {quadrant:?}");
                 }
             }
         }

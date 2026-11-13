@@ -39,8 +39,9 @@ is the short version.
 ## Layers
 
 Every layer has `id`, `kind`, optional `in` / `out`, `transform`, `blend`, `effects`, `enabled`,
-and optionally `transition` (how it comes in; see [Transitions](#transitions)) and `fps`
-(posterize time; see [Video layers and layer time](#video-layers-and-layer-time)).
+and optionally `transition` (how it comes in; see [Transitions](#transitions)), `fps`
+(posterize time; see [Video layers and layer time](#video-layers-and-layer-time)), `masks`,
+`matte` and `visible` (see [Masks and track mattes](#masks-and-track-mattes)).
 
 | `kind` | Extra fields | What it is |
 | --- | --- | --- |
@@ -60,6 +61,73 @@ and optionally `transition` (how it comes in; see [Transitions](#transitions)) a
 `lighter_color`, `soft_light`, `hard_light`, `vivid_light`, `linear_light`, `pin_light`,
 `hard_mix`, `exclusion`, `subtract`, `divide`, `hue`, `saturation`, `color`, `luminosity`.
 They work in linear light and stay sensible above 1; `docs/RENDERING.md` has the formulas.
+
+## Masks and track mattes
+
+A character revealed through a shape, a picture inside the letters of a
+title, a frame split into panels: these limit where a layer shows. Every
+layer (an adjustment layer too) can have **masks**, shapes in its own space,
+and a **track matte**, another layer whose picture it is cut to.
+
+```json
+{ "id": "logo", "kind": "text", "text": "NAME", "size": 30, "visible": false },
+{ "id": "hero", "kind": "image", "slot": "hero",
+  "masks": [
+    { "shape": "ellipse", "size": { "keys": [ { "t": 0, "v": 0, "ease": "quint_out" }, { "t": 1, "v": 2.2 } ] }, "feather": 4 },
+    { "shape": "rect", "size": [0.3, 0.05], "position": [0, 0.3], "mode": "subtract" } ] },
+{ "id": "inside", "kind": "image", "slot": "panel", "matte": { "layer": "logo", "mode": "alpha" } }
+```
+
+**`masks`** is a list; each mask has:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `shape` | (required) | `rect`, `ellipse`, `rounded_rect` or `polygon`. |
+| `position` | `[0, 0]` | Centre of the shape in layer space: composition units from the layer's origin, y down. Keyable. |
+| `size` | `[1, 1]` | Width and height in composition units (one number: a square or a circle). For a polygon, a scale of its points. Keyable. |
+| `rotation` | 0 | Degrees, clockwise, about `position`. Keyable. |
+| `radius` | 0 | `rounded_rect` only: the corner radius in composition units. Keyable. |
+| `points` | none | `polygon` only: 3 to 32 corners `[[x, y], ...]` in layer space (scaled by `size`, turned by `rotation`, moved by `position`). Self-crossing outlines fill by the even-odd rule. |
+| `feather` | 0 | Width of the soft edge in percent of the composition height, centred on the outline (a linear ramp; without feather the edge is anti-aliased over a pixel). Not negative. Keyable. |
+| `expansion` | 0 | Grows (positive) or shrinks (negative) the shape, in percent of the height. Keyable. |
+| `opacity` | 1 | 0..1: how strongly the mask counts. Keyable. |
+| `mode` | `add` | How the mask combines with the masks before it: `add` (union), `subtract` (cut out), `intersect` (keep the overlap), `difference`. |
+| `inverted` | false | Use the outside of the shape (`invert` is accepted too). |
+
+Masks are combined in order and the result multiplies the layer's alpha.
+With `a` the coverage so far and `m` the mask's (inverted first, then times
+its opacity): `add` gives `a + m - a m`, `subtract` `a (1 - m)`, `intersect`
+`a m`, `difference` `|a - m|`. Before the first mask the coverage is empty,
+except when that mask subtracts or intersects: then it starts full (so a
+lone `subtract` mask cuts a hole, and a first `intersect` acts as `add`).
+These are After Effects' rules. Layer space is the layer's own: a mask moves,
+scales and turns with the layer (and tilts with it in 3D). For an image,
+video or solid layer at scale 1 the layer box is the frame, so `size [1, 1]`
+at `[0, 0]` is a square as high as the frame, centred. Masks are applied to
+what the layer draws, before its effects, so a blur on a masked layer
+softens the mask's edge too. On an adjustment layer, masks limit where its
+effects show.
+
+**`matte`** is `{ "layer": "<id>", "mode": "alpha" }`: the layer `<id>` is
+drawn at the same instant (with its own transform, masks, effects, opacity
+and matte) and multiplies this layer's alpha after this layer's effects:
+
+| `mode` | Shows the layer where the matte source is |
+| --- | --- |
+| `alpha` (default) | opaque |
+| `alpha_inverted` | transparent |
+| `luma` | bright: the Rec. 709 luminance of its display (sRGB) colour, times its alpha |
+| `luma_inverted` | dark or transparent |
+
+A matte source that is not there at that instant (before its `in`, after its
+`out`, opacity 0) counts as transparent. The source can be anywhere in the
+list and can have a matte of its own, but not one that leads back to this
+layer (`check` reports cycles, unknown ids, adjustment layers as sources).
+
+**`visible`** (default `true`): `false` means the layer is not drawn, but
+still works as a matte source. A matte source usually has it, otherwise it
+also shows on its own (`check` warns). `enabled: false` turns a layer off
+everywhere, as a matte too.
 
 ## Animatable values
 

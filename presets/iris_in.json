@@ -1,0 +1,62 @@
+{
+  "format": "edits.preset/1",
+  "name": "iris_in",
+  "description": "The picture opens from a point: a soft circle mask grows until it shows the whole frame. Replaces the layer's masks.",
+  "tags": [
+    "intro",
+    "reveal",
+    "mask"
+  ],
+  "variables": {
+    "length": {
+      "type": "number",
+      "default": 1,
+      "min": 0.05,
+      "max": 16,
+      "unit": "beats",
+      "doc": "How long the circle takes to open."
+    },
+    "center": {
+      "type": "vector",
+      "default": [
+        0,
+        0
+      ],
+      "doc": "Where the circle opens, in layer space (composition units from the layer's centre, y down)."
+    },
+    "feather": {
+      "type": "number",
+      "default": 3,
+      "min": 0,
+      "max": 50,
+      "doc": "Softness of the circle's edge, in percent of the frame height."
+    }
+  },
+  "apply": [
+    {
+      "set": {
+        "pointer": "/masks",
+        "value": [
+          {
+            "shape": "ellipse",
+            "position": "$center",
+            "feather": "$feather",
+            "size": {
+              "keys": [
+                {
+                  "t": "=at",
+                  "v": 0,
+                  "ease": "out"
+                },
+                {
+                  "t": "=at + $length * beat",
+                  "v": "=1.2 * (aspect + 1)"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,65 @@
+{
+  "format": "edits.preset/1",
+  "name": "split_panels",
+  "description": "Cut the picture to one side of a slanted split (a polygon mask), for split-screen panels: apply it with side left to one layer and side right to the layer above it. Replaces the layer's masks.",
+  "tags": [
+    "look",
+    "frame",
+    "mask",
+    "panels"
+  ],
+  "variables": {
+    "side": {
+      "type": "enum",
+      "default": "left",
+      "options": {
+        "left": {
+          "s": -1
+        },
+        "right": {
+          "s": 1
+        }
+      },
+      "doc": "Which side of the split the picture keeps."
+    },
+    "split": {
+      "type": "number",
+      "default": 0,
+      "min": -2,
+      "max": 2,
+      "doc": "Where the split crosses the middle of the frame, in composition units from the centre (layer space)."
+    },
+    "slant": {
+      "type": "number",
+      "default": 0.15,
+      "min": -2,
+      "max": 2,
+      "doc": "How far the split leans: its top edge is this much right of its bottom edge over the height of the frame, in composition units (0 is upright)."
+    },
+    "gap": {
+      "type": "number",
+      "default": 0.02,
+      "min": 0,
+      "max": 0.5,
+      "doc": "Width of the gap between the two panels, in composition units (the background shows through)."
+    }
+  },
+  "apply": [
+    {
+      "set": {
+        "pointer": "/masks",
+        "value": [
+          {
+            "shape": "polygon",
+            "points": [
+              "=vec(4 * $s, -1)",
+              "=vec($split + $slant + $s * $gap / 2, -1)",
+              "=vec($split - $slant + $s * $gap / 2, 1)",
+              "=vec(4 * $s, 1)"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

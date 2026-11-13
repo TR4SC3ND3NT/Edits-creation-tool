@@ -615,6 +615,44 @@ mod tests {
     }
 
     #[test]
+    fn iris_and_split_presets_write_masks() {
+        use crate::preset::{apply, find, Target};
+        use serde_json::{json, Map};
+        let d = json!({ "format": "edits.project/1",
+            "settings": { "width": 128, "height": 72, "fps": 25, "duration": 8, "time_base": "beats", "bpm": 120 },
+            "slots": { "a": {}, "b": {} },
+            "layers": [ { "id": "a", "kind": "image", "slot": "a" }, { "id": "b", "kind": "image", "slot": "b" } ] });
+        let tc = crate::time::TimeCtx::from_doc(&d);
+        let (out, _) = apply(&d, &find("iris_in", None).unwrap(), &Target::Layer("b".into()), &[2.0], &Map::new(), &tc).unwrap();
+        let p: Project = serde_json::from_value(out).unwrap();
+        assert!(!crate::check::has_errors(&check(&p, None)));
+        let ev = Evaluator::new(&p);
+        let size = |t: f64| ev.mask(&p.layers[1].masks[0], t).size[0];
+        assert_eq!(size(2.0), 0.0);
+        assert!(size(2.5) > 1.0 && size(3.0) > 3.0, "{} {}", size(2.5), size(3.0));
+        // At the end the circle covers every corner of the frame.
+        let open = ev.masks(&p.layers[1], 3.0);
+        assert_eq!(coverage(&open, [-0.89, -0.5], 0.0), 1.0);
+
+        let mut vars = Map::new();
+        vars.insert("side".into(), json!("right"));
+        vars.insert("gap".into(), json!(0.1));
+        let (out, _) = apply(&d, &find("split_panels", None).unwrap(), &Target::Layer("b".into()), &[0.0], &vars, &tc).unwrap();
+        let (out, _) = apply(&out, &find("split_panels", None).unwrap(), &Target::Layer("a".into()), &[0.0], &Map::new(), &tc).unwrap();
+        let p: Project = serde_json::from_value(out).unwrap();
+        assert!(!crate::check::has_errors(&check(&p, None)));
+        let ev = Evaluator::new(&p);
+        let (left, right) = (ev.masks(&p.layers[0], 0.0), ev.masks(&p.layers[1], 0.0));
+        // Slanted: at the top the cut is right of the middle, at the bottom left of it.
+        assert_eq!([coverage(&left, [-0.5, 0.0], 0.0), coverage(&right, [-0.5, 0.0], 0.0)], [1.0, 0.0]);
+        assert_eq!([coverage(&left, [0.5, 0.0], 0.0), coverage(&right, [0.5, 0.0], 0.0)], [0.0, 1.0]);
+        assert_eq!(coverage(&left, [0.05, -0.45], 0.0), 1.0);
+        assert_eq!(coverage(&right, [0.0, 0.45], 0.0), 1.0);
+        // The gap shows neither.
+        assert_eq!([coverage(&left, [0.04, 0.0], 0.0), coverage(&right, [-0.04, 0.0], 0.0)], [0.0, 0.0]);
+    }
+
+    #[test]
     fn matte_factors() {
         assert_eq!(MatteMode::Alpha.factor([0.0; 3], 0.25, 1.0), 0.25);
         assert_eq!(MatteMode::AlphaInverted.factor([0.0; 3], 0.25, 1.0), 0.75);

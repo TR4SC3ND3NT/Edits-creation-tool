@@ -122,6 +122,8 @@ builtin!(
     "vignette_pulse",
     "overlay_texture",
     "letterbox",
+    "iris_in",
+    "split_panels",
     "sakura",
     "sparkles",
     "dust",

@@ -103,6 +103,18 @@ A project is **slots + layers + keyframes + effects**.
 - **Transitions** sit on the incoming layer: `"transition": { "kind": "whip_pan", "duration": 0.5 }`
   mixes the picture beneath into this one over `duration` from its `in`
   (`edits transitions` lists 22). The outgoing layer must last until the end.
+- **Masks and track mattes** limit where a layer shows. `"masks": [ { "shape": "ellipse", "size": 0.6, "feather": 4 } ]`
+  (shapes `rect`, `ellipse`, `rounded_rect` with `radius`, `polygon` with
+  3 to 32 `points`; `position`, `size`, `rotation`, `feather` and `expansion`
+  (% of height) keyable; `mode` add/subtract/intersect/difference;
+  `inverted`) are in the layer's own space and move with it: key `size`
+  from 0 for an iris reveal (preset `iris_in`), use `polygon` masks for
+  slanted split-screen panels (preset `split_panels`, side left and right). On an
+  adjustment layer they limit where its effects apply. `"matte": { "layer": "title", "mode": "alpha" }`
+  cuts the layer to another layer's picture at the same instant (`alpha`,
+  `alpha_inverted`, `luma`, `luma_inverted`): a picture inside the letters
+  of a text layer. Give the source `"visible": false` so it works only as
+  the matte.
 - **Presets** are named building blocks (`flash`, `punch`, `shake`,
   `rgb_split`, `slide_in`, `flip_3d`, `cube_turn`, `velocity`, `letterbox`,
   `transition:<kind>`, ...) with typed variables. Applying one writes ordinary
