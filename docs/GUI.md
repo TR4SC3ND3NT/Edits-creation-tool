@@ -39,13 +39,14 @@ Other programs can open the same window with
 │rail│ preview on its stage (the picture at its true aspect) │ inspector          │
 │    │                                                       │  (the selection)   │
 │    │                                        toasts here ▸  │  ▾ Layer           │
+│    │                                                       │  ▾ Transition in   │
 │    │ 00:01.48 / 00:03.88  B 3.03  F 37    ⏮ ‹ ▶ › ⟳   0.5× │  ▾ Transform       │
 ├────┴───────────────────────────────────────────────────────┴────────────────────┤
-│ + Layer   ¼ beat   5 layers · 8 beats · 123 BPM · 25 fps              − + fit  │
+│ + Layer  ¼ beat  Analyse song  5 layers · 8 beats · 123 BPM · 25 fps   − + fit  │
 │ overview of the whole edit                                                      │
-│ ruler · markers · audio waveform · one track per layer                          │
+│ ruler · markers · song (once analysed) · audio waveform · one track per layer   │
 ├─────────────────────────────────────────────────────────────────────────────────┤
-│ ● Revision 3   last action               adapter · ms/frame · cache · audio     │
+│ ● Revision 3   last action     Agent sees d · B 3.03 · adapter · ms/frame · ... │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -84,12 +85,13 @@ are design tokens in `crates/edits-gui/src/theme.rs`.
 | Home / End | First / last frame |
 | L | Loop on or off |
 | Ctrl+Z | Undo the newest edit in the project's history, yours or the agent's |
+| Ctrl+Enter | In the note to the agent: save it |
 | Ctrl+Shift+Z, Ctrl+Y | Redo |
 | Ctrl+K, Ctrl+Shift+P | Command palette (also from inside a text field) |
 | Ctrl+D | Duplicate the selected layer |
 | Delete, Backspace | Delete the selected layer (Ctrl+Z brings it back) |
 | Ctrl+E | Export video |
-| Ctrl+1 / Ctrl+2 | Show or hide the Slots / History drawer |
+| Ctrl+1 / Ctrl+2 / Ctrl+3 | Show or hide the Slots / History / Presets drawer |
 | Esc | Close the shortcut sheet; else deselect; else close the drawer |
 | ? | The sheet of keyboard shortcuts |
 | Ctrl + wheel over the timeline | Zoom about the pointer |
@@ -115,6 +117,13 @@ shows at that moment:
 - **Layer** (with a layer selected): enable or disable, duplicate, move up
   or down, delete; **Add effect**: every effect of the registry.
 - **Select**: every layer by id, the camera, deselect. **Go to**: every marker.
+- **Preset**: *Apply preset flash…* for every preset: opens it in the
+  Presets drawer. **Transition** (with a layer selected): *Add transition
+  whip_pan into d* for each of the 22 kinds, and *Remove the transition*.
+- **Song**: *Analyse song* (or *again*), show or hide the song's downbeats,
+  kicks, snares and sections, *Write the song's tempo and markers into the
+  project*, *Cut on beats…*, *Accent on beats or onsets…*.
+- **Agent**: *Tell the agent…* (the note in `ui.json`), *Clear the note*.
 - **View**: the drawers, the preview size, motion blur while paused or
   playing, fit and zoom the timeline, the shortcut sheet. **File**: export, quit.
 
@@ -157,8 +166,8 @@ On the right, undo and redo (their tooltips name the edit and who made it)
 and **Export**.
 
 **Rail** (left edge). Icons for the drawers, all closed at start: **Slots**
-(Ctrl+1) and **History** (Ctrl+2); at the bottom the command palette and the
-shortcut sheet. A drawer opens beside the rail and can be resized; its title
+(Ctrl+1), **History** (Ctrl+2) and **Presets** (Ctrl+3, a wand); at the
+bottom the command palette and the shortcut sheet. A drawer opens beside the rail and can be resized; its title
 row has its own close button (and undo and redo, for History).
 
 **Preview** (centre). The frame under the playhead, rendered by
@@ -183,8 +192,8 @@ motion blur, separately while *paused* (on by default) and while *playing*
 
 - A toolbar: **+ Layer** (add a layer at the playhead), what drags snap to
   (`¼ beat`, or `frames` while Alt is held; hover it for how to drag and
-  what the key shapes mean), the size of the edit, and zoom out, zoom in
-  and fit.
+  what the key shapes mean), **Analyse song** (then **Song**, see [Song
+  tools](#song-tools)), the size of the edit, and zoom out, zoom in and fit.
 - The **overview**: the whole edit in one strip, each layer a thin line in
   its kind's colour, the markers, the playhead and, when zoomed in, the part
   the tracks show as a violet box. Click or drag it to move the playhead.
@@ -193,6 +202,13 @@ motion blur, separately while *paused* (on by default) and while *playing*
   signature; the grid assumes 4/4) and lines on half and quarter beats when
   zoomed in. In a seconds project it counts seconds.
 - The project's `markers`, as amber flags with their labels.
+- After *Analyse song*, the **Song** lane: the song's sections as
+  alternating grey bands with their labels (`intro`, `high`, `drop`...),
+  downbeats (bar starts) as light lines, kick onsets as orange dots under the
+  middle and snare onsets as pink diamonds over it (bigger and brighter when
+  stronger), the drop as an amber flag. Hover a mark for its time and
+  strength; click the lane to move the playhead. The Song popover switches
+  each kind on or off; with all off the lane goes away.
 - The waveform of `audio`, placed by `audio.offset`; the part before the
   playhead is lighter.
 - One track per layer, the top of the picture first (the last layer in the
@@ -206,8 +222,10 @@ motion blur, separately while *paused* (on by default) and while *playing*
   the segment that starts there: a diamond for `linear`, a square for
   `hold`, a circle for any other ease (keys of several properties at one
   time with different eases show a diamond). Hover a keyframe to read its
-  time and the properties keyed there. A `camera` track appears above the
-  layers when the camera is animated. Disabled layers are dimmed. The
+  time and the properties keyed there. A layer that comes in through a
+  transition has a thin violet wedge rising from its start over the
+  transition's length (hover it for the kind). A `camera` track appears
+  above the layers when the camera is animated. Disabled layers are dimmed. The
   selected layer's header has a violet edge and its bar a violet outline.
 - The playhead: a thin white line with a violet cap on the ruler.
 
@@ -222,6 +240,7 @@ deselect. Then collapsible sections:
 - *Layer*: slot (image), colour with a swatch (solid) or faces and size
   (cube), `in` and `out` with their frames, blend, and whether it is
   visible now.
+- *Transition in*: how the layer comes in. See [Transitions](#transitions).
 - *Transform*: position, scale, rotation, anchor and opacity.
 - *Effects*: for each effect a switch (on or off), its name (hover it for
   its documentation), move up, move down and remove; then every parameter of
@@ -250,9 +269,14 @@ how long ago; above a line, the edits that were undone and can be redone.
 
 **Status bar** (bottom edge). On the left the revision, `Reloaded` (green)
 just after someone else's change, or the errors in the file (red); then what
-your last edit did. On the right the renderer's adapter and whether it is a
-`GPU` or `software`, the time the last frame took to render, the frame
-cache, the state of the audio, the progress of an export.
+your last edit did. On the right what the agent can see (`Agent sees d ·
+B 3.03` after a sky-blue eye, with a speech bubble when you left a note;
+amber when `ui.json` cannot be written; click it to write a note, see [What
+the agent sees](#what-the-agent-sees-uijson)), the renderer's adapter and
+whether it is a `GPU` or `software`, the time the last frame took to
+render, the frame cache, the state of the audio, the progress of an export.
+
+**Presets** (drawer). See [Presets](#presets).
 
 ## Editing
 
@@ -367,6 +391,176 @@ same history, kept next to the project:
   editing a version that is not on disk); Undo still works and may be the fix.
 - The last 50 versions are kept.
 
+## Presets
+
+The Presets drawer (Ctrl+3, the wand on the rail, or *Apply preset …* in
+the command palette) lists every preset the project can use: the built-in
+ones (`presets/*.json` of the repository), one `transition:<kind>` per
+transition, and the project's own `<project folder>/presets/*.json`. They
+are grouped by their first tag (*Hits*, *Zoom*, *Move*, *3D*, *Blur*,
+*Speed*, *Look*, ..., then *Transitions*, folded); the field at the top
+searches names, tags and descriptions (`whip` finds `whip_pan`, `glitch`
+the glitch hits), and the circular arrows read the files again.
+
+Click a preset to open its card:
+
+- its description, then **Variables**: one row each, with the preset's
+  range and default. Numbers with a range are sliders (with the number,
+  which can be typed), whole numbers step by one; switches for booleans,
+  menus for choices (`direction`, `axis`) and for `ease` and `slot`, a
+  colour button for colours, number fields for vectors. A changed
+  variable's name turns violet, and the arrow at the end of its row puts
+  the default back. Hover a name for its documentation, unit and range.
+- **On**: *Layer* (the selected layer; with none selected, the picture on
+  screen), *Screen* (the picture on screen at that time, `--layer auto`) or
+  *Accents* (an `accents` adjustment layer on top, `--layer fx`). Presets
+  that add their own layers (`letterbox`, `overlay_texture`) have no target.
+- **At**: the *Playhead*, or the layer's *Cut* (its `in`): transitions and
+  intros start at the cut.
+- **Preview** (on by default): the preview shows the frame under the
+  playhead with the preset applied, before anything is written; a violet
+  chip in its corner says `Preview: punch at 2.46 on cube (on screen) · not
+  applied`. Scrub to see other frames of it. Values the preset refuses are
+  said in red under the switch.
+- **Apply**: writes it. The line next to it (`at 2.46 beats on auto`) says
+  where it goes; hover it for the same `edits apply` command.
+
+Applying runs the code of `edits apply` and of the agent's `preset_apply`:
+`edits_core::preset::apply` on the file's version, written by
+`edits_core::edit::apply_with`, so it is checked first, written in one step
+and is one entry of the shared history (`preset punch at 2.46 on auto`,
+actor `window`): Ctrl+Z takes the whole preset back. The card then closes
+and the layer it changed is selected. A preset writes ordinary keys,
+effects and layers, which are edited afterwards like any other.
+
+## Transitions
+
+A layer can come in through a transition instead of a cut
+([FORMAT.md](FORMAT.md#transitions)). The inspector's **Transition in**
+section shows it for the selected layer:
+
+- Without one: `None: the layer cuts in at its in`, and a **+** in the
+  title that lists the 22 kinds with their default length (hover one for
+  what it looks like). Adding one runs the `transition:<kind>` preset at the
+  layer's `in` with `align: after`: the layer's `in` stays where it is, the
+  transition starts there with its default length, and the picture it comes
+  from is kept until it ends (its `out` moves later when needed). One edit.
+- With one: **Kind** (a menu of the 22; another kind keeps the parameters
+  it also has and drops the others, which `check` would refuse), its
+  one-line description, **Duration** in the project's time base (drag or
+  type; `ends 5` says where it ends, and the picture it comes from is kept
+  until then), **Ease** (every ease name), and every parameter of the kind
+  with its range: number fields, or a colour button. A parameter keyframed
+  in the file is shown, not edited. The bin in the title removes the
+  transition.
+
+Every change is an `edits_core::edit` op on `/layers/@<id>/transition`, one
+edit each (a drag is one edit however long it lasts). The command palette
+has *Add transition <kind> into <layer>* and *Remove the transition into
+<layer>*, and the Presets drawer the same transitions as presets (centred
+on the cut by default, as `edits apply`).
+
+## Song tools
+
+**Analyse song** (timeline toolbar, or the command palette) analyses the
+project's `audio` file with the library behind `edits audio`
+(`edits_analyze::song`: tempo and beat grid, bars, kick, snare and hat
+onsets, loudness, sections and the drop), on a thread of its own, so the
+window keeps playing; the toolbar says `Analysing the song…` meanwhile.
+It is disabled when the project has no audio. The result:
+
+- is kept in `<project folder>/.edits/song.audio.json` (format
+  `edits.audio/1`, what `edits audio -o` writes), so the agent can pass it
+  as `audio` to `beats_cut`, `beats_accent` and `preset_apply`; the window
+  reads it again when it opens, if it is newer than the audio file and was
+  made of that file;
+- appears as the Song lane of the timeline (see [What each part
+  shows](#what-each-part-shows)), in the project's time (it follows the
+  project's tempo and `audio.offset`), and a green toast says what was
+  found: `123 BPM · 2 bars · 8 kicks · 16 snares · no drop`;
+- feeds the times: `drop`, the sections' names and the song's bars work in
+  the time fields below and in the presets' times.
+
+The toolbar button is then **Song**: a popover with that summary, the
+analysis' notes (`the bar phase is a guess`), a switch for each kind of
+mark (downbeats, kicks, snares, sections and drop), and:
+
+- **Cut on beats…**: the dialog of `edits beats cut`. Tick the slots to
+  cycle through (in order); cut *Every N beats* (0.5, 1, 2 and 4 are at
+  hand) or *On…* beats, offbeats, downbeats, kicks, snares or hats (onsets
+  need the analysis; *Min strength* skips weak ones); *From* and *to* (any
+  time: `b8`, `bar 3`, `drop`, `drop+2b`; empty = start and end); and the
+  prefix of the layer ids. Before you press **Cut** it says what it will do
+  (`Adds 4 layers.`) or why it cannot (in red). It calls
+  `edits_core::beatops::cut`, as the command does, as one edit.
+- **Accent on…**: the dialog of `edits beats accent`. A preset (any but the
+  transitions); *On* beats, offbeats, downbeats, kicks, snares, hats or the
+  drop; *keep* every Nth (`every other one`); *From* and *to*; the layer it
+  goes on (as in the Presets drawer); and the preset's variables. It lists
+  the times it found (`2 times: 2, 6`) before you press **Accent**.
+  `beatops::times` and `preset::apply`, one edit.
+- **Write tempo and markers**: what `edits audio --project` does: the
+  song's tempo, its beat offset and its markers (the drop, the sections)
+  go into the project (`edits_core::beatops::sync`), one edit.
+- **Analyse again**.
+
+Without an analysis, *Cut on beats…* and *Accent on…* (command palette)
+work on the project's own beat grid: every N beats, beats, offbeats and
+downbeats.
+
+## What the agent sees: `ui.json`
+
+While the window is open it writes `<project folder>/.edits/ui.json`
+(format `edits.ui/1`, written with `edits_core::ui::write`; the format is in
+[AGENTS.md](AGENTS.md#what-the-person-is-looking-at-editsuijson)), and the
+agent reads it with the MCP tool `ui_context`, so "make *this* hit
+stronger" means the selected layer at the playhead. What the window wrote
+during the check described under [Known limits](#known-limits):
+
+```json
+{
+  "format": "edits.ui/1",
+  "project": "project.json",
+  "updated": "20261113T140902.328Z",
+  "pid": 29140,
+  "playhead": { "t": 5.166, "seconds": 2.52, "frame": 63 },
+  "playing": false,
+  "selection": { "layer": "d", "property": "/layers/@d/transform/position" },
+  "visible": { "from": -0.045401, "to": 8.081401 },
+  "loop": { "from": 0.0, "to": 8.0 },
+  "note": "make this hit stronger",
+  "note_at": "20261113T140902.328Z"
+}
+```
+
+- `selection`: the selected layer (none for the camera), and the property
+  you picked by hand in the inspector, as a pointer `project_edit` takes,
+  with `effect` (its effect's index) and `key` (the index of its key at the
+  playhead) when there are. `visible`: the part of the timeline in view.
+  `loop`: the whole project, while looping is on.
+- When: at once when the selection, the paused playhead, the view, the loop
+  or the note change (at most four times a second), every 2 s while
+  playing, and at least every 5 s while the window is open (the agent takes
+  a file older than 30 s for a window that is gone). It is written
+  atomically, and removed when the window closes (unless another window on
+  the same project wrote it since).
+- **Tell the agent…** (command palette, or a click on `Agent sees …` in the
+  status bar) opens a box for a note; **Save note** or Ctrl+Enter puts it in
+  `note`, with the time in `note_at`, and the status bar shows a speech
+  bubble. The agent is not told that there is a note: say "see my note in
+  the window" in your chat.
+
+`ui_context` then answers:
+
+```
+the window is open on project.json (state from 1.1 s ago):
+playhead at 5.166 (2.52 s), frame 63
+selected: layer d, /layers/@d/transform/position
+visible on the timeline: -0.045..8.081
+looping 0..8
+note from the person: "make this hit stronger"
+```
+
 ## Live reload
 
 The window watches the project file and every file it names (slot pictures,
@@ -468,6 +662,10 @@ xvfb-run -a -s "-screen 0 1600x1000x24" edits-gui demo/project.json --screenshot
   posts the frame it wants into a one-place mailbox; a request that is
   overtaken before the renderer gets to it is dropped. Frames come back as
   images and are uploaded as one texture.
+- The song analysis runs on a thread of its own (`edits_analyze::song`, the
+  library of `edits audio`, which decodes through `ffmpeg`); presets,
+  transitions and beat operations call `edits_core::preset`, `beatops` and
+  `edit::apply_with` directly, never the `edits` program.
 - Edits are made by `edits_core::edit` (shared with `edits-mcp`): ops
   addressed by JSON pointer with layers by id (`/layers/@tex/transform/scale`),
   validation, the atomic write and the history. The window turns gestures into
@@ -498,8 +696,12 @@ xvfb-run -a -s "-screen 0 1600x1000x24" edits-gui demo/project.json --screenshot
   edit, key insertion and removal on animated properties, eases, layer and
   effect ops, paths of dropped pictures, history lines and how they read; the
   command palette's fuzzy matching (`palette`), the toasts and the reading of
-  the shared history behind them (`toasts`), and the fonts and style
-  (`theme`). The history itself is
+  the shared history behind them (`toasts`), the fonts and style
+  (`theme`), `ui.json`'s content and when it is written, and its removal
+  (`uictx`), the presets' grouping, search, edited variables and the change
+  they make (`presets`), the transition section's ops and the added
+  transition (`transitions`), and the song's marks in project time, their
+  switches and the cut and accent forms (`song`). The history itself is
   tested in `edits-core` (`edit`), including two writers at once.
 
 ## System packages
@@ -522,8 +724,10 @@ list matters for containers and minimal systems. On Ubuntu releases before
 
 ## Known limits
 
-- Editing covers layers, effects, keys, eases, slots and the camera. Not in
-  the window: project settings (size, fps, BPM, duration), audio, markers,
+- Editing covers layers, effects, keys, eases, slots, the camera,
+  transitions, presets and beat operations. Not in the window: project
+  settings (size, fps, duration; BPM and markers only from a song analysis),
+  audio, markers by hand,
   layer ids and names, cube faces, shake and loop modifiers (their values
   under the shake can be edited, not the shake), custom shaders' `source`.
   Use the agent or a text editor for those; the window follows.
@@ -557,8 +761,18 @@ list matters for containers and minimal systems. On Ubuntu releases before
 - Closing the window waits for the frame being rendered at that moment.
 - The window layout and settings are not remembered between runs (which
   sections are folded is remembered while the window is open).
-- The command palette runs the window's own commands; it does not send
-  anything to the agent.
+- The command palette runs the window's own commands. The note to the agent
+  goes into `ui.json` only: the agent reads it when it calls `ui_context`,
+  it is not notified.
+- The preset preview renders the frame under the playhead (scrub or play to
+  see the rest of it).
+- *Analyse song* estimates the tempo (as `edits audio` without `--bpm`);
+  there is no field for a known tempo or for beats per bar (4). The song
+  marks' switches are not remembered between runs.
+- A transition parameter that is keyframed in the file is shown, not edited.
+  Changing a transition's length moves the outgoing picture's `out` later,
+  never earlier.
+- Saving a preset from the window (`edits save-preset`) is not there.
 - The text of the interface is English and Inter covers Latin, Greek and
   Cyrillic; other scripts fall back to egui's bundled fonts.
 - Tested on X11 (under Xvfb, with llvmpipe), driven with `xdotool`: typing
@@ -570,6 +784,14 @@ list matters for containers and minimal systems. On Ubuntu releases before
   at a scale factor of 2 (`WINIT_X11_SCALE_FACTOR=2`): the command palette,
   folding sections, dragging a value and a bar, the agent's edit and its
   toast's Undo, the error banner and toasts, the drawers, the popovers and
-  the shortcut sheet. Not seen on a real HiDPI or fractional-scale screen.
+  the shortcut sheet. The presets, transitions, song tools and `ui.json` were
+  checked the same way on the demo at 1600 × 1000: two presets applied
+  from the drawer (one with a variable changed, one through the palette on
+  the picture on screen), a transition added and lengthened in the
+  inspector, the song analysed and its lane shown, a cut on kicks and an
+  accent on downbeats, a note saved; after each edit `edits check` passed
+  and the history had one `window` entry; `ui_context` of `edits-mcp`
+  returned the selection, the picked property and the note, and said the
+  window was not open once it had closed. Not seen on a real HiDPI or fractional-scale screen.
   Wayland support is compiled in and is the same code path in `winit`, but
   was not run.
