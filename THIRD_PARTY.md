@@ -8,6 +8,13 @@ The 22 transitions in `crates/edits-render/src/shaders/transitions/` come from
 the gl-transitions collection; their authors and licence (MIT) are listed in
 `crates/edits-render/src/shaders/transitions/LICENSE.md`.
 
+## Video time
+
+| Our file | Source | Licence | What was taken |
+| --- | --- | --- | --- |
+| `crates/edits-core/src/eval.rs` (`frame_position`) | EffectCraft, https://github.com/storytold/effectcraft, `crates/render/src/frames.rs` (`frame_position`) | MIT OR Apache-2.0 (used under MIT) | The split of a source time into the frame at or before it and the fraction to the next one. Ours works on a floating frame position with a millionth-of-a-frame tolerance instead of integer ticks. |
+| `crates/edits-core/src/eval.rs` (`integrate_speed`, `Evaluator::source_seconds`) | EffectCraft, `crates/effects/src/time_fx.rs` (`timewarp_integrate_speed`) | MIT OR Apache-2.0 (used under MIT) | Integrating an animated speed by the midpoint rule on a fixed grid anchored at 0 (two samples per frame, at most 50,000 samples, a partial last cell), so successive frames share samples and a hold key lands the same way on every frame. Speed is a multiplier instead of a percentage, non-finite samples count as 0, and only forward time from the layer's `in` is integrated. |
+
 ## Effects
 
 | Our file | Source | Licence | What was taken |

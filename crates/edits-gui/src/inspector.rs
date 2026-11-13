@@ -575,6 +575,25 @@ fn layer(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, l: &Layer,
                     ui.label(faint("Applies its effects to the layers below"));
                 });
             }
+            LayerKind::Video(v) => {
+                let file = shown.slots.get(&v.slot).and_then(|s| s.path.clone()).unwrap_or_else(|| "empty: a placeholder".into());
+                info_row(ui, "Video", format!("{} ({file})", v.slot));
+                let mut timing: Vec<&str> = Vec::new();
+                if v.time_remap.is_some() {
+                    timing.push("time remap");
+                } else if v.speed.is_some() {
+                    timing.push("speed");
+                }
+                if v.looped {
+                    timing.push("loop");
+                }
+                if v.reverse {
+                    timing.push("reverse");
+                }
+                if !timing.is_empty() {
+                    info_row(ui, "Timing", timing.join(", "));
+                }
+            }
         }
         for (field, value, label) in [("in", l.start, "In"), ("out", end, "Out")] {
             field_row(ui, label, &format!("In {unit}. Or drag the edge of the bar in the timeline (snaps to quarter beats; Alt: frames)."), |ui| {

@@ -29,7 +29,9 @@ mod transitions;
 
 pub mod font;
 pub mod shader;
+pub mod video;
 
 pub use assets::placeholder;
 pub use gpu::{policy_from_env, AdapterInfo, AdapterPolicy};
 pub use renderer::{FrameStats, PassTiming, RenderOptions, Renderer};
+pub use video::{VideoInfo, VideoStats};

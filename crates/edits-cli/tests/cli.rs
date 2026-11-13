@@ -215,6 +215,60 @@ fn render_writes_an_h264_mp4_with_audio() {
     assert_eq!(out.status.code(), Some(1));
 }
 
+/// The loudest sample of `file`'s sound between `from` and `to` seconds, in dB.
+fn max_volume(file: &str, from: f64, to: f64) -> f64 {
+    let out = Command::new("ffmpeg")
+        .args(["-hide_banner", "-nostats", "-ss", &from.to_string(), "-t", &(to - from).to_string(), "-i", file, "-map", "0:a:0", "-af", "volumedetect", "-f", "null", "-"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stderr);
+    let line = text.lines().find(|l| l.contains("max_volume:")).unwrap_or_else(|| panic!("no volumedetect output: {text}"));
+    line.split("max_volume:").nth(1).unwrap().trim().trim_end_matches(" dB").parse().unwrap()
+}
+
+#[test]
+fn render_mixes_the_sound_of_video_layers() {
+    let d = doctor();
+    if d["ok"] != true || d["encoders"]["aac"].as_array().is_none_or(|a| a.is_empty()) {
+        eprintln!("skipping: no graphics adapter, or no ffmpeg with H.264 and AAC encoders");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("edits-cli-video-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // A one-second clip with a tone.
+    let clip = dir.join("clip.mkv");
+    let made = Command::new("ffmpeg")
+        .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=32x32:rate=24:duration=1", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", "-c:v", "ffv1", "-c:a", "pcm_s16le"])
+        .arg(&clip)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let project = dir.join("project.json");
+    std::fs::write(
+        &project,
+        r#"{"format":"edits.project/1","settings":{"width":32,"height":32,"fps":24,"duration":2},
+            "slots":{"v":{"path":"clip.mkv"}},
+            "layers":[{"id":"clip","kind":"video","slot":"v","in":0.5,"volume":0.5},
+                      {"id":"slow","kind":"video","slot":"v","in":1,"speed":{"keys":[{"t":1,"v":1},{"t":2,"v":0.5}]},"transform":{"scale":0.5}}]}"#,
+    )
+    .unwrap();
+    let mp4 = dir.join("out.mp4");
+    let out = edits(&["render", project.to_str().unwrap(), "-o", mp4.to_str().unwrap(), "--scale", "1", "-q"]);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("layer \"slow\": the sound of a video with an animated speed"), "{}", String::from_utf8_lossy(&out.stderr));
+    let v = json(&out);
+    assert_eq!((v["audio"].as_bool(), v["clip_audio"].as_u64(), v["frames"].as_u64()), (Some(true), Some(1), Some(48)));
+    let mp4 = mp4.to_str().unwrap();
+    // Silent until the layer comes in at 0.5 s, then the tone: lavfi's sine peaks at 1/8
+    // (-18 dB), and half volume takes 6 dB off.
+    assert!(max_volume(mp4, 0.0, 0.4) < -60.0);
+    let loud = max_volume(mp4, 0.6, 1.4);
+    assert!((-27.0..-21.0).contains(&loud), "{loud} dB");
+    // --no-audio leaves it out.
+    let v = json(&edits(&["render", project.to_str().unwrap(), "-o", mp4, "--no-audio", "-q"]));
+    assert_eq!((v["audio"].as_bool(), v["clip_audio"].as_u64()), (Some(false), Some(0)));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// analyze → draft → compare through the `edits` command, on a short render of
 /// the demo: the recipe of a video compared with that same video scores 1.
 #[test]

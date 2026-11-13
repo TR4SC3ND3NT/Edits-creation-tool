@@ -123,6 +123,7 @@ pub fn kind_text(kind: &LayerKind) -> String {
         LayerKind::Solid { .. } => "solid".to_string(),
         LayerKind::Cube { .. } => "cube".to_string(),
         LayerKind::Adjustment => "adjustment".to_string(),
+        LayerKind::Video(v) => format!("video {}", v.slot),
     }
 }
 

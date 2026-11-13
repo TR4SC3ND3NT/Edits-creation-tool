@@ -98,6 +98,26 @@ pub struct Slot {
     pub focus: [f64; 2],
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// For a video: the part of the source that plays, `[in, out]` in
+    /// seconds of the file. The rest of the file is ignored, as if it had been
+    /// cut out. It belongs to the content, so it swaps with the slot's `path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trim: Option<[f64; 2]>,
+}
+
+impl Slot {
+    /// The source frames `[first, first + count)` that `trim` keeps out of
+    /// `frames` frames at `fps`: the frames that start at or after `in` and
+    /// before `out`. At least one frame when the file has any.
+    pub fn trim_frames(&self, fps: f64, frames: u64) -> (u64, u64) {
+        if frames == 0 {
+            return (0, 0);
+        }
+        let Some([a, b]) = self.trim.filter(|_| fps.is_finite() && fps > 0.0) else { return (0, frames) };
+        let first = ((a.max(0.0) * fps - 1e-6).ceil().max(0.0) as u64).min(frames - 1);
+        let end = if b.is_finite() { ((b * fps - 1e-6).ceil().max(0.0) as u64).min(frames) } else { frames };
+        (first, end.saturating_sub(first).max(1))
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -156,6 +176,11 @@ pub struct Layer {
     /// picture beneath it through a transition over `duration`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transition: Option<Transition>,
+    /// Posterize time: the layer's transform, effects and video frame are
+    /// evaluated only `fps` times a second (counted from `in`), which gives
+    /// the choppy "on twos" look. `None` follows the project's frame rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fps: Option<f64>,
 }
 
 /// A transition into a layer. From `in` to `in + duration`, the picture is
@@ -192,6 +217,54 @@ pub enum LayerKind {
     },
     /// No content: its effects are applied to everything beneath it.
     Adjustment,
+    /// A video clip from a slot, played from the slot's `trim` in.
+    Video(Video),
+}
+
+/// A `video` layer: which clip, and how its time runs.
+///
+/// Source time starts at the layer's `in`. `speed` multiplies it (animated,
+/// it is integrated, so a ramp plays on from where the clip is); `time_remap`
+/// instead gives the source second to show at each instant and overrides
+/// `speed`. Past the end the clip holds its last frame, unless `loop`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Video {
+    pub slot: String,
+    /// Playback rate: 1 is real time, 0.5 half speed, 2 double. Not negative
+    /// (use `reverse`). Keyed in project time like every other value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed: Option<Prop>,
+    /// Seconds of the (trimmed) source to show, as a function of project time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_remap: Option<Prop>,
+    /// Start again from the first frame after the last one.
+    #[serde(default, rename = "loop", skip_serializing_if = "is_false")]
+    pub looped: bool,
+    /// Play the clip backwards: the layer starts on the last frame.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub reverse: bool,
+    /// What shows between two source frames (slow motion).
+    #[serde(default, skip_serializing_if = "FrameBlend::is_none")]
+    pub frame_blend: FrameBlend,
+    /// Gain of the clip's own sound in the render (0 mutes it). It is mixed
+    /// only while the speed is constant and there is no `time_remap`.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub volume: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FrameBlend {
+    /// The source frame at or before the instant.
+    #[default]
+    None,
+    /// A cross-fade of the two neighbouring source frames, in linear light.
+    Mix,
+}
+impl FrameBlend {
+    fn is_none(&self) -> bool {
+        *self == FrameBlend::None
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -443,6 +516,12 @@ fn half() -> f64 {
 }
 fn yes() -> bool {
     true
+}
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+fn is_one(v: &f64) -> bool {
+    *v == 1.0
 }
 fn centre2() -> [f64; 2] {
     [0.5, 0.5]

@@ -57,6 +57,7 @@ pub fn check(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> {
     let mut warn: Vec<Finding> = Vec::new();
     let mut ids = BTreeSet::new();
     let mut used_slots = BTreeSet::new();
+    let mut video_slots = BTreeSet::new();
     for (i, l) in p.layers.iter().enumerate() {
         let lp = format!("layers[{i}:\"{}\"]", l.id);
         if !ids.insert(l.id.clone()) {
@@ -82,6 +83,32 @@ pub fn check(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> {
                 }
             }
             LayerKind::Solid { .. } | LayerKind::Adjustment => {}
+            LayerKind::Video(v) => {
+                refs.push((&v.slot, "slot"));
+                video_slots.insert(v.slot.clone());
+                for (name, prop) in [("speed", &v.speed), ("time_remap", &v.time_remap)] {
+                    let Some(prop) = prop else { continue };
+                    let pp = format!("{lp}.{name}");
+                    check_prop(prop, &pp, &mut err);
+                    if let Some(bad) = written_values(prop).iter().flatten().find(|x| !x.is_finite() || **x < 0.0) {
+                        let hint = if name == "speed" { "use \"reverse\": true to play backwards" } else { "source seconds start at 0 (the slot's trim in)" };
+                        err(pp, format!("{name} must not be negative, got {bad}"), Some(hint));
+                    }
+                }
+                if v.speed.is_some() && v.time_remap.is_some() {
+                    warn.push(Finding { severity: Severity::Warning, path: format!("{lp}.speed"), message: "time_remap overrides speed".into(), hint: Some("remove one of them".into()) });
+                }
+                if !v.volume.is_finite() || v.volume < 0.0 {
+                    err(format!("{lp}.volume"), format!("volume must be 0 or more, got {}", v.volume), Some("0 mutes the clip, 1 keeps its level"));
+                }
+            }
+        }
+        if let Some(fps) = l.fps {
+            if !fps.is_finite() || fps <= 0.0 {
+                err(format!("{lp}.fps"), format!("fps must be positive, got {fps}"), Some("remove \"fps\" to follow the project's frame rate"));
+            } else if fps > s.fps + 1e-9 {
+                warn.push(Finding { severity: Severity::Warning, path: format!("{lp}.fps"), message: format!("fps {fps} is above the project's {}: it changes nothing", s.fps), hint: None });
+            }
         }
         for (slot, what) in refs {
             used_slots.insert(slot.clone());
@@ -187,12 +214,20 @@ pub fn check(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> {
 
     for (name, slot) in &p.slots {
         let sp = format!("slots.{name}");
+        let what = if video_slots.contains(name) { "video" } else { "image" };
         match (&slot.path, base_dir) {
-            (None, _) => warn.push(Finding { severity: Severity::Warning, path: sp, message: "slot is empty; it renders as a placeholder".into(), hint: Some("set \"path\" to an image file".into()) }),
+            (None, _) => warn.push(Finding { severity: Severity::Warning, path: sp.clone(), message: "slot is empty; it renders as a placeholder".into(), hint: Some(if what == "video" { "set \"path\" to a video file" } else { "set \"path\" to an image file" }.into()) }),
             (Some(path), Some(dir)) if !dir.join(path).is_file() => {
-                err(sp, format!("image not found: {path}"), Some("paths are relative to the project file"))
+                err(sp.clone(), format!("{what} not found: {path}"), Some("paths are relative to the project file"))
             }
             _ => {}
+        }
+        if let Some([a, b]) = slot.trim {
+            if !a.is_finite() || a < 0.0 || b.is_nan() || b <= a {
+                err(format!("{sp}.trim"), format!("trim must be [in, out] seconds with 0 <= in < out, got [{a}, {b}]"), None);
+            } else if !video_slots.contains(name) && used_slots.contains(name) {
+                warn.push(Finding { severity: Severity::Warning, path: format!("{sp}.trim"), message: "trim only applies to video layers; this slot is used by pictures".into(), hint: None });
+            }
         }
         if !used_slots.contains(name) {
             warn.push(Finding { severity: Severity::Warning, path: format!("slots.{name}"), message: "slot is not used by any layer".into(), hint: None });
@@ -295,6 +330,35 @@ mod tests {
         assert!(has("unknown effect \"nope\""));
         assert!(f.iter().any(|x| x.severity == Severity::Warning && x.message.contains("not used")));
         assert!(has_errors(&f));
+    }
+
+    #[test]
+    fn video_layers_are_checked() {
+        let p = Project::from_json(
+            r#"{"format":"edits.project/1",
+                "settings":{"width":64,"height":64,"fps":25,"duration":4},
+                "slots":{"clip":{"path":"clip.mp4","trim":[2,1]},"pic":{"path":"a.png","trim":[0,1]}},
+                "layers":[
+                  {"id":"a","kind":"video","slot":"nope"},
+                  {"id":"b","kind":"video","slot":"clip","speed":{"keys":[{"t":0,"v":1},{"t":1,"v":-0.5}]},"fps":0},
+                  {"id":"c","kind":"video","slot":"clip","speed":2,"time_remap":{"keys":[{"t":0,"v":-1}]},"volume":-1,"fps":50},
+                  {"id":"d","kind":"image","slot":"pic"}
+                ]}"#,
+        )
+        .unwrap();
+        let f = check(&p, Some(Path::new("/nonexistent-dir")));
+        let says = |path: &str, needle: &str, sev: Severity| f.iter().any(|x| x.path == path && x.message.contains(needle) && x.severity == sev);
+        assert!(says("layers[0:\"a\"].slot", "slot \"nope\" is not defined", Severity::Error), "{f:#?}");
+        assert!(says("layers[1:\"b\"].speed", "speed must not be negative, got -0.5", Severity::Error), "{f:#?}");
+        assert!(says("layers[1:\"b\"].fps", "fps must be positive", Severity::Error));
+        assert!(says("layers[2:\"c\"].time_remap", "time_remap must not be negative", Severity::Error));
+        assert!(says("layers[2:\"c\"].speed", "time_remap overrides speed", Severity::Warning));
+        assert!(says("layers[2:\"c\"].volume", "volume must be 0 or more", Severity::Error));
+        assert!(says("layers[2:\"c\"].fps", "changes nothing", Severity::Warning));
+        assert!(says("slots.clip", "video not found: clip.mp4", Severity::Error));
+        assert!(says("slots.clip.trim", "0 <= in < out", Severity::Error));
+        assert!(says("slots.pic", "image not found: a.png", Severity::Error));
+        assert!(says("slots.pic.trim", "only applies to video layers", Severity::Warning));
     }
 
     #[test]

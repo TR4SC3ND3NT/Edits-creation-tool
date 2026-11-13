@@ -12,7 +12,8 @@ use crate::gpu::{AdapterInfo, AdapterPolicy, Gpu};
 use anyhow::{anyhow, bail, Context, Result};
 use bytemuck::{Pod, Zeroable};
 use crate::stack::stack_signature;
-use edits_core::{Blend, Evaluator, Layer, LayerKind, Project, Slot};
+use crate::video::{self, Clip, VideoInfo, VideoStats, Videos};
+use edits_core::{Blend, ClipInfo, Evaluator, Layer, LayerKind, Project, Slot, SourceFrame};
 use image::RgbaImage;
 use std::collections::HashMap;
 use std::num::NonZeroU64;
@@ -111,10 +112,17 @@ struct Pipes {
 }
 
 #[derive(Clone)]
-struct Picture {
+pub(crate) struct Picture {
     tex: Tex,
     aspect: f64,
 }
+
+/// Pictures of video frames kept on the GPU (motion blur samples and
+/// neighbouring output frames often show the same source frame).
+const VIDEO_TEXTURES: usize = 6;
+
+/// A video frame on the GPU: clip key, the two source frames and the weight of the second.
+type VideoTexKey = (String, u64, u64, u64);
 
 /// One textured quad of a layer.
 pub(crate) struct Quad {
@@ -132,8 +140,17 @@ pub(crate) struct Quad {
 pub(crate) struct Scene {
     pub project: Project,
     slots: HashMap<String, Picture>,
+    /// Slots that video layers play (those with a file), by slot name.
+    pub clips: HashMap<String, Arc<Clip>>,
     /// Effect `source` -> key into `Renderer::custom`.
     pub custom: HashMap<String, String>,
+}
+
+impl Scene {
+    /// The clip a video layer's slot plays, as the evaluator needs it.
+    pub fn clip_info(&self, slot: &str) -> Option<ClipInfo> {
+        self.clips.get(slot).map(|c| c.info())
+    }
 }
 
 /// Values shared by every pass of one motion blur sample.
@@ -221,6 +238,12 @@ pub struct Renderer {
     pub(crate) custom: HashMap<String, wgpu::RenderPipeline>,
     /// Transition pipelines by kind, compiled on first use.
     transition_pipes: HashMap<&'static str, wgpu::RenderPipeline>,
+    /// Video decoders and decoded frames.
+    videos: Videos,
+    /// What ffprobe said about each video file (path, size, modification time).
+    probes: HashMap<String, VideoInfo>,
+    /// Video frames uploaded lately, most recent last.
+    video_textures: Vec<(VideoTexKey, Picture)>,
     pub(crate) scene: Option<Arc<Scene>>,
     readback: Option<Readback>,
     samples_override: Option<u32>,
@@ -415,6 +438,9 @@ impl Renderer {
             pictures: HashMap::new(),
             custom: HashMap::new(),
             transition_pipes: HashMap::new(),
+            videos: Videos::default(),
+            probes: HashMap::new(),
+            video_textures: Vec::new(),
             scene: None,
             readback: None,
             samples_override: None,
@@ -481,11 +507,40 @@ impl Renderer {
             bail!("settings.fps must be positive");
         }
         let mut used: Vec<&str> = Vec::new();
+        let mut clips: HashMap<String, Arc<Clip>> = HashMap::new();
+        let mut probed: Vec<String> = Vec::new();
         for l in &project.layers {
             match &l.kind {
                 LayerKind::Image { slot } => used.push(slot),
                 LayerKind::Cube { faces, .. } => used.extend(faces.iter().map(String::as_str)),
                 LayerKind::Solid { .. } | LayerKind::Adjustment => {}
+                LayerKind::Video(v) => {
+                    let Some(slot) = project.slots.get(&v.slot).filter(|s| s.path.is_some()) else {
+                        // An empty slot shows its placeholder, like a picture.
+                        used.push(&v.slot);
+                        continue;
+                    };
+                    if clips.contains_key(&v.slot) {
+                        continue;
+                    }
+                    let full = base_dir.join(slot.path.as_deref().expect("filtered above"));
+                    let key = file_key(&full);
+                    let info = match self.probes.get(&key) {
+                        Some(info) => info.clone(),
+                        None => {
+                            if !full.is_file() {
+                                bail!("slot \"{}\": video not found: {} (paths are relative to the project file)", v.slot, full.display());
+                            }
+                            let info = video::probe(&full).with_context(|| format!("slot \"{}\"", v.slot))?;
+                            self.probes.insert(key.clone(), info.clone());
+                            info
+                        }
+                    };
+                    probed.push(key.clone());
+                    let trim = slot.trim_frames(info.fps, info.frames);
+                    let side = s.width.max(s.height).min(max);
+                    clips.insert(v.slot.clone(), Arc::new(Clip::new(full, &key, info, trim, side)));
+                }
             }
         }
         let mut slots = HashMap::new();
@@ -552,10 +607,50 @@ impl Renderer {
         // Keep what this project uses; pictures and shaders of earlier projects go.
         self.pictures.retain(|key, _| kept.contains(key));
         self.custom.retain(|key, _| custom.values().any(|k| k == key));
+        self.probes.retain(|key, _| probed.contains(key));
+        let clip_keys: Vec<&str> = clips.values().map(|c| c.key.as_str()).collect();
+        self.videos.retain(&clip_keys);
+        self.video_textures.retain(|((key, ..), _)| clip_keys.contains(&key.as_str()));
         self.binds.clear();
         self.fx_binds.clear();
-        self.scene = Some(Arc::new(Scene { project: project.clone(), slots, custom }));
+        self.scene = Some(Arc::new(Scene { project: project.clone(), slots, clips, custom }));
         Ok(())
+    }
+
+    /// Counters of the video decoders since the renderer was made.
+    pub fn video_stats(&self) -> VideoStats {
+        self.videos.stats
+    }
+
+    /// The picture of a video slot's source frames `at` (crossed in linear
+    /// light when `at.weight` is not 0), uploaded with mip levels. The last
+    /// few are kept on the GPU.
+    pub(crate) fn video_picture(&mut self, clip: &Clip, at: SourceFrame) -> Result<Picture> {
+        // Keyed by source frames: two trims of one file share their frames.
+        let key: VideoTexKey = (clip.key.clone(), clip.first + at.frame, clip.first + at.next, at.weight.to_bits());
+        if let Some(i) = self.video_textures.iter().position(|(k, _)| *k == key) {
+            let entry = self.video_textures.remove(i);
+            let pic = entry.1.clone();
+            self.video_textures.push(entry);
+            return Ok(pic);
+        }
+        let a = self.videos.frame(clip, at.frame)?;
+        let mixed;
+        let img: &RgbaImage = if at.weight > 0.0 && at.next != at.frame {
+            let b = self.videos.frame(clip, at.next)?;
+            mixed = video::mix(&a, &b, at.weight);
+            &mixed
+        } else {
+            &a
+        };
+        let pic = Picture { aspect: img.width() as f64 / img.height() as f64, tex: self.upload_picture(img) };
+        self.video_textures.push((key, pic.clone()));
+        if self.video_textures.len() > VIDEO_TEXTURES {
+            let (_, old) = self.video_textures.remove(0);
+            let id = old.tex.id;
+            self.binds.retain(|k, _| k.0 != id && k.1 != id);
+        }
+        Ok(pic)
     }
 
     fn compile_custom(&mut self, name: &str, text: &str) -> Result<wgpu::RenderPipeline> {
@@ -1071,7 +1166,7 @@ impl Renderer {
         let mut instants: Vec<(f64, Vec<u64>, u32)> = Vec::new();
         for i in 0..samples {
             let t = time + shutter * i as f64 / samples as f64;
-            let state = stack_signature(&ev, &project.layers, t);
+            let state = stack_signature(&ev, &scene, &project.layers, t);
             match instants.iter_mut().find(|(_, s, _)| *s == state) {
                 Some(same) => same.2 += 1,
                 None => instants.push((t, state, 1)),
@@ -1148,8 +1243,10 @@ impl Renderer {
         image.map(Some)
     }
 
-    /// The quads of an image, solid or cube layer, and whether they need a depth buffer.
-    pub(crate) fn layer_quads(&self, scene: &Scene, layer: &Layer, mvp: glam::DMat4, aspect: f64) -> (Vec<Quad>, bool) {
+    /// The quads of an image, solid, cube or video layer, and whether they
+    /// need a depth buffer. `frame` is a video layer's current frame (`None`
+    /// shows its slot's placeholder).
+    pub(crate) fn layer_quads(&self, scene: &Scene, layer: &Layer, mvp: glam::DMat4, aspect: f64, frame: Option<&Picture>) -> (Vec<Quad>, bool) {
         let white = [1.0, 1.0, 1.0, 1.0];
         let (w, h) = (self.ctx.w, self.ctx.h);
         let flat = !matches!(layer.kind, LayerKind::Cube { .. });
@@ -1158,18 +1255,20 @@ impl Renderer {
             let covers = geometry::covers_frame(m, w, h);
             (covers, if covers || !flat { [0.0, 0.0] } else { geometry::edge_margin(m, w, h) })
         };
-        let slot_quad = |name: &str, m: glam::DMat4, box_aspect: f64| {
+        let picture_quad = |name: &str, m: glam::DMat4, box_aspect: f64, picture: Option<&Picture>| {
             let (covers, margin) = edges(m);
             let slot = scene.project.slots.get(name);
             let (fit, focus) = slot.map(|s| (s.fit, s.focus)).unwrap_or((edits_core::Fit::Cover, [0.5, 0.5]));
-            match scene.slots.get(name) {
+            match picture.or_else(|| scene.slots.get(name)) {
                 Some(pic) => Quad { mvp: mat(m), tex: pic.tex.clone(), fit: geometry::fit_uv(fit, focus, pic.aspect, box_aspect), color: white, covers, margin },
                 // Not reachable after `prepare`, which gives every used slot a picture.
                 None => Quad { mvp: mat(m), tex: self.white.clone(), fit: geometry::fit_uv(edits_core::Fit::Stretch, focus, 1.0, 1.0), color: [1.0, 0.0, 1.0, 1.0], covers, margin },
             }
         };
+        let slot_quad = |name: &str, m: glam::DMat4, box_aspect: f64| picture_quad(name, m, box_aspect, None);
         match &layer.kind {
             LayerKind::Image { slot } => (vec![slot_quad(slot, mvp * geometry::flat(aspect, 1.0), aspect)], false),
+            LayerKind::Video(v) => (vec![picture_quad(&v.slot, mvp * geometry::flat(aspect, 1.0), aspect, frame)], false),
             LayerKind::Solid { color } => {
                 let a = color[3].clamp(0.0, 1.0);
                 let c = [0, 1, 2].map(|i| assets::srgb_to_linear(color[i].clamp(0.0, 1.0)) * a);

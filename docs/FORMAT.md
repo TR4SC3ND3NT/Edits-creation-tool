@@ -38,7 +38,8 @@ is the short version.
 ## Layers
 
 Every layer has `id`, `kind`, optional `in` / `out`, `transform`, `blend`, `effects`, `enabled`,
-and optionally `transition` (how it comes in; see [Transitions](#transitions)).
+and optionally `transition` (how it comes in; see [Transitions](#transitions)) and `fps`
+(posterize time; see [Video layers and layer time](#video-layers-and-layer-time)).
 
 | `kind` | Extra fields | What it is |
 | --- | --- | --- |
@@ -46,6 +47,7 @@ and optionally `transition` (how it comes in; see [Transitions](#transitions)).
 | `solid` | `color` `[r, g, b, a]` | A flat colour |
 | `cube` | `faces` (slot ids: front, right, back, left, top, bottom), `size` `[w, h, d]` | A real 3D box with a picture on each face |
 | `adjustment` | none | Its effects apply to everything beneath it |
+| `video` | `slot`, optional `speed`, `time_remap`, `loop`, `reverse`, `frame_blend`, `volume` | A clip from a slot, decoded by ffmpeg; see [Video layers](#video-layers-and-layer-time) |
 
 `transform` has `position` `[x, y, z]`, `scale` (number, `[x, y]` or `[x, y, z]`),
 `rotation` `[x, y, z]`, `anchor` `[x, y]`, `opacity`.
@@ -229,3 +231,43 @@ blends it over the layers beneath, and averages the samples in linear light.
 A layer with a running transition is drawn into "to" first and then mixed with
 "from" by its transition. A frame is a pure function of the project and the
 frame number.
+
+## Video layers and layer time
+
+A `video` layer plays a clip from a slot. The slot's `path` is any file the
+system ffmpeg decodes (MP4, MOV, MKV, WebM, GIF, ...); ffmpeg and ffprobe
+must be on `PATH` (or named by `EDITS_FFMPEG` and `EDITS_FFPROBE`).
+
+```json
+"slots": { "op": { "path": "clips/op.mp4", "trim": [12.5, 16] } },
+"layers": [
+  { "id": "clip", "kind": "video", "slot": "op", "in": 8, "out": 16,
+    "speed": { "keys": [ { "t": 8, "v": 1, "ease": "in_out" }, { "t": 9, "v": 0.2 } ] },
+    "frame_blend": "mix", "volume": 0, "fps": 12 }
+]
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| slot `trim` | the whole file | `[in, out]` seconds of the file that play. It belongs to the slot, so it swaps with the content. |
+| `speed` | 1 | Playback rate (0.5 half speed, 2 double). Keyed in project time like any value; an animated speed is integrated from the layer's `in`, so a ramp plays on from where the clip is. Not negative (use `reverse`). |
+| `time_remap` | none | Seconds of the trimmed clip to show, as a function of project time. Overrides `speed`. |
+| `loop` | false | Start again after the last frame. Without it the last frame holds. |
+| `reverse` | false | Play backwards: the layer starts on the last frame. |
+| `frame_blend` | `none` | `mix` cross-fades the two neighbouring source frames (in linear light) by the fraction between them, for smoother slow motion. `none` shows the frame at or before the instant. |
+| `volume` | 1 | Gain of the clip's own sound in `edits render`; 0 mutes it. Mixed only while the speed is constant and there is no `time_remap` (a constant speed keeps the pitch). |
+
+Source time starts at the layer's `in`: at `in` the layer shows the first
+frame of the trim (the last with `reverse`). Frames are counted from the
+first frame of the file, `frame = floor(seconds x clip fps)`; clips with a
+variable frame rate are read frame by frame, so convert them to a constant
+rate (`ffmpeg -i in.mp4 -fps_mode cfr -r 30 out.mp4`) for exact timing. The
+picture fits its layer box like an image, by the slot's `fit` and `focus`. An
+empty slot shows its placeholder.
+
+**`fps` on any layer** posterizes its time: the layer's transform, effects
+and video frame are evaluated only at steps of `1 / fps` seconds counted from
+its `in` (`floor((t - in) x fps) / fps`), so `"fps": 12` in a 24 fps project
+holds every picture for two frames ("on twos"). Motion blur samples inside a
+step are one picture. The layer still comes in and goes out at its own `in`
+and `out`, and its transition runs at the project's rate.

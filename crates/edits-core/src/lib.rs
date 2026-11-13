@@ -21,5 +21,5 @@ pub mod song;
 pub mod time;
 pub mod ui;
 
-pub use eval::{Evaluator, ResolvedCamera, ResolvedEffect, ResolvedLayer, ResolvedTransition};
+pub use eval::{ClipInfo, Evaluator, ResolvedCamera, ResolvedEffect, ResolvedLayer, ResolvedTransition, SourceFrame};
 pub use model::*;

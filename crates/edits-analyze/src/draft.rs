@@ -263,7 +263,7 @@ fn shot_layer(shot: &Shot, clock: &Clock, shift: usize, repeat: usize, aspect: f
         transform,
         blend: Blend::Normal,
         effects,
-        enabled: true, transition: None,
+        enabled: true, transition: None, fps: None,
     }
 }
 
@@ -303,6 +303,7 @@ pub fn draft(a: &Analysis, opts: &DraftOpts) -> Project {
                     s.ref_frame,
                     proxy.map(|p| format!("; proxy still {}", rel(&p))).unwrap_or_default()
                 )),
+                trim: None,
             },
         );
     }
@@ -369,7 +370,7 @@ pub fn draft(a: &Analysis, opts: &DraftOpts) -> Project {
                 transform,
                 blend: Blend::Normal,
                 effects: vec![],
-                enabled: true, transition: None,
+                enabled: true, transition: None, fps: None,
             });
         }
     }
@@ -382,7 +383,7 @@ pub fn draft(a: &Analysis, opts: &DraftOpts) -> Project {
         if let Some(p) = &o.path {
             slots.insert(
                 "overlay".into(),
-                Slot { path: Some(rel(&opts.analysis_dir.join(p))), fit: Fit::Stretch, focus: [0.5, 0.5], note: Some("static overlay plate recovered from the reference".into()) },
+                Slot { path: Some(rel(&opts.analysis_dir.join(p))), fit: Fit::Stretch, focus: [0.5, 0.5], note: Some("static overlay plate recovered from the reference".into()), trim: None },
             );
             layers.push(Layer {
                 id: "overlay".into(),
@@ -393,7 +394,7 @@ pub fn draft(a: &Analysis, opts: &DraftOpts) -> Project {
                 transform: Transform::default(),
                 blend: Blend::Screen,
                 effects: vec![],
-                enabled: static_on, transition: None,
+                enabled: static_on, transition: None, fps: None,
             });
         }
     }
@@ -411,7 +412,7 @@ pub fn draft(a: &Analysis, opts: &DraftOpts) -> Project {
             transform: Transform::default(),
             blend: Blend::Normal,
             effects: vec![Effect { kind: "vignette".into(), params, options: Default::default(), source: None, enabled: true }],
-            enabled: static_on, transition: None,
+            enabled: static_on, transition: None, fps: None,
         });
     }
     if opts.proxies && (a.layers.overlay.is_some() || a.layers.vignette.is_some()) {

@@ -81,6 +81,13 @@ When the project has `audio`, the file is encoded to AAC and muxed starting at
 `audio.offset` plus the start of the rendered range, trimmed to the rendered
 length, with `audio.gain` applied. `--no-audio` leaves it out.
 
+The sound of `video` layers is mixed in too (`amix`, without normalising):
+each from its layer's `in` to its `out`, from the slot's `trim`, at the
+layer's `volume`, looped or reversed like the picture and at its constant
+`speed` (pitch kept). A video with an animated `speed` or a `time_remap`
+stays silent, with a warning on stderr; `"volume": 0` mutes one. `clip_audio`
+in the output counts the layers heard.
+
 `--samples N` overrides `settings.motion_blur.samples`; `--samples 1` is the
 fast way to preview without motion blur. `-q` silences the progress lines.
 
@@ -92,6 +99,7 @@ frame 24/24 (100%)  161 ms/frame  0 s left
   "adapter": { "backend": "Vulkan", "driver": "llvmpipe Mesa 25.2.8-0ubuntu0.24.04.4 (LLVM 20.1.2)",
                "name": "llvmpipe (LLVM 20.1.2, 256 bits)", "software": true, "type": "Cpu" },
   "audio": true,
+  "clip_audio": 0,
   "duration_seconds": 0.96,
   "encoder": "libx264",
   "first_frame": 25,
