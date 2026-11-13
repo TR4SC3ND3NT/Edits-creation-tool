@@ -72,6 +72,21 @@ A project is **slots + layers + keyframes + effects**.
   `amount` or `zoom` on a hit), `pixelate` (key `size` to 0 for a reveal),
   `halftone` (`mode` mono/rgb/cmyk; manga print), `chromatic_aberration`
   (radial lens fringe, zero in the middle).
+- **More looks** (all one pass, sizes in % of height). Hits: `shockwave`
+  (key `progress` 0 to 1 over a beat), `glitch` (`rate` changes per time
+  unit, `seed`), `film_burn` (key `amount` 0 to 1 as a transition),
+  `ripple`, `wave_warp`, `lens_distortion`, `turbulent_displace` (key
+  `evolution`). Manga and anime: `screentone` (dots/bayer/lines, `levels` 2
+  is pure black and white), `ink` (lineart: keeps lines and solid blacks,
+  drops shading), `toon`, `edge_detect`, `kuwahara` (paint), `emboss`,
+  `sharpen`. Texture: `scanlines`, `vhs`, `film_damage` (new every frame),
+  `mirror`, `tile`, `polar` (`to_polar` = tiny planet). Colour:
+  `gradient_map` (duotone/tritone), `levels`, `vibrance`, `lut` (a `.cube`
+  file in `"source"`). Generators drawn over the layer: `fractal_noise`,
+  `gradient_ramp` (option `blend`). `displacement_map` takes a slot as its
+  map: `"source": "slot:<name>"`. Effects that change on their own every
+  frame (`glitch`, `vhs`, `film_damage`, moving waves) are still the same
+  for the same frame and `seed`.
 - **Transitions** sit on the incoming layer: `"transition": { "kind": "whip_pan", "duration": 0.5 }`
   mixes the picture beneath into this one over `duration` from its `in`
   (`edits transitions` lists 22). The outgoing layer must last until the end.

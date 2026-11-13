@@ -25,7 +25,7 @@ category (`color.rs`, `blur.rs`, `light.rs`, `distort.rs`, `stylize.rs`,
   flash followed by `glow` blooms hard) and clipped only at the output.
   Effects marked *display* work on sRGB-encoded values, because that is what
   the look they imitate does in an editor: `brightness_contrast`, `invert`,
-  `threshold`, `posterize`, `grain`.
+  `threshold`, `posterize`, `grain`, and the later ones marked *display*.
 - **A layer's effects see a frame-sized picture** of that layer, transparent
   where the layer is not. A blur spreads into the transparent part; a
   `vignette` or `zoom_blur` is centred on the frame, not on the layer.
@@ -38,6 +38,11 @@ category (`color.rs`, `blur.rs`, `light.rs`, `distort.rs`, `stylize.rs`,
   to its range, and `edits check` warns when a written value is outside it.
   A `color` must have 3 numbers and a `pos` 2 (or one number for all):
   anything else is an error.
+- **`source`** names what an effect reads besides the picture: a WGSL file
+  for `custom`, a `.cube` file for `lut` (both relative to the project
+  file), and `"slot:<name>"`, a slot of the project, for
+  `displacement_map`. `edits check` reports a missing or unreadable file, a
+  slot that does not exist, and a `source` on an effect that takes none.
 - **Options are choices that cannot be animated**, such as a pixelate's cell
   shape: `"options": { "shape": "hex" }`. Each option has a fixed list of
   values (the first is the default); `edits check` rejects an unknown option
@@ -55,7 +60,8 @@ category (`color.rs`, `blur.rs`, `light.rs`, `distort.rs`, `stylize.rs`,
   cheap: neighbours in the list share one pass, and at the end of a layer's
   list they are folded into the blend. Each blur, `glow`, `rgb_split`,
   `transform2d` and `custom` adds at least one pass over the frame; each
-  distort and stylise effect below (`twirl` to `halftone`) is exactly one.
+  built-in one-pass effect below (distort, stylise, the colour passes `lut`
+  to `vibrance`, and the generators) is exactly one.
 
 ## Colour
 
@@ -101,14 +107,84 @@ category (`color.rs`, `blur.rs`, `light.rs`, `distort.rs`, `stylize.rs`,
 | `pixelate` | `size` (2), `center` ([0, 0]); option `shape` = `square` / `hex` / `triangle` / `polar` | Mosaic: flat cells `size` % of height across, each the colour of the picture at its centre, on a grid with a cell centred on `center`. `hex` are hexagons `size` wide, `triangle` equilateral triangles with sides of `size`, `polar` rings `size` wide about `center`, cut into segments about `size` long. Key `size` down to 0 for a de-pixelate reveal. Skipped at size 0. |
 | `halftone` | `size` (1.2), `angle` (45), `smoothing` (0.15, 0..1), `amount` (1, 0..1); option `mode` = `mono` / `rgb` / `cmyk`; option `shape` = `dot` / `line` / `square` | A print screen: a grid of cells `size` % of height apart turned to `angle` degrees, each holding a dot (or a line, or a square) whose area is the fraction of the cell the colour asks for, in linear light, so the picture's mean brightness is kept (within a few percent). The colour of a cell is the average of five points of it. `mono`: black ink on white by luminance. `rgb`: red, green and blue light on black, screens at `angle` - 30, `angle`, `angle` + 30. `cmyk`: cyan, magenta, yellow and black ink on white at `angle` - 30, `angle`, `angle` - 45, `angle` + 30 (15, 45, 0 and 75 by default). `smoothing` softens the dot edges; `amount` mixes with the original. Transparent parts stay transparent. Skipped at amount 0. |
 
-The built-in one-pass effects (the last three tables, except `transform2d`)
-are WGSL files in `crates/edits-render/src/shaders/fx/`, written against the
-same contract as a custom effect (below), with their options compiled in. To
-add one: a row in the category's file in `crates/edits-core/src/effects/`, a
-WGSL file, a packer in `crates/edits-render/src/fxlib/` (it turns the
-effect's values into `fx.p0` .. `fx.p15` and says when it changes nothing), a
-pixel test in `crates/edits-render/tests/effects.rs`, and a line here. Ported
-code keeps its licence header and gets an entry in `THIRD_PARTY.md`.
+## More distortions
+
+Each reads the picture somewhere else; sizes are % of height, positions
+composition units. Where a distortion would read outside the frame it gets
+the frame's edge pixels (or, where noted, the picture mirrored at the edge).
+Effects that say *moves with time* change from frame to frame even when no
+value is keyed (their `speed` is in the project's time unit: per beat in a
+beats project); everything else is a function of the values alone.
+
+| Kind | Parameters (default) | What it does |
+| --- | --- | --- |
+| `wave_warp` | `amplitude` (2), `wavelength` (10), `direction` (90), `speed` (0), `phase` (0), `seed` (0); option `shape` = `sine` / `square` / `triangle` / `sawtooth` / `circle` / `semicircle` / `uncircle` / `noise` / `smooth_noise`; option `pin` = `none` / `all` / `center` / `left` / `top` / `right` / `bottom` / `horizontal` / `vertical` | Waves travel in `direction` (degrees: 90 travels right, 0 up) and push each line across it sideways: a pixel reads the picture `amplitude` x shape(along / `wavelength` + `phase` / 360 - `speed` x t) away, a quarter turn anticlockwise from the direction of travel. `noise` is a random level per half wave (from `seed`), `smooth_noise` blends between them. `pin` fades the push to nothing toward the frame's edges (`all`, `left`, ...; `horizontal` = top and bottom, `vertical` = left and right) or its centre. *Moves with time* when `speed` is not 0. Skipped at amplitude 0. |
+| `ripple` | `amplitude` (1), `wavelength` (5), `radius` (50), `center` ([0, 0]), `phase` (0), `speed` (1) | Rings about `center`: a pixel at distance d < `radius` reads the picture at d + `amplitude` x (1 - d / radius) x sin(360 x (d / `wavelength` + `phase` / 360 - `speed` x t)) degrees, so the push falls to nothing at the radius and outside it nothing moves. Rings leave the centre at `speed` per time unit. *Moves with time.* Skipped at amplitude 0. |
+| `shockwave` | `progress` (0.5, 0..1), `center` ([0, 0]), `radius` (60), `width` (5), `strength` (3) | A ring `width` wide at `progress` x `radius` from `center`. Inside the ring the picture is read up to `strength` nearer the centre (a cos² bump across the ring), so it bulges outward as the ring passes; inside and outside the ring nothing moves. The push swells in over the first tenth of `progress` and fades to nothing at 1: key `progress` from 0 to 1 over a beat on a hit. Skipped at progress 0 and 1. |
+| `mirror` | `center` ([0, 0]), `angle` (0) | Reflects in the line through `center` whose normal points at `angle` degrees (clockwise from right): that side shows the other side mirrored. 0 mirrors the left half onto the right, 90 the top onto the bottom. Always runs. |
+| `tile` | `tiles` ([2, 2]), `mirror` (1, 0..1), `offset` ([0, 0]) | The picture repeated `tiles` times across and down, one copy centred on the frame (moved by `offset`). With `mirror` 1 neighbouring copies are mirror images, so the seams vanish. Skipped at tiles [1, 1] with no offset. |
+| `polar` | `amount` (1, 0..1); option `direction` = `to_polar` / `to_rect` | Polar coordinates about the frame's centre, in a disc that touches the nearer pair of edges. `to_polar` wraps the picture into the disc: its width becomes the turn (clockwise from the top) and its bottom edge the centre, a tiny planet. `to_rect` unrolls such a disc back into the frame. `amount` moves each pixel's reading point part of the way. Skipped at amount 0. |
+| `lens_distortion` | `amount` (0.2, -2..2), `center` ([0, 0]), `scale` (1) | A lens: a point at distance d from `center` reads the picture at d x (1 + k d²) / `scale`, where k makes the frame's corners (seen from its centre) read `amount` farther out. Positive is barrel distortion, negative pincushion; `scale` zooms. The frame's edges are mirrored, so no smear shows. Skipped at amount 0 and scale 1. |
+| `displacement_map` | `amount` ([3, 3]); `source` = `"slot:<name>"`; options `channel_x` = `red` / `green` / `blue` / `alpha` / `luminance` / `off`, `channel_y` = `green` / `red` / `blue` / `alpha` / `luminance` / `off` | Pushes each pixel by the colour of a map: the picture of a slot of the project, stretched over the frame. A display value of 0.5 (sRGB 128) pushes nothing, 1 pushes `amount` (% of height; across, down), 0 the same the other way. `channel_x` and `channel_y` pick which map channel pushes along each axis. Skipped at amount [0, 0]. |
+| `turbulent_displace` | `amount` (2), `size` (10), `complexity` (3, 1..8), `evolution` (0), `seed` (0); option `mode` = `turbulent` / `horizontal` / `vertical` / `twist` / `bulge` | Pushes the picture by fractal noise (`complexity` octaves of smooth value noise, the largest features `size` across): up to about `amount` in `turbulent` (two noises, one per axis), along one axis in `horizontal` and `vertical`, along the noise's contours in `twist` and up its slopes in `bulge`. `evolution` changes the noise smoothly (360 is one step to an unrelated noise): key it to animate. Skipped at amount 0. |
+
+## More stylise
+
+Effects marked *display* work on sRGB-encoded values. Ink and paper colours
+are linear RGB like every colour parameter, mixed as display values.
+
+| Kind | Parameters (default) | What it does |
+| --- | --- | --- |
+| `screentone` | `size` (0.6), `levels` (2, 2..16), `angle` (45), `ink` ([0, 0, 0]), `paper` ([1, 1, 1]), `amount` (1); option `pattern` = `dots` / `bayer` / `lines` | *Display.* Manga screentone: the luminance is cut to `levels` tones from `ink` to `paper`, dithered by a pattern on a grid `size` % of height apart turned to `angle`: `dots` (round dots that grow into each other at 50%), `bayer` (an 8x8 ordered dither, one cell per `size`) or `lines` (hatching). With 2 levels every pixel is ink or paper; with the Bayer pattern exactly the luminance's share of each 8x8 block is paper. Skipped at amount 0 or size 0. |
+| `edge_detect` | `strength` (1), `threshold` (0.1, 0..1), `width` (0.1), `color` ([1, 1, 1]), `invert` (0, 0..1), `amount` (1) | *Display.* Sobel edges of the luminance, sampled `width` % of height apart (at least a pixel); a hard step from black to white measures 1. Edges are `color` on black, scaled by (`strength` x edge - `threshold`) / (1 - `threshold`); `invert` 1 gives the negative (dark lines on white). Skipped at amount 0. |
+| `ink` | `strength` (1), `threshold` (0.03), `width` (0.25), `ink` ([0, 0, 0]), `paper` ([1, 1, 1]), `amount` (1) | *Display.* Manga lineart: a pixel is ink where it is darker than its surroundings (the mean of a 5x5 grid spanning `width` % of height around it, against the mean of it and its four nearest samples) by more than `threshold`, and where it is nearly black (luminance below 0.12 to 0.25); everything else is flat `paper`. Shading and tone areas disappear, lines and solid blacks stay. Skipped at amount 0. |
+| `toon` | `levels` (6, 2..64), `edge` (0.2, 0..1), `width` (0.1), `color` ([0, 0, 0]), `amount` (1) | *Display.* Cel shading: each channel rounded to `levels` evenly spaced values, and a `color` outline where the Sobel edge (as in `edge_detect`) passes `edge`; 1 draws no outlines. Skipped at amount 0. |
+| `kuwahara` | `radius` (0.5, 0..5), `amount` (1) | Oil paint: each pixel takes the mean colour of whichever of the four squares meeting at it (`radius` % of height on a side) has the least variance, so flat areas smooth out and edges stay sharp. One pass with a fixed 4x4 grid of samples per square: resolution independent, but large radii are sampled coarsely (hence the limit of 5; a smooth large-radius version needs several passes). Skipped below half a pixel. |
+| `emboss` | `angle` (45), `strength` (1), `height` (0.15), `amount` (1) | *Display.* Grey relief: mid grey plus `strength` x the luminance difference between the point `height` % of height away from the light and the point as far toward it. The light comes from `angle` degrees (clockwise from right), so edges facing it are lit and the far edges shaded. Skipped at amount 0. |
+| `sharpen` | `amount` (0.5, 0..1) | Contrast-adaptive sharpening (AMD FSR 1 RCAS): a negative lobe on the four neighbouring pixels, as strong as `amount` allows without leaving the range of those neighbours, so soft detail gets crisper and hard edges get no halo. Works per output pixel. Skipped at 0. |
+| `glitch` | `amount` (0.3, 0..1), `rate` (8), `bands` (16, 1..256), `shift` (5), `rgb` (1), `block` (0, 0..1), `seed` (0) | Digital glitch, changing `rate` times per time unit (frame t shows change floor(rate x t)): of `bands` horizontal bands, a share `amount` jumps sideways by up to `shift` % of height with red and blue split `rgb` apart, and a share `block` of square blocks (two bands tall) is read from a few blocks away with red and blue swapped. Everything is a hash of the band or block, the change and `seed`. *Moves with time.* Skipped at amount 0 and block 0. |
+| `scanlines` | `count` (300), `amount` (0.3, 0..1), `speed` (0) | CRT lines: multiplies by 1 - `amount` x (0.5 + 0.5 cos(360 x (y x `count` + scroll))), y from 0 at the top to 1 at the bottom, scrolling `speed` line spacings per time unit. Where lines would be closer than 2 pixels (a small preview) they fade into an even darkening by `amount` / 2, the same mean. Skipped at amount 0. |
+| `vhs` | `noise` (0.2, 0..1), `roll` (0), `bleed` (0.5), `wobble` (0.3), `seed` (0) | A worn tape: the picture rolls up by `roll` frame heights per time unit, its lines wobble sideways by up to `wobble` % of height, colour (not luminance) is smeared `bleed` % of height to the right, and static, a drifting torn tracking band and a few bright streaks scale with `noise`. Static changes every output frame. *Moves with time.* Skipped when all four are 0. |
+| `film_damage` | `scratches` (0.3, 0..1), `dust` (0.3, 0..1), `flicker` (0.1, 0..1), `jitter` (0.2), `seed` (0) | Old film, new on every output frame: the picture jumps by up to `jitter` % of height (mirrored at the edges), its brightness flickers by up to ±`flicker` / 2, up to five thin wandering vertical scratches (bright or dark) appear with chance `scratches`, and dark dust specks scatter with density `dust`. All hashed from the frame number and `seed`. *Moves with time.* Skipped when all four are 0. |
+| `film_burn` | `amount` (0.5, 0..1), `color` ([1, 0.45, 0.1]), `center` ([0, 0]), `size` (30), `speed` (0.5), `seed` (0) | A burn spreading from `center`: fractal noise (features `size` % of height) plus the closeness to the centre is compared with a threshold that falls as `amount` rises. Past it the picture chars dark, then glows `color`, then burns through to white-hot light (values above 1, so a `glow` after it blooms). 0.1 barely starts, 0.5 takes about half the frame, 1 all of it; key `amount` for a burn transition. The ragged edge churns at `speed` per time unit. *Moves with time.* Skipped at amount 0. |
+
+## Colour passes
+
+Colour effects that need a pass of their own (they are not folded into the
+blend like the colour effects above).
+
+| Kind | Parameters (default) | What it does |
+| --- | --- | --- |
+| `lut` | `amount` (1, 0..1); `source` = a `.cube` file | *Display.* A colour lookup table: `source` is a `.cube` file (the Adobe / Resolve text format: `LUT_3D_SIZE` up to 256 and/or `LUT_1D_SIZE`, `DOMAIN_MIN` / `DOMAIN_MAX`, `TITLE`, `#` comments) relative to the project. It is applied to display values clamped to 0..1, with trilinear interpolation, and `amount` mixes with the original as display values (so a table that inverts equals `invert` at any amount). A 1D table, or a domain other than 0..1, is baked into a 33³ table when the project is loaded. `edits check` reports a file that does not load and why. Skipped at amount 0. |
+| `gradient_map` | `shadows` ([0, 0, 0]), `midtones` ([0.214, 0.214, 0.214]), `highlights` ([1, 1, 1]), `amount` (1); option `mode` = `tritone` / `duotone` | *Display.* Recolours by luminance: black becomes `shadows`, mid grey `midtones` and white `highlights` (`duotone`: shadows straight to highlights), mixed as display values. The defaults are a black-and-white conversion. Skipped at amount 0. |
+| `levels` | `in_black` (0), `in_white` (1), `gamma` (1, 0.01..10), `out_black` (0), `out_white` (1) | *Display.* Per channel: (value - `in_black`) / (`in_white` - `in_black`), clamped to 0..1, raised to 1 / `gamma`, then mapped to `out_black`..`out_white`. Values above 1 (a flash) are clipped. Skipped at the defaults. |
+| `vibrance` | `amount` (0.5, -1..1) | Saturation (about the luminance, as `saturation`) by a factor that depends on how saturated the colour already is: 1 + 2 x `amount` x (1 - s)², where s = (max - min) / max, so grey-ish colours are boosted up to three times and pure ones not at all. Negative amounts mute every colour evenly (-1 is black and white). Skipped at 0. |
+
+## Generate
+
+Generators draw new content over the picture they are given, inside its
+transparency: on a solid layer they fill the solid, on an adjustment layer
+they cover what is beneath, on a picture layer only the picture. The option
+`blend` = `replace` / `multiply` / `screen` / `add` / `overlay` says how,
+and `amount` is the opacity.
+
+| Kind | Parameters (default) | What it does |
+| --- | --- | --- |
+| `fractal_noise` | `scale` (20), `complexity` (4, 1..8), `evolution` (0), `contrast` (1), `brightness` (0), `offset` ([0, 0]), `seed` (0), `amount` (1); option `blend` | Grey fractal noise (clouds, smoke): `complexity` octaves of smooth value noise, each half the size and half the weight of the last, the largest `scale` % of height across. The grey value is (noise - 0.5) x 2 x `contrast` + 0.5 + `brightness` as a display value, clamped to 0..1. `evolution` changes it smoothly (360 is one step); `offset` moves it. Skipped at amount 0. |
+| `gradient_ramp` | `start` ([0, -0.5]), `end` ([0, 0.5]), `color_a` ([0, 0, 0]), `color_b` ([1, 1, 1]), `amount` (1); option `shape` = `linear` / `radial`; option `blend` | Two colours mixed as display values: `linear` along the line from `start` to `end` (constant across it, held beyond the ends), `radial` by the distance from `start`, reaching `color_b` at the distance of `end`. The default is black at the top edge to white at the bottom. Skipped at amount 0. |
+
+The built-in one-pass effects (the distort and stylise tables except
+`transform2d` and `rgb_split`, the colour passes and the generators) are WGSL
+files in `crates/edits-render/src/shaders/fx/`, written against the same
+contract as a custom effect (below) plus shared helpers
+(`shaders/fx/lib.wgsl`: sRGB transfer, fractal noise, generator blends), with
+their options compiled in. To add one: a row in the category's file in
+`crates/edits-core/src/effects/`, a WGSL file, a packer in
+`crates/edits-render/src/fxlib/` (it turns the effect's values into `fx.p0`
+.. `fx.p15` and says when it changes nothing), a pixel test in
+`crates/edits-render/tests/` (`effects.rs`, or `fx_distort.rs`,
+`fx_stylize.rs`, `fx_color.rs` by category), and a line here. Ported code
+keeps its licence header and gets an entry in `THIRD_PARTY.md`.
 
 ## Custom effects
 

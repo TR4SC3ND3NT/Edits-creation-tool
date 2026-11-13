@@ -92,7 +92,9 @@ on a layer or on an adjustment layer. Only `kind` is required.
 - `options`: strings naming a choice that cannot be animated, for example
   `{ "shape": "hex" }` on `pixelate` or `{ "mode": "cmyk", "shape": "line" }`
   on `halftone`. A missing option takes the first of its values.
-- `source`: a file the effect reads (a WGSL file for `custom`). Effects that
+- `source`: what the effect reads besides the picture: a WGSL file for
+  `custom`, a `.cube` file for `lut` (paths relative to the project file), or
+  `"slot:<name>"`, a slot of the project, for `displacement_map`. Effects that
   take none must not have one.
 
 The registry in `crates/edits-core/src/effects/` (one file per category)
@@ -100,10 +102,16 @@ lists every kind with its parameters, units, ranges, options and defaults;
 `edits effects` prints it and `edits check` validates against it.
 
 colour: `exposure`, `fade`, `brightness_contrast`, `saturation`, `hue`, `invert`,
-`threshold`, `posterize`, `tint`, `vignette`, `grain`; blur: `gaussian_blur`,
+`threshold`, `posterize`, `tint`, `vignette`, `grain`, `lut` (a `.cube` file
+in `source`), `gradient_map`, `levels`, `vibrance`; blur: `gaussian_blur`,
 `directional_blur`, `zoom_blur`, `spin_blur`; light: `glow`; distort:
-`transform2d`, `twirl`, `bulge`, `kaleidoscope`; stylise: `rgb_split`,
-`chromatic_aberration`, `pixelate`, `halftone`; and `custom` (a WGSL file in `source`).
+`transform2d`, `twirl`, `bulge`, `kaleidoscope`, `wave_warp`, `ripple`,
+`shockwave`, `mirror`, `tile`, `polar`, `lens_distortion`, `displacement_map`
+(a map slot in `source`: `"slot:<name>"`), `turbulent_displace`; stylise:
+`rgb_split`, `chromatic_aberration`, `pixelate`, `halftone`, `screentone`,
+`edge_detect`, `ink`, `toon`, `kuwahara`, `emboss`, `sharpen`, `glitch`,
+`scanlines`, `vhs`, `film_damage`, `film_burn`; generate: `fractal_noise`,
+`gradient_ramp`; and `custom` (a WGSL file in `source`).
 
 ```json
 { "kind": "pixelate", "params": { "size": { "keys": [ { "t": 8, "v": 6, "ease": "out" }, { "t": 9, "v": 0 } ] } },
