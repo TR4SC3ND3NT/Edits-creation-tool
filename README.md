@@ -80,12 +80,12 @@ in `demo/project.json` and render again.
 2. Inside a shot the picture does not change. Measuring every frame against
    one reference frame of its own shot cancels the picture and leaves the
    effect.
-3. `edits-analyze analyze ref.mp4 -o analysis/` measures the recipe this way,
+3. `edits analyze ref.mp4 -o analysis/` measures the recipe this way,
    with a confidence for each number, and says which shots it could not
    measure.
-4. `edits-analyze draft analysis/reference_analysis.json -o project.json`
+4. `edits draft analysis/reference_analysis.json -o project.json`
    writes the recipe as a project with empty slots: put your pictures in.
-5. `edits-analyze compare analysis/reference_analysis.json render.mp4` scores
+5. `edits compare analysis/reference_analysis.json render.mp4` scores
    your render against the reference in the same terms and lists the largest
    differences in plain language. Pixels are never compared, so different
    pictures are not a difference. Fix, render, compare, repeat.

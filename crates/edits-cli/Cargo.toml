@@ -1,6 +1,6 @@
 [package]
 name = "edits-cli"
-description = "Command-line tool for the edits engine: render, frame, sheet, check, describe, demo"
+description = "Command-line tool for the edits engine: render, frame, sheet, check, describe, demo, analyze, draft, compare, probe, gui, mcp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 edits-core = { path = "../edits-core" }
 edits-render = { path = "../edits-render" }
+edits-analyze = { path = "../edits-analyze" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

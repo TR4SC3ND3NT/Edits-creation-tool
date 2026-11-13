@@ -3,8 +3,10 @@
 //! Data goes to stdout (JSON where it is data), progress and errors go to
 //! stderr, and every failure ends with a non-zero exit code.
 
+mod analysis;
 mod demo;
 mod encode;
+mod launch;
 mod sheet;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -64,6 +66,22 @@ enum Command {
     Demo {
         /// Folder to write into (created if missing)
         dir: PathBuf,
+    },
+    #[command(flatten)]
+    Analysis(analysis::AnalysisCommand),
+    /// Open the preview window on a project (runs `edits-gui`; see docs/GUI.md)
+    #[command(disable_help_flag = true)]
+    Gui {
+        /// Arguments for edits-gui, e.g. `project.json` or `project.json --screenshot out.png --at 30`
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<std::ffi::OsString>,
+    },
+    /// Serve the MCP tools over stdio for an agent (runs `edits-mcp`; see docs/AGENTS.md)
+    #[command(disable_help_flag = true)]
+    Mcp {
+        /// Arguments for edits-mcp, e.g. `--root <dir>` or `--tools`
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<std::ffi::OsString>,
     },
 }
 
@@ -208,10 +226,13 @@ fn run(cli: Cli) -> Result<ExitCode> {
             print_json(&json!({ "project": project, "files": files }));
             Ok(ExitCode::SUCCESS)
         }
+        Command::Analysis(cmd) => analysis::run(cmd),
+        Command::Gui { args } => launch::exec("edits-gui", "EDITS_GUI_BIN", "edits-gui", &args),
+        Command::Mcp { args } => launch::exec("edits-mcp", "EDITS_MCP_BIN", "edits-mcp", &args),
     }
 }
 
-fn print_json(value: &serde_json::Value) {
+pub(crate) fn print_json(value: &serde_json::Value) {
     println!("{}", serde_json::to_string_pretty(value).expect("JSON serialises"));
 }
 

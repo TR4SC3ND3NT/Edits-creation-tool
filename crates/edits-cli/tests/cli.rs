@@ -207,3 +207,46 @@ fn render_writes_an_h264_mp4_with_audio() {
     let out = edits(&["render", &project, "-o", &silent, "--from", "5", "--to", "5"]);
     assert_eq!(out.status.code(), Some(1));
 }
+
+/// analyze → draft → compare through the `edits` command, on a short render of
+/// the demo: the recipe of a video compared with that same video scores 1.
+#[test]
+fn analyze_draft_and_compare_round_trip() {
+    let d = doctor();
+    if !d["ok"].as_bool().unwrap_or(false) {
+        eprintln!("skipped: no adapter or no H.264 encoder ({d})");
+        return;
+    }
+    let demo = Demo::new("analyze");
+    let video = demo.path("ref.mp4");
+    let out = edits(&["render", &demo.path("project.json"), "-o", &video, "--to", "4", "--scale", "0.25", "--samples", "1"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+
+    let an = json(&edits(&["analyze", &video, "-o", &demo.path("an"), "--bpm", "123", "--json"]));
+    assert_eq!(an["bpm"].as_f64(), Some(123.0));
+    assert!(an["shots"].as_u64().unwrap() >= 2, "{an}");
+    let analysis = demo.path("an/reference_analysis.json");
+
+    let dr = json(&edits(&["draft", &analysis, "-o", &demo.path("edit/project.json"), "--proxies", "--json"]));
+    assert_eq!(dr["errors"].as_u64(), Some(0), "{dr}");
+    json(&edits(&["check", &demo.path("edit/project.json"), "--json"]));
+
+    let cmp = json(&edits(&["compare", &analysis, &video, "--json"]));
+    let scores = &cmp["scores"];
+    for name in ["cuts", "flashes", "exposure", "blur", "saturation"] {
+        assert_eq!(scores[name].as_f64(), Some(1.0), "{name}: {cmp}");
+    }
+
+    let probe = json(&edits(&["probe", &video, "--json"]));
+    assert_eq!(probe["frames"].as_array().unwrap().len(), 49);
+}
+
+#[test]
+fn gui_and_mcp_say_how_to_build_a_missing_binary() {
+    for (sub, var, krate) in [("gui", "EDITS_GUI_BIN", "edits-gui"), ("mcp", "EDITS_MCP_BIN", "edits-mcp")] {
+        let out = Command::new(env!("CARGO_BIN_EXE_edits")).args([sub, "x"]).env(var, "/nonexistent/binary").output().unwrap();
+        assert!(!out.status.success());
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.starts_with("error:") && err.contains(&format!("cargo build --release -p {krate}")), "{err}");
+    }
+}

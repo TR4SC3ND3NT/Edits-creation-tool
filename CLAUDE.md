@@ -21,7 +21,7 @@ A Cargo workspace; every crate is under `crates/`.
 | --- | --- | --- |
 | `edits-core` | | The project model (`model.rs`), keyframe and easing evaluation (`eval.rs`, `ease.rs`), **the effect registry** (`effects.rs`), validation (`check.rs`) and the text outline (`describe.rs`). No GPU or media dependencies; everything else depends on it. |
 | `edits-render` | | The wgpu renderer: project + frame number -> RGBA image. Layers, blend modes, effects (`fx.rs`, `compose.rs`, `shaders/*.wgsl`), cubes, motion blur, custom WGSL effects. |
-| `edits-cli` | `edits` | The command line: `render`, `frame`, `sheet`, `bench`, `describe`, `check`, `effects`, `doctor`, `demo`. Encoding through the system `ffmpeg` (`encode.rs`), contact sheets (`sheet.rs`), the generated demo (`demo.rs`). |
+| `edits-cli` | `edits` | The command line: `render`, `frame`, `sheet`, `bench`, `describe`, `check`, `effects`, `doctor`, `demo`; `analyze`, `draft`, `compare`, `probe` through the `edits-analyze` library (`analysis.rs`); `gui` and `mcp` start the sibling executables (`launch.rs`). Encoding through the system `ffmpeg` (`encode.rs`), contact sheets (`sheet.rs`), the generated demo (`demo.rs`). |
 | `edits-analyze` | `edits-analyze` | Reference analysis: `analyze` (recipe of a finished edit -> `reference_analysis.json`), `draft` (analysis -> project), `compare` (render vs analysis in signature space), `probe` (per-frame signatures). |
 | `edits-mcp` | `edits-mcp` | The MCP server (stdio, `rmcp`). A thin adapter that runs `edits` and `edits-analyze` as subprocesses, plus `project_edit` / `project_undo` (validated, atomic edits with history), path confinement, background jobs and image size caps. |
 | `edits-gui` | `edits-gui` | A desktop window that previews a project while something else edits it (transport, timeline, live reload). It does not edit projects. |
@@ -30,7 +30,7 @@ A Cargo workspace; every crate is under `crates/`.
 Other folders: `docs/` (format, effects, CLI, rendering, analysis, agents, window),
 `examples/` (`beat-loop.json`, example shaders), `.claude/skills/edits/` (the
 skill for agents using the engine), `.mcp.json` (registers the MCP server for
-Claude Code).
+Claude Code through `scripts/edits-mcp.sh`, which starts the built binary).
 
 ## Build and test
 

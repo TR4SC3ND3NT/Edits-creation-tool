@@ -25,6 +25,12 @@ preview of the full one.
 | [`effects`](#effects) | The effect registry: kinds, parameters, defaults, meaning |
 | [`doctor`](#doctor) | Which adapter and which encoders this machine has |
 | [`demo`](#demo) | Write a self-contained demo project |
+| [`analyze`](#analyze) | Extract the recipe of a finished edit into `reference_analysis.json` |
+| [`draft`](#draft) | Recipe → project with one empty slot per picture |
+| [`compare`](#compare) | Score a video against a recipe in signature space (any pictures) |
+| [`probe`](#probe) | Per-frame signatures of a video |
+| [`gui`](#gui-and-mcp) | Open the preview window (`edits-gui`) |
+| [`mcp`](#gui-and-mcp) | Serve the MCP tools over stdio (`edits-mcp`) |
 
 A first run:
 
@@ -236,3 +242,88 @@ edits demo demo && edits render demo/project.json -o demo.mp4
 ```
 
 To make the same edit with other pictures, change only the `path` of each slot.
+
+## analyze
+
+```
+edits analyze <video> -o <dir> [--height 360] [--bpm N] [--beat-offset S] [--whole] [--samples] [--json]
+```
+
+Measures the recipe of a finished edit and writes `<dir>/reference_analysis.json`,
+`<dir>/overlay.png` (the static overlay plate) and `<dir>/proxies/` (one still
+per picture). The video is decoded through `ffmpeg`. `--bpm` and
+`--beat-offset` override the tempo estimate; `--whole` analyses every repeat of
+a looping edit instead of the first period. Stages, failure modes and the file
+format are in [ANALYSIS.md](ANALYSIS.md).
+
+```
+$ edits analyze ref.mp4 -o an --json
+{
+  "analysis": "an/reference_analysis.json",
+  "beat_offset_seconds": -0.23828,
+  "bpm": 82.0,
+  "needs_agent": [2, 3],
+  "seconds": 2.5,
+  "shots": 3,
+  "slots": 2
+}
+```
+
+`needs_agent` lists the shots whose motion could not be measured (3D moves,
+cubes, insets): look at those frames yourself.
+
+## draft
+
+```
+edits draft <dir>/reference_analysis.json -o project.json [--proxies] [--width W --height H] [--no-snap] [--single-loop] [--json]
+```
+
+Writes a project that replays the analysed recipe: beats time base, the
+reference's audio, one slot per picture (empty, or with `--proxies` the
+reference's own stills so it renders at once), one layer per shot with its
+measured motion and effects, the overlay and the vignette. Key times snap to
+the quarter beat unless `--no-snap`. The project passes `check`, or the
+command fails.
+
+## compare
+
+```
+edits compare <dir>/reference_analysis.json <video> [--json] [--top 25]
+```
+
+Analyses `<video>` the same way and compares it with the reference in
+signature space: tempo, cuts, flashes and tone hits matched on the beat grid,
+and per shot the exposure, blur, saturation and zoom curves. Pixels are not
+compared, so a render with different pictures is not penalised for them. The
+report ends with the largest differences in plain language:
+
+```
+overall 0.67  blur 0.54  cuts 0.94  exposure 0.40  flashes 0.72  saturation 0.28  scale 0.66  tempo 1.00  tone_hits 0.80
+...
+  9. [exposure 8.7] shot 14 (beats 13.19-14.02): exposure starts at 6.83 stops, reference 2.46 stops
+```
+
+## probe
+
+```
+edits probe <video> [--json] [--height 360]
+```
+
+One line per frame: mean and centre luminance, contrast, saturation, a
+sharpness index and the difference from the previous frame. Cheap (about two
+seconds for 17 seconds of video) and useful for finding flashes and cuts by eye.
+
+## gui and mcp
+
+```
+edits gui <project.json> [edits-gui options]
+edits mcp [--root DIR]
+```
+
+Start the preview window ([GUI.md](GUI.md)) or the MCP server for agents
+([AGENTS.md](AGENTS.md)). They are separate executables, `edits-gui` and
+`edits-mcp`, so the main binary carries no windowing, audio or async code;
+these subcommands find them next to `edits` (or on `PATH`, or through
+`EDITS_GUI_BIN` / `EDITS_MCP_BIN`) and pass the arguments on. When one is
+missing the error says which `cargo build` produces it. `edits mcp` tells the
+server to use this `edits` binary.

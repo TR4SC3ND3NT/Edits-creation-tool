@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "edits": {
-      "command": "cargo",
-      "args": ["run", "--release", "-q", "-p", "edits-mcp", "--"]
+      "command": "./scripts/edits-mcp.sh",
+      "args": []
     }
   }
 }

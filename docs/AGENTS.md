@@ -196,12 +196,14 @@ The repository's [`.mcp.json`](../.mcp.json) registers the server for anyone
 who opens the checkout:
 
 ```json
-{ "mcpServers": { "edits": { "command": "cargo", "args": ["run", "--release", "-q", "-p", "edits-mcp", "--"] } } }
+{ "mcpServers": { "edits": { "command": "./scripts/edits-mcp.sh", "args": [] } } }
 ```
 
-It works from a checkout without installing anything. Run the build above
-first: the very first `cargo run` compiles the server, which takes longer
-than a client waits for a server to start.
+`scripts/edits-mcp.sh` starts the built `target/release/edits-mcp` at once.
+Run the build above first: when the binaries are missing the script exits
+with the build command on stderr, rather than compiling while the client
+waits (Claude Code gives a server 30 seconds to start). The workspace root is
+the folder Claude Code was opened in.
 
 Faster, and usable from any folder: point the client at the built binary.
 
