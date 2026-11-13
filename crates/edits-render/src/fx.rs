@@ -76,7 +76,7 @@ pub(crate) enum Step {
     /// 1 / scale, radians, mirror, offset in composition units.
     Transform(f32, f32, f32, [f32; 2]),
     /// A built-in one-pass effect (`fxlib`), its numbers and extra inputs.
-    Builtin(wgpu::RenderPipeline, crate::fxlib::Params, crate::fxlib::Inputs),
+    Builtin(wgpu::RenderPipeline, crate::fxlib::Params, Box<crate::fxlib::Inputs>),
     Custom(wgpu::RenderPipeline, crate::fxlib::Params),
 }
 

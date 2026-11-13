@@ -132,7 +132,7 @@ impl Renderer {
         }
         let key = option_key(spec, e);
         let pipeline = self.builtin_pipeline(b, &key).map_err(|err| anyhow!("layer \"{layer}\": {err}"))?;
-        Ok(Some(Step::Builtin(pipeline, p, inputs)))
+        Ok(Some(Step::Builtin(pipeline, p, Box::new(inputs))))
     }
 }
 

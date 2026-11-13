@@ -28,7 +28,7 @@ fn effect(uv: vec2<f32>) -> vec4<f32> {
     big = big / 25.0;
     small = small / 5.0;
     let line = clamp((big - small - fx.p1) * fx.p0 * 6.0, 0.0, 1.0);
-    let solid = 1.0 - smoothstep(0.05, 0.15, small);
+    let solid = 1.0 - smoothstep(0.12, 0.25, small);
     let k = max(line, solid);
     let drawn = fxl_from_display(mix(vec3<f32>(fx.p7, fx.p8, fx.p9), vec3<f32>(fx.p4, fx.p5, fx.p6), k), c.a);
     return mix(c, drawn, fx.p3);

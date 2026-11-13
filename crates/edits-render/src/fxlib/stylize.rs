@@ -119,6 +119,6 @@ fn film_damage(e: &ResolvedEffect, _: &Frame) -> Option<Params> {
 fn film_burn(e: &ResolvedEffect, f: &Frame) -> Option<Params> {
     let (amount, c, centre, size) = (num(e, "amount"), rgb(e, "color"), pos(e, "center"), pct(num(e, "size") as f64));
     let z = ((num(e, "speed") as f64 * f.t).rem_euclid(4096.0)) as f32;
-    let diagonal = (f.aspect * f.aspect + 1.0).sqrt();
+    let diagonal = (f.aspect * f.aspect + 1.0).sqrt() * 0.5;
     (amount > 0.0).then(|| params(&[amount, c[0], c[1], c[2], centre[0], centre[1], 1.0 / size, z, seed(e), diagonal]))
 }
