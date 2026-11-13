@@ -73,6 +73,9 @@ impl Renderer {
             return self.particle_quads(&scene, ev, layer, ps, vp * geometry::model(&at.resolved), t).with_context(|| format!("layer \"{}\"", layer.id));
         }
         let mut frame = None;
+        if let LayerKind::Comp(c) = &layer.kind {
+            frame = Some(self.comp_picture(ev, &scene, layer, c, t).with_context(|| format!("layer \"{}\"", layer.id))?);
+        }
         if let LayerKind::Video(v) = &layer.kind {
             if let Some(clip) = scene.clips.get(&v.slot) {
                 if let Some(sf) = ev.source_frame(layer, v, t, clip.info()) {
@@ -338,6 +341,18 @@ fn signature(ev: &Evaluator, scene: &Scene, layer: &Layer, t: f64, depth: u32) -
     if let LayerKind::Particles(_) = &layer.kind {
         // Particles move at every instant.
         out.push(lt.to_bits());
+    }
+    if let LayerKind::Comp(c) = &layer.kind {
+        // A comp's picture is what its own stack shows at the comp time.
+        match scene.comps.get(&c.comp) {
+            Some(sub) => {
+                let local = ev.comp_time(layer, c, t, sub.project.settings.duration);
+                let sig = stack_signature(&Evaluator::new(&sub.project), sub, &sub.project.layers, local);
+                out.push(sig.len() as u64);
+                out.extend(sig);
+            }
+            None => out.push(u64::MAX),
+        }
     }
     for e in layer.effects.iter().filter(|e| e.enabled) {
         if effect_reads_time(&e.kind) {

@@ -32,6 +32,9 @@ pub struct Project {
     #[serde(default)]
     pub camera: Camera,
     pub layers: Vec<Layer>,
+    /// Named compositions that `comp` layers draw (see `crate::comp`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub comps: BTreeMap<String, crate::comp::Comp>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub markers: Vec<Marker>,
 }
@@ -268,6 +271,8 @@ pub enum LayerKind {
     Particles(Box<crate::particles::Particles>),
     /// Lines of text set in a font file (the bundled Inter by default).
     Text(Text),
+    /// A comp of `project.comps` drawn as one flat picture. See `crate::comp`.
+    Comp(crate::comp::CompLayer),
 }
 
 /// A `text` layer: what it says and how it is set.

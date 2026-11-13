@@ -339,3 +339,33 @@ flat layers that cover the frame. Colour effects at the end of a chain still
 ride along with the blend: they work on straight colour, which a mask or a
 matte does not change.
 
+
+## Comps (precomps)
+
+`prepare` turns every comp the project draws into a scene of its own
+(`src/comp.rs`): `Project::comp_project` gives the comp as a project (its
+size, duration and layers, no motion blur, the default camera) that shares
+the project's prepared pictures, clips, shaders, fonts and tables, plus the
+scenes of the comps it draws in turn. A comp that would contain itself is
+left out of its own scene, so drawing it fails with "contains itself"
+instead of recursing (`edits check` names the cycle).
+
+A `comp` layer's picture is `render_stack_over(comp.layers, comp_time, w,
+h, background)` with the comp's scene swapped in while it renders, so the
+evaluator, layer ends, track mattes, the camera and the aspect all see the
+comp. `comp_time` (`Evaluator::comp_time` in the core) is the video time
+mapping (`speed` integrated from `in`, or `time_remap`) in the project's time
+base, plus `offset`, then looped, held just short of the end, or reversed.
+The comp is `width x height` project pixels times the output scale; a comp
+of the project's size is exactly the output size. Its texture is drawn as a
+quad of the comp's size in the parent's height units, then masks, effects,
+matte, blend, opacity and transition apply as for an image. When that quad
+lands on the frame pixel for pixel (a frame-sized comp, no transform), the
+blend reads it texel for texel instead of resampling it, so a comp of
+opaque layers gives the same bytes as its layers inline.
+
+Comp pictures are cached for the output frame by (comp, comp time, size),
+four at most: a comp drawn twice at one instant (repeated panels, a comp used
+as a matte and drawn) renders once. A comp layer's signature is the
+signature of the comp's stack at its comp time, so a still comp costs one
+motion blur sample and a moving one is rendered at every sample.

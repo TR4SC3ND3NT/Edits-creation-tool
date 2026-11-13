@@ -18,6 +18,7 @@
 //! same bytes on the same adapter.
 
 mod assets;
+mod comp;
 mod compose;
 mod fx;
 mod fxlib;

@@ -381,7 +381,7 @@ fn ignored_keys(doc: &Value, parsed: &Value, path: &str, out: &mut Vec<Finding>)
         (Value::Array(a), Value::Array(b)) if a.len() == b.len() => {
             for (i, (v, w)) in a.iter().zip(b).enumerate() {
                 let p = match v.get("id").and_then(Value::as_str) {
-                    Some(id) if path == "/layers" => format!("{path}/@{}", pointer::escape(id)),
+                    Some(id) if path == "/layers" || (path.starts_with("/comps/") && path.ends_with("/layers")) => format!("{path}/@{}", pointer::escape(id)),
                     _ => format!("{path}/{i}"),
                 };
                 ignored_keys(v, w, &p, out);
@@ -413,10 +413,14 @@ pub fn file_refs(doc: &Value) -> Vec<(String, String)> {
             }
         }
     }
-    for (li, layer) in doc.get("layers").and_then(Value::as_array).into_iter().flatten().enumerate() {
+    // The project's layers, then the layers of every comp.
+    let comps = doc.get("comps").and_then(Value::as_object).into_iter().flatten();
+    let stacks = std::iter::once(("/layers".to_string(), doc.get("layers"))).chain(comps.map(|(name, c)| (format!("/comps/{}/layers", pointer::escape(name)), c.get("layers"))));
+    let layers = stacks.flat_map(|(at, layers)| layers.and_then(Value::as_array).into_iter().flatten().enumerate().map(move |(i, l)| (at.clone(), i, l)));
+    for (at, li, layer) in layers {
         let lp = match layer.get("id").and_then(Value::as_str) {
-            Some(id) => layer_pointer(id),
-            None => format!("/layers/{li}"),
+            Some(id) => format!("{at}/@{}", pointer::escape(id)),
+            None => format!("{at}/{li}"),
         };
         for (ei, effect) in layer.get("effects").and_then(Value::as_array).into_iter().flatten().enumerate() {
             if let Some(p) = effect.get("source").and_then(Value::as_str) {

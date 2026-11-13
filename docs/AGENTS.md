@@ -91,6 +91,7 @@ elements have no id (effects), whose `kind` is `name`.
 /layers/@finish/effects/@exposure/params/stops    one parameter
 /layers/@a/effects/0                              an effect by index
 /slots/p1/path                                    a slot's picture
+/comps/card/layers/@title/transform/opacity       a layer inside a comp
 ```
 
 `project_edit` takes `ops`, applied in order:

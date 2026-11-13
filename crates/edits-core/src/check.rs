@@ -28,6 +28,14 @@ pub struct Finding {
 /// Check a project. `base_dir` is the folder that relative asset paths resolve
 /// against; pass `None` to skip file-existence checks.
 pub fn check(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> {
+    let mut out = check_stack(p, base_dir);
+    crate::comp::check_comps(p, base_dir, &mut out);
+    out
+}
+
+/// [`check`] without `comps`: the project's own stack. A comp's layers are
+/// checked by running this on the comp seen as a project.
+pub(crate) fn check_stack(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> {
     let mut out = Vec::new();
     let mut err = |path: String, message: String, hint: Option<&str>| {
         out.push(Finding { severity: Severity::Error, path, message, hint: hint.map(str::to_string) })
@@ -84,6 +92,7 @@ pub fn check(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> {
             }
             LayerKind::Solid { .. } | LayerKind::Adjustment | LayerKind::Text(_) => {}
             LayerKind::Particles(ps) => crate::particles::check(ps, p, &lp, &mut err, &mut warn, &mut used_slots),
+            LayerKind::Comp(c) => crate::comp::check_layer(c, p, &lp, &mut err, &mut warn),
             LayerKind::Video(v) => {
                 refs.push((&v.slot, "slot"));
                 video_slots.insert(v.slot.clone());

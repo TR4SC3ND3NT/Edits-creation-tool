@@ -441,6 +441,7 @@ pub fn draft(a: &Analysis, opts: &DraftOpts) -> Project {
         slots,
         camera: Camera::default(),
         layers,
+        comps: Default::default(),
         markers,
     }
 }

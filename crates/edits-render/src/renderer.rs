@@ -113,8 +113,8 @@ struct Pipes {
 
 #[derive(Clone)]
 pub(crate) struct Picture {
-    tex: Tex,
-    aspect: f64,
+    pub(crate) tex: Tex,
+    pub(crate) aspect: f64,
 }
 
 /// Pictures of video frames kept on the GPU (motion blur samples and
@@ -145,6 +145,16 @@ impl Quad {
         let fit = geometry::fit_uv(edits_core::Fit::Stretch, [0.5, 0.5], 1.0, 1.0);
         Quad { mvp: mat(mvp), tex, fit, color: [1.0, 1.0, 1.0, 1.0], covers: true, margin: [0.0, 0.0] }
     }
+
+    /// True for [`Quad::frame`] of a texture of `target`'s size: reading it
+    /// is then a plain copy, done as one (no resampling through the quad).
+    fn is_frame_of(&self, target: &Tex) -> bool {
+        let frame = mat(glam::DMat4::from_scale(glam::DVec3::new(2.0, -2.0, 1.0)));
+        (self.tex.w, self.tex.h) == (target.w, target.h)
+            && self.mvp == frame
+            && self.color == [1.0; 4]
+            && (self.fit.offset, self.fit.scale, self.fit.cut) == ([0.0, 0.0], [1.0, 1.0], false)
+    }
 }
 
 pub(crate) struct Scene {
@@ -158,9 +168,26 @@ pub(crate) struct Scene {
     pub fonts: HashMap<String, Arc<crate::text::Font>>,
     /// Lookup tables of built-in effects (see `fxlib`).
     pub loaded: crate::fxlib::Loaded,
+    /// The comps this scene's layers draw, each seen as a scene of its own
+    /// (see `comp.rs`). A comp that would contain itself is left out.
+    pub comps: HashMap<String, Arc<Scene>>,
 }
 
 impl Scene {
+    /// This scene's pictures, clips, shaders, fonts and tables for another
+    /// project (a comp of this one), without comps.
+    pub(crate) fn derive(&self, project: Project) -> Scene {
+        Scene {
+            project,
+            slots: self.slots.clone(),
+            clips: self.clips.clone(),
+            custom: self.custom.clone(),
+            fonts: self.fonts.clone(),
+            loaded: self.loaded.clone(),
+            comps: HashMap::new(),
+        }
+    }
+
     /// The picture of a slot the project uses (a layer's or an effect's map).
     pub(crate) fn slot_texture(&self, name: &str) -> Option<Tex> {
         self.slots.get(name).map(|p| p.tex.clone())
@@ -282,6 +309,8 @@ pub struct Renderer {
     pub(crate) particles: crate::particles::ParticleGpu,
     /// How many track mattes deep the layer being drawn is (a guard against cycles).
     pub(crate) matte_depth: u32,
+    /// Pictures of comps rendered during this output frame (see `comp.rs`).
+    pub(crate) comp_cache: crate::comp::CompCache,
 }
 
 fn file_key(path: &Path) -> String {
@@ -479,6 +508,7 @@ impl Renderer {
             profile: None,
             particles: Default::default(),
             matte_depth: 0,
+            comp_cache: Default::default(),
         };
         r.white = r.upload_picture(&RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255])));
         r.flush();
@@ -540,11 +570,11 @@ impl Renderer {
         let mut clips: HashMap<String, Arc<Clip>> = HashMap::new();
         let mut probed: Vec<String> = Vec::new();
         let mut texts: Vec<(&str, Option<&str>)> = Vec::new();
-        for l in &project.layers {
+        for l in project.all_layers() {
             match &l.kind {
                 LayerKind::Image { slot } => used.push(slot),
                 LayerKind::Cube { faces, .. } => used.extend(faces.iter().map(String::as_str)),
-                LayerKind::Solid { .. } | LayerKind::Adjustment => {}
+                LayerKind::Solid { .. } | LayerKind::Adjustment | LayerKind::Comp(_) => {}
                 LayerKind::Text(t) => texts.push((&l.id, t.font.as_deref())),
                 LayerKind::Particles(ps) => used.extend(ps.sprite_slot()),
                 LayerKind::Video(v) => {
@@ -619,7 +649,7 @@ impl Renderer {
         let fonts = self.load_fonts(&texts, base_dir, file_key)?;
 
         let mut custom = HashMap::new();
-        for l in &project.layers {
+        for l in project.all_layers() {
             for (i, e) in l.effects.iter().enumerate() {
                 if e.kind != "custom" {
                     continue;
@@ -649,7 +679,10 @@ impl Renderer {
         self.binds.clear();
         self.fx_binds.clear();
         let loaded = self.load_fx_inputs(project, base_dir)?;
-        self.scene = Some(Arc::new(Scene { project: project.clone(), slots, clips, custom, loaded, fonts }));
+        let mut scene = Scene { project: project.clone(), slots, clips, custom, loaded, fonts, comps: HashMap::new() };
+        scene.comps = crate::comp::comp_scenes(&scene, max)?;
+        self.drop_comp_pictures();
+        self.scene = Some(Arc::new(scene));
         Ok(())
     }
 
@@ -1082,6 +1115,8 @@ impl Renderer {
         debug_assert!(ops.len() <= compose::MAX_OPS);
         let mut uni = self.uniform(target, &[]);
         let (input, t0, mut t1, samp) = match source {
+            // A frame-sized picture shown pixel for pixel is copied, not resampled.
+            Source::Quad(q) if q.is_frame_of(target) => (Input::Pixels, &q.tex, None, Samp::Linear),
             Source::Tex(t) => (Input::Tex, t, None, Samp::Linear),
             Source::Glow(t, glow, color) => {
                 uni.p[1] = [color[0], color[1], color[2], 0.0];
@@ -1214,6 +1249,11 @@ impl Renderer {
         let max = self.gpu.device.limits().max_texture_dimension_2d;
         if w > max || h > max || w as u64 * h as u64 > MAX_PIXELS {
             bail!("a {w}x{h} frame is too large to render (scale {scale}); the limit is {max} pixels per side and {} megapixels", MAX_PIXELS / 1_000_000);
+        }
+        // Comp pictures belong to one output frame.
+        self.drop_comp_pictures();
+        if let Some(scene) = &self.scene {
+            self.comp_cache.root = (scene.project.settings.width, scene.project.settings.height, w, h);
         }
         if self.pool_size != (w, h) {
             // A different output size: the pooled textures are of no use any more.
@@ -1368,6 +1408,22 @@ impl Renderer {
             LayerKind::Adjustment | LayerKind::Text(_) => (Vec::new(), false),
             // Drawn by `particle_quads` instead.
             LayerKind::Particles(_) => (Vec::new(), false),
+            // `frame` is the comp's picture at this instant, in a box of the comp's size.
+            LayerKind::Comp(c) => match (frame, scene.comps.get(&c.comp)) {
+                (Some(pic), Some(sub)) => {
+                    let (sw, sh) = (sub.project.settings.width as f64, sub.project.settings.height as f64);
+                    let unit = scene.project.settings.height.max(1) as f64;
+                    let m = mvp * geometry::flat(sw / unit, sh / unit);
+                    // Shown pixel for pixel, it is copied exactly (no resampling).
+                    if (pic.tex.w, pic.tex.h) == (w, h) && crate::comp::maps_onto_frame(m) {
+                        return (vec![Quad::frame(pic.tex.clone())], false);
+                    }
+                    let (covers, margin) = edges(m);
+                    let fit = geometry::fit_uv(edits_core::Fit::Stretch, [0.5, 0.5], 1.0, 1.0);
+                    (vec![Quad { mvp: mat(m), tex: pic.tex.clone(), fit, color: white, covers, margin }], false)
+                }
+                _ => (Vec::new(), false),
+            },
         }
     }
 

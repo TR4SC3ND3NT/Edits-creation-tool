@@ -7,6 +7,7 @@
 //! evaluation runs in the renderer, the CLI, the MCP server and tests.
 
 pub mod check;
+pub mod comp;
 pub mod cube;
 pub mod describe;
 pub mod ease;
@@ -24,6 +25,7 @@ pub mod song;
 pub mod time;
 pub mod ui;
 
+pub use comp::{Comp, CompLayer};
 pub use eval::{ClipInfo, Evaluator, ResolvedCamera, ResolvedEffect, ResolvedLayer, ResolvedTransition, SourceFrame};
 pub use mask::{Mask, MaskMode, MaskShape, Matte, MatteMode, ResolvedMask};
 pub use model::*;
