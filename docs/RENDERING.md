@@ -158,6 +158,46 @@ pipeline compiled the first time it is used):
 
 `lens_flare` is a single analytic pass.
 
+## Time effects
+
+`echo` and `time_displacement` (`src/time.rs`, passes `fs_echo` and
+`fs_time_pick` in `shaders/time.wgsl`) read their input at other times, and
+the renderer keeps no earlier frame, so each other time is rendered again
+through the same functions that draw a layer anywhere (`src/stack.rs`):
+
+- on a content layer, `content_before(layer, t + dt, i)` draws the layer at
+  `t + dt` (camera, transform, video frame, particles, comp picture, text
+  animators at that time), cuts it by its masks and runs its first `i`
+  effects, the ones before the time effect, evaluated at that time;
+- on an adjustment layer, `below_before` composites the layers beneath it at
+  `t + dt` with `render_stack_over` (over the background of the stack, so a
+  comp's transparent one inside a comp), then runs its first `i` effects.
+
+A planned chain with a time step runs through `run_chain`, which hands the
+plain runs to `run_effects` and the time steps to `time.rs`. An echo adds
+one pass per picture (`fs_echo`, the operator chosen by a uniform; the
+current picture at weight 1 costs no pass); a time displacement draws each
+slice into one target with `fs_time_pick`, which keeps the pixels whose map
+value rounds to that slice and discards the rest. A shift of 0 reuses the
+input, so `interval` 0 and the middle slice of an odd `levels` render
+nothing.
+
+Every echo and slice is a full render of its input, and the motion blur
+samples of a frame each render theirs: the cost is about samples x (count +
+1) renders of the layer for an echo, samples x `levels` for a time
+displacement, and the stack beneath for an adjustment layer. Nesting
+multiplies (an echo whose input has an echo; an adjustment echo over a comp
+whose layer echoes); `MAX_TIME_DEPTH` (4) refuses deeper nesting with an
+error rather than run for minutes. The recursion always ends anyway: a time
+effect re-renders only the effects before it or the layers beneath it, and
+comps cannot contain themselves.
+
+The motion blur sample sharing still works: a content layer's signature
+includes the signatures of its input at each shifted time (without following
+their time effects again), so a still layer whose echoes are still too
+renders one sample. A layer with two time effects, and an adjustment layer
+with one, count as changing at every instant.
+
 ## What keeps it fast
 
 The renderer is built to be usable on a CPU rasteriser (Mesa lavapipe), where

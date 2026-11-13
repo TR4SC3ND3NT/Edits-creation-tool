@@ -309,6 +309,8 @@ pub struct Renderer {
     pub(crate) particles: crate::particles::ParticleGpu,
     /// How many track mattes deep the layer being drawn is (a guard against cycles).
     pub(crate) matte_depth: u32,
+    /// How many time effects deep the picture being drawn is (see `time.rs`).
+    pub(crate) time_depth: u32,
     /// Pictures of comps rendered during this output frame (see `comp.rs`).
     pub(crate) comp_cache: crate::comp::CompCache,
 }
@@ -405,7 +407,7 @@ impl Renderer {
         });
         let identity_lut = make_lut(device, &gpu.queue, 2, &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [1.0, 1.0, 1.0]], 1);
 
-        let source = concat!(include_str!("shaders/common.wgsl"), include_str!("shaders/passes.wgsl"), include_str!("shaders/mask.wgsl"));
+        let source = concat!(include_str!("shaders/common.wgsl"), include_str!("shaders/passes.wgsl"), include_str!("shaders/mask.wgsl"), include_str!("shaders/time.wgsl"));
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("edits passes"),
             source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -508,6 +510,7 @@ impl Renderer {
             profile: None,
             particles: Default::default(),
             matte_depth: 0,
+            time_depth: 0,
             comp_cache: Default::default(),
         };
         r.white = r.upload_picture(&RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255])));

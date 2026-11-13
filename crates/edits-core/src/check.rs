@@ -187,7 +187,8 @@ pub(crate) fn check_stack(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> 
                             }
                         }
                         (SourceKind::Slot, None) => err(ep.clone(), format!("a {} effect needs \"source\"", e.kind), Some("\"slot:<name>\", a slot of this project")),
-                        (SourceKind::Slot, Some(src)) => match src.strip_prefix("slot:") {
+                        (SourceKind::OptionalSlot, None) => {}
+                        (SourceKind::Slot | SourceKind::OptionalSlot, Some(src)) => match src.strip_prefix("slot:") {
                             Some(name) if p.slots.contains_key(name) => {
                                 used_slots.insert(name.to_string());
                             }

@@ -100,6 +100,19 @@ A project is **slots + layers + keyframes + effects**.
   map: `"source": "slot:<name>"`. Effects that change on their own every
   frame (`glitch`, `vhs`, `film_damage`, moving waves) are still the same
   for the same frame and `seed`.
+- **Time effects** render the layer again at other times. `echo` (`count`
+  0..16, `interval` in project time, negative = past, `decay` per echo,
+  option `mode` `add`/`screen`/`max`/`min`/`over_back`/`over_front`/`average`)
+  leaves trails on fast motion or a stutter on a hit: on a moving cut-out use
+  `over_back` or `screen`, on a full-frame picture or the `fx` adjustment
+  layer (where it echoes everything beneath) use `average`, since `add` over
+  an opaque frame blows out. `time_displacement` shifts each pixel's time by
+  a map's brightness (`"source": "slot:<name>"`, or the layer's own luma;
+  `max` in project time, `levels` up to 16; option `neutral` `black` with a
+  ramp map is a slit scan). Each echo or level is a full re-render, times
+  every motion blur sample: keep `count` small and key it (or `decay`) to 0
+  between hits, which costs nothing. Preset `echo_hit` pulses `decay` on a
+  beat. Choppy 12 fps anime motion is a layer's `fps`, not an effect.
 - **Transitions** sit on the incoming layer: `"transition": { "kind": "whip_pan", "duration": 0.5 }`
   mixes the picture beneath into this one over `duration` from its `in`
   (`edits transitions` lists 22). The outgoing layer must last until the end.
@@ -128,7 +141,7 @@ A project is **slots + layers + keyframes + effects**.
   reports paths like `comps.card.layers[1:"title"]` and comps that contain
   themselves.
 - **Presets** are named building blocks (`flash`, `punch`, `shake`,
-  `rgb_split`, `slide_in`, `flip_3d`, `cube_turn`, `velocity`, `letterbox`,
+  `rgb_split`, `slide_in`, `flip_3d`, `cube_turn`, `velocity`, `echo_hit`, `letterbox`,
   `transition:<kind>`, ...) with typed variables. Applying one writes ordinary
   keys, effects and layers: you can read and change the result like anything
   you wrote, and undo it in one step.

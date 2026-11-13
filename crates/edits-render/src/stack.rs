@@ -16,6 +16,7 @@ use crate::assets;
 use crate::fx::Step;
 use crate::geometry;
 use crate::renderer::{Quad, Renderer, Scene, Sink, Source, Tex};
+use crate::time::When;
 use anyhow::{anyhow, bail, Context, Result};
 use edits_core::{Blend, Evaluator, Layer, LayerKind, Project, ResolvedLayer, ResolvedMask, ResolvedTransition};
 
@@ -96,7 +97,13 @@ impl Renderer {
     /// quads or the glyphs of a text layer, then [`Self::finish_content`].
     /// `layers` is the stack the layer is in (where its matte is looked up).
     fn content_at(&mut self, ev: &Evaluator, layers: &[Layer], layer: &Layer, at: &LayerAt, t: f64, steps: &[Step]) -> Result<Tex> {
-        let drawn = match &layer.kind {
+        let drawn = self.draw_content(ev, layer, at, t)?;
+        self.finish_content(ev, layers, layer, at, t, steps, drawn)
+    }
+
+    /// A content layer's quads or glyphs at `t`, before masks and effects.
+    fn draw_content(&mut self, ev: &Evaluator, layer: &Layer, at: &LayerAt, t: f64) -> Result<Tex> {
+        Ok(match &layer.kind {
             LayerKind::Text(text) => {
                 let mvp = self.layer_mvp(ev, at, t);
                 self.draw_text(&layer.id, text, mvp, ev.layer_time(layer, t))?
@@ -105,8 +112,7 @@ impl Renderer {
                 let (quads, depth) = self.quads_at(ev, layer, at, t)?;
                 self.draw_quads(&quads, depth)
             }
-        };
-        self.finish_content(ev, layers, layer, at, t, steps, drawn)
+        })
     }
 
     /// What follows drawing a layer, in the order of After Effects: its
@@ -115,10 +121,79 @@ impl Renderer {
     #[allow(clippy::too_many_arguments)]
     fn finish_content(&mut self, ev: &Evaluator, layers: &[Layer], layer: &Layer, at: &LayerAt, t: f64, steps: &[Step], drawn: Tex) -> Result<Tex> {
         let mut content = if at.masks.is_empty() { drawn } else { self.apply_masks(drawn, &at.masks, self.layer_mvp(ev, at, t)) };
-        if let Some(out) = self.run_effects(&content, steps) {
-            self.release(std::mem::replace(&mut content, out));
+        match self.run_chain(&content, steps, When::Layer { layers, layer }, t) {
+            Ok(Some(out)) => self.release(std::mem::replace(&mut content, out)),
+            Ok(None) => {}
+            Err(err) => {
+                self.release(content);
+                return Err(err);
+            }
         }
         self.matte(layers, layer, t, content)
+    }
+
+    /// The input of the time effect at position `upto` of `layer`'s enabled
+    /// effects, at project time `t`: the layer drawn then, cut by its masks,
+    /// with the effects before that one (see `time.rs`). Opacity, matte and
+    /// transition are not applied. `None` when the layer is not active at `t`.
+    pub(crate) fn content_before(&mut self, layers: &[Layer], layer: &Layer, t: f64, upto: usize) -> Result<Option<Tex>> {
+        let scene = self.scene.clone().ok_or_else(|| anyhow!("no project prepared: call prepare() first"))?;
+        let ev = Evaluator::new(&scene.project);
+        if !ev.active(layer, t) || matches!(layer.kind, LayerKind::Adjustment) {
+            return Ok(None);
+        }
+        let saved = self.ctx;
+        let lt = ev.layer_time(layer, t);
+        self.set_time(&scene.project, lt, saved.w.max(1), saved.h.max(1));
+        let at = LayerAt { resolved: ev.layer(layer, lt), opacity: 1.0, steps: Vec::new(), transition: None, masks: ev.masks(layer, lt) };
+        let result = self.draw_content(&ev, layer, &at, t).and_then(|drawn| {
+            let content = if at.masks.is_empty() { drawn } else { self.apply_masks(drawn, &at.masks, self.layer_mvp(&ev, &at, t)) };
+            self.effects_before(&ev, layer, &content, When::Layer { layers, layer }, t, upto).map(|out| match out {
+                Some(out) => {
+                    self.release(content);
+                    out
+                }
+                None => content,
+            })
+        });
+        self.ctx = saved;
+        result.map(Some)
+    }
+
+    /// The input of the time effect at position `upto` of adjustment layer
+    /// `index` of `layers`, at project time `t`: the layers beneath it then
+    /// over `background`, with its effects before that one.
+    pub(crate) fn below_before(&mut self, layers: &[Layer], index: usize, t: f64, upto: usize, background: [f32; 4]) -> Result<Tex> {
+        let scene = self.scene.clone().ok_or_else(|| anyhow!("no project prepared: call prepare() first"))?;
+        let saved = self.ctx;
+        let below = self.render_stack_over(&layers[..index], t, saved.w.max(1), saved.h.max(1), background)?;
+        let ev = Evaluator::new(&scene.project);
+        let layer = &layers[index];
+        if upto == 0 || !ev.active(layer, t) {
+            return Ok(below);
+        }
+        self.set_time(&scene.project, ev.layer_time(layer, t), saved.w.max(1), saved.h.max(1));
+        let result = self.effects_before(&ev, layer, &below, When::Below { layers, index, background }, t, upto);
+        self.ctx = saved;
+        match result {
+            Ok(Some(out)) => {
+                self.release(below);
+                Ok(out)
+            }
+            Ok(None) => Ok(below),
+            Err(err) => {
+                self.release(below);
+                Err(err)
+            }
+        }
+    }
+
+    /// `layer`'s first `upto` enabled effects at `t` run on `input`.
+    fn effects_before(&mut self, ev: &Evaluator, layer: &Layer, input: &Tex, when: When, t: f64, upto: usize) -> Result<Option<Tex>> {
+        let lt = ev.layer_time(layer, t);
+        let effects: Vec<_> = layer.effects.iter().filter(|e| e.enabled).take(upto).map(|e| ev.effect(e, lt)).collect();
+        let steps = self.plan_effects(&layer.id, &effects, self.ctx.w as f32, self.ctx.h as f32)?;
+        self.run_chain(input, &steps, when, t)
     }
 
     /// `picture` (this layer's, or what its adjustment effects made) times
@@ -237,13 +312,15 @@ impl Renderer {
         let opacity = at.opacity;
         let adjustment = matches!(layer.kind, LayerKind::Adjustment);
         let limited = !at.masks.is_empty() || layer.matte.is_some();
+        // An adjustment layer's time effects re-render the layers beneath it.
+        let below = When::Below { layers, index: layers.iter().position(|l| std::ptr::eq(l, layer)).unwrap_or(0), background: flat };
         if let Some(tr) = &at.transition {
             // "from" is the frame so far; "to" is the frame with this
             // layer on it, so the end of the transition is the plain cut.
             let from = self.materialise(acc, background);
             let to = self.acquire(w, h);
             if adjustment {
-                match self.run_effects(&from, &at.steps) {
+                match self.run_chain(&from, &at.steps, below, t)? {
                     Some(out) => {
                         let out = self.limit_adjustment(ev, layers, layer, &at, t, out)?;
                         self.compose(&to, Source::Tex(&out), &[], Sink::Over { dst: Some(&from), flat, mode: layer.blend, opacity });
@@ -270,7 +347,7 @@ impl Renderer {
                 return Ok(());
             }
             let base = self.materialise(acc, background);
-            let Some(out) = self.run_effects(&base, &at.steps) else { return Ok(()) };
+            let Some(out) = self.run_chain(&base, &at.steps, below, t)? else { return Ok(()) };
             if opacity >= 1.0 && layer.blend == Blend::Normal && !limited {
                 self.release(base);
                 *acc = Some(out);
@@ -319,6 +396,10 @@ pub(crate) fn layer_signature(ev: &Evaluator, scene: &Scene, layer: &Layer, t: f
     signature(ev, scene, layer, t, 0)
 }
 
+/// The `depth` of a signature of a time effect's input at another time:
+/// its own time effects are not followed again, nor its matte.
+const SHIFTED: u32 = u32::MAX;
+
 /// [`layer_signature`] of a layer that is `depth` mattes deep.
 fn signature(ev: &Evaluator, scene: &Scene, layer: &Layer, t: f64, depth: u32) -> Option<Vec<u64>> {
     if !ev.active(layer, t) {
@@ -360,13 +441,37 @@ fn signature(ev: &Evaluator, scene: &Scene, layer: &Layer, t: f64, depth: u32) -
             None => out.push(u64::MAX),
         }
     }
+    let (mut time_effects, mut shifts) = (0, Vec::new());
     for e in layer.effects.iter().filter(|e| e.enabled) {
         if effect_reads_time(&e.kind) {
             out.push(lt.to_bits());
         }
-        for values in ev.effect(e, lt).params.values() {
+        let resolved = ev.effect(e, lt);
+        if crate::time::is_time(&e.kind) {
+            time_effects += 1;
+            shifts.extend(crate::time::offsets(&resolved));
+        }
+        for values in resolved.params.values() {
             out.push(values.len() as u64);
             out.extend(values.iter().map(|v| v.to_bits()));
+        }
+    }
+    // A time effect shows the layer at other times too. Its input there is
+    // followed for one effect on a content layer; otherwise (an adjustment
+    // layer reads the layers beneath it) the layer counts as changing.
+    if !shifts.is_empty() && depth != SHIFTED {
+        if time_effects > 1 || matches!(layer.kind, LayerKind::Adjustment) {
+            out.push(lt.to_bits());
+        } else {
+            for dt in shifts {
+                match signature(ev, scene, layer, t + dt, SHIFTED) {
+                    Some(sig) => {
+                        out.push(sig.len() as u64);
+                        out.extend(sig);
+                    }
+                    None => out.push(u64::MAX),
+                }
+            }
         }
     }
     for m in &layer.masks {

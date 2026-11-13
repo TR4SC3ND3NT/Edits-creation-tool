@@ -249,7 +249,8 @@ pixelate: Mosaic: the picture in flat cells, each the colour at its centre.
 "source", "reads_time", "credit" }]`. `unit` is `""`, `"%h"`, `"deg"`,
 `"pos"`, `"color"`, `"x"`, `"count"`, `"stops"`, `"px1080"` or `"time"`;
 `range` is `[min, max]` with `null` for an open end, or `null`; `source` is
-`"none"` or `"shader"`.
+`"none"`, `"shader"` (a WGSL file), `"cube"` (a `.cube` file), `"slot"` (a
+`"slot:<name>"` map) or `"optional_slot"` (a map, or the layer itself).
 [EFFECTS.md](EFFECTS.md) has the details. The text ends with the names of the
 transitions, which are listed by [`edits transitions`](#transitions).
 
@@ -448,7 +449,7 @@ shake: Camera shake on the hit that dies away: the picture jitters and rolls, zo
 
 Built in: `flash`, `flash_burn`, `punch`, `zoom_out`, `push_in`, `shake`,
 `rgb_split`, `blur_in`, `blur_out`, `bw_hit`, `invert_hit`, `threshold_hit`,
-`slide_in`, `slide_out`, `flip_3d`, `cube_turn`, `spin`, `velocity`,
+`slide_in`, `slide_out`, `flip_3d`, `cube_turn`, `spin`, `velocity`, `echo_hit`,
 `glow_pulse`, `vignette_pulse`, `overlay_texture`, `letterbox`, the masks
 `iris_in` (a circle opening on the picture) and `split_panels` (a slanted
 split-screen panel), the

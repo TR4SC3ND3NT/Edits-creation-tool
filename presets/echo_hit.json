@@ -1,0 +1,82 @@
+{
+  "format": "edits.preset/1",
+  "name": "echo_hit",
+  "description": "Echo trails on the hit: the picture leaves ghosts of where it just was, which fade back to a single picture. Best on a layer that moves (a punch, a slide, a shake) or on fx to echo everything beneath.",
+  "tags": [
+    "hit",
+    "time",
+    "echo",
+    "accent"
+  ],
+  "variables": {
+    "count": {
+      "type": "number",
+      "default": 3,
+      "min": 1,
+      "max": 16,
+      "doc": "Echoes behind the picture; each one re-renders the layer (or everything beneath fx), so more costs more."
+    },
+    "interval": {
+      "type": "number",
+      "default": -0.125,
+      "min": -2,
+      "max": 2,
+      "unit": "beats",
+      "doc": "Time between echoes; negative shows the past."
+    },
+    "strength": {
+      "type": "number",
+      "default": 0.7,
+      "min": 0,
+      "max": 1,
+      "doc": "Echo decay at the peak: each echo is this times the one before."
+    },
+    "mode": {
+      "type": "enum",
+      "default": "average",
+      "options": {
+        "average": {},
+        "screen": {},
+        "add": {},
+        "max": {},
+        "over_back": {}
+      },
+      "doc": "How the echoes combine: average never brightens (good on full-frame pictures), screen and add glow, max keeps the brightest, over_back stacks the ghosts behind the picture (good on cut-outs)."
+    },
+    "decay": {
+      "type": "number",
+      "default": 1,
+      "min": 0.05,
+      "max": 8,
+      "unit": "beats",
+      "doc": "Time to fall back to the single picture."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "effect": "echo",
+        "param": "decay",
+        "base": 0,
+        "params": {
+          "count": "$count",
+          "interval": "=$interval * beat"
+        },
+        "options": {
+          "mode": "$mode"
+        },
+        "keys": [
+          {
+            "dt": 0,
+            "v": "$strength",
+            "ease": "out"
+          },
+          {
+            "dt": "=$decay * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}

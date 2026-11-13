@@ -173,8 +173,9 @@ on a layer or on an adjustment layer. Only `kind` is required.
   on `halftone`. A missing option takes the first of its values.
 - `source`: what the effect reads besides the picture: a WGSL file for
   `custom`, a `.cube` file for `lut` (paths relative to the project file), or
-  `"slot:<name>"`, a slot of the project, for `displacement_map`. Effects that
-  take none must not have one.
+  `"slot:<name>"`, a slot of the project, for `displacement_map` (required)
+  and `time_displacement` (optional: without it the layer's own picture is
+  the map). Effects that take none must not have one.
 
 The registry in `crates/edits-core/src/effects/` (one file per category)
 lists every kind with its parameters, units, ranges, options and defaults;
@@ -189,8 +190,11 @@ in `source`), `gradient_map`, `levels`, `vibrance`; blur: `gaussian_blur`,
 (a map slot in `source`: `"slot:<name>"`), `turbulent_displace`; stylise:
 `rgb_split`, `chromatic_aberration`, `pixelate`, `halftone`, `screentone`,
 `edge_detect`, `ink`, `toon`, `kuwahara`, `emboss`, `sharpen`, `glitch`,
-`scanlines`, `vhs`, `film_damage`, `film_burn`; generate: `fractal_noise`,
-`gradient_ramp`; and `custom` (a WGSL file in `source`).
+`scanlines`, `vhs`, `film_damage`, `film_burn`; time: `echo`,
+`time_displacement` (both render the layer, or on an adjustment layer the
+layers beneath it, again at other times: see [EFFECTS.md](EFFECTS.md#time));
+generate: `fractal_noise`, `gradient_ramp`; and `custom` (a WGSL file in
+`source`). Posterize time is a layer's `fps` field, not an effect.
 
 ```json
 { "kind": "pixelate", "params": { "size": { "keys": [ { "t": 8, "v": 6, "ease": "out" }, { "t": 9, "v": 0 } ] } },
@@ -333,7 +337,7 @@ them.
 
 | Action | What it does |
 | --- | --- |
-| `pulse` | Keys on one property, from `at`: `{ "transform": "scale" }`, `{ "effect": "fade", "param": "amount", "params": {...}, "base": 0 }`. `keys` are `{ "dt", "v", "ease" }`. Keys already there before `at` are kept and held until the pulse, keys after it are kept; a missing effect is added. `adjustment` names an effect parameter to use instead when the target is an adjustment layer. |
+| `pulse` | Keys on one property, from `at`: `{ "transform": "scale" }`, `{ "effect": "fade", "param": "amount", "params": {...}, "base": 0 }`. `keys` are `{ "dt", "v", "ease" }`. Keys already there before `at` are kept and held until the pulse, keys after it are kept; a missing effect is added (with `params` and, if given, `options`, e.g. `"options": { "mode": "$mode" }`). `adjustment` names an effect parameter to use instead when the target is an adjustment layer. |
 | `shake` | A `shake` modifier on a property (`transform` or `effect` + `param`, as in a pulse) whose amplitude follows `keys`, at `frequency`. Repeated hits share one modifier. |
 | `effect` | Append an effect to the target. |
 | `layer` | Insert a layer (`"place": "top"`, `"above"` or `"below"` the target). Its `id` may contain `{target}`; it gets a suffix when taken. |

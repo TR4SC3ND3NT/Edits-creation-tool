@@ -138,6 +138,8 @@ fn every_registered_effect_renders_and_changes_the_picture() {
             "vibrance" => r#"{"amount":-0.5}"#,
             "fractal_noise" => r#"{"amount":0.5}"#,
             "gradient_ramp" => r#"{"amount":0.5}"#,
+            "echo" => r#"{"count":2,"interval":0.25}"#,
+            "time_displacement" => r#"{"max":1}"#,
             other => panic!("the registry has an effect this test does not cover: {other}"),
         };
         let source = match spec.kind {
@@ -149,6 +151,11 @@ fn every_registered_effect_renders_and_changes_the_picture() {
         // Sharpening leaves hard 0-to-1 edges alone (no halo): give it a soft picture.
         let (before, base) = match spec.kind {
             "sharpen" => (r#"{"kind":"gaussian_blur","params":{"radius":1}},"#, render(r, &with(r#"{"kind":"gaussian_blur","params":{"radius":1}}"#), 0)),
+            // A time displacement shows other times: give it a picture that changes.
+            "time_displacement" => (
+                r#"{"kind":"hue","params":{"degrees":{"keys":[{"t":0,"v":0},{"t":4,"v":360}]}}},"#,
+                render(r, &with(r#"{"kind":"hue","params":{"degrees":{"keys":[{"t":0,"v":0},{"t":4,"v":360}]}}}"#), 0),
+            ),
             _ => ("", plain.clone()),
         };
         let img = render(r, &with(&format!(r#"{before}{{"kind":"{}","params":{params}{source}}}"#, spec.kind)), 0);

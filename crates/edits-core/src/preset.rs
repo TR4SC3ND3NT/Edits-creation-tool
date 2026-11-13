@@ -123,6 +123,7 @@ builtin!(
     "cube_turn",
     "spin",
     "velocity",
+    "echo_hit",
     "glow_pulse",
     "vignette_pulse",
     "overlay_texture",
@@ -835,12 +836,16 @@ impl Run<'_> {
                     None => json!({}),
                 };
                 params[param] = base.clone();
+                let mut effect = json!({ "kind": kind, "params": params });
+                if let Some(o) = spec.get("options") {
+                    effect["options"] = subst(o, &self.env, &self.vars)?;
+                }
                 let l = self.layer_mut(i);
                 if l.get("effects").is_none() {
                     l["effects"] = json!([]);
                 }
                 let list = l["effects"].as_array_mut().ok_or("\"effects\" is not an array")?;
-                list.push(json!({ "kind": kind, "params": params }));
+                list.push(effect);
                 let n = list.len() - 1;
                 self.changes.push(format!("added effect {kind} to {id}"));
                 n
@@ -1262,6 +1267,29 @@ mod tests {
             let project: Project = serde_json::from_value(out).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(!crate::check::has_errors(&crate::check::check(&project, None)), "{name}");
         }
+    }
+
+    #[test]
+    fn an_echo_hit_pulses_the_decay_with_its_options() {
+        let d = doc();
+        let p = find("echo_hit", None).unwrap();
+        let mut vars = Map::new();
+        vars.insert("mode".into(), json!("screen"));
+        let (out, _) = apply(&d, &p, &Target::Layer("a".into()), &[1.0, 2.0], &vars, &ctx(&d)).unwrap();
+        let fxs = out["layers"][0]["effects"].as_array().unwrap();
+        assert_eq!(fxs.len(), 1, "two hits share one echo");
+        let fx = &fxs[0];
+        assert_eq!((fx["kind"].as_str(), fx["options"]["mode"].as_str()), (Some("echo"), Some("screen")));
+        assert_eq!(fx["params"]["count"], json!(3.0));
+        // A beat is a beat in a beats project.
+        assert_eq!(fx["params"]["interval"], json!(-0.125));
+        let project: Project = serde_json::from_value(out).unwrap();
+        assert!(!crate::check::has_errors(&crate::check::check(&project, None)));
+        let e = Evaluator::new(&project);
+        let decay = |t: f64| e.effect(&project.layers[0].effects[0], t).num("decay");
+        assert_eq!(decay(0.5), 0.0);
+        assert!((decay(1.0) - 0.7).abs() < 1e-9 && (decay(2.0) - 0.7).abs() < 1e-9);
+        assert!(decay(1.5) > 0.0 && decay(1.5) < 0.7);
     }
 
     #[test]

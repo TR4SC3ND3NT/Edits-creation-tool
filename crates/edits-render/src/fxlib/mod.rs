@@ -76,7 +76,7 @@ pub(crate) struct Loaded {
 pub(crate) fn slots_used(layer: &Layer) -> impl Iterator<Item = &str> {
     layer.effects.iter().filter_map(|e| {
         let spec = edits_core::effects::spec(&e.kind)?;
-        (spec.source == SourceKind::Slot).then_some(())?;
+        matches!(spec.source, SourceKind::Slot | SourceKind::OptionalSlot).then_some(())?;
         e.source.as_deref()?.strip_prefix("slot:")
     })
 }
@@ -128,7 +128,7 @@ impl Renderer {
                     .ok_or_else(|| anyhow!("layer \"{layer}\": the map \"slot:{name}\" was not prepared (write \"slot:<name>\" naming a slot)"))?;
                 inputs.aux = Some(tex);
             }
-            SourceKind::None | SourceKind::Shader => {}
+            SourceKind::None | SourceKind::Shader | SourceKind::OptionalSlot => {}
         }
         let key = option_key(spec, e);
         let pipeline = self.builtin_pipeline(b, &key).map_err(|err| anyhow!("layer \"{layer}\": {err}"))?;

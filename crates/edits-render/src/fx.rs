@@ -71,6 +71,8 @@ pub(crate) const NATIVE: &[&str] = &[
     "exposure", "fade", "brightness_contrast", "saturation", "hue", "invert", "threshold", "posterize", "tint", "vignette", "grain",
     "gaussian_blur", "directional_blur", "zoom_blur", "spin_blur", "glow", "rgb_split", "transform2d", "custom",
     "bloom", "light_rays", "lens_flare", "outline", "drop_shadow", "tilt_shift",
+    // Time effects, planned here and run by `time.rs`.
+    "echo", "time_displacement",
 ];
 
 /// Bloom: the weight of a mip level whose texels are `x` times the radius.
@@ -167,6 +169,9 @@ pub(crate) enum Step {
     Shadow { color: [f32; 4], offset: [f32; 2], sigma: f32 },
     /// The uniforms of the two `fs_tilt` passes.
     TiltShift([[[f32; 4]; 3]; 2]),
+    /// A time effect (`echo`, `time_displacement`): it renders its input
+    /// again at other times, so it runs through `Renderer::run_chain`.
+    Time(crate::time::TimeStep),
 }
 
 impl Renderer {
@@ -177,7 +182,11 @@ impl Renderer {
         let aspect = self.ctx.time[3];
         let frame = self.ctx.time[2];
         let mut steps = Vec::new();
-        for e in effects {
+        for (index, e) in effects.iter().enumerate() {
+            if crate::time::is_time(&e.kind) {
+                steps.extend(self.plan_time(layer, index, e)?);
+                continue;
+            }
             if is_color(&e.kind) {
                 steps.extend(color_op(e, h, frame).map(Step::Color));
                 continue;
@@ -336,12 +345,18 @@ impl Renderer {
     }
 
     /// Run `steps` on `input` and return the result, or `None` when there is
-    /// nothing to do. `input` is never released or written to.
+    /// nothing to do. `input` is never released or written to. Time steps
+    /// are skipped: a chain that may have them runs through
+    /// `Renderer::run_chain`.
     pub(crate) fn run_effects(&mut self, input: &Tex, steps: &[Step]) -> Option<Tex> {
         let aspect = self.ctx.time[3];
         let mut cur: Option<Tex> = None;
         let mut i = 0;
         while i < steps.len() {
+            if let Step::Time(_) = &steps[i] {
+                i += 1;
+                continue;
+            }
             let s = cur.clone().unwrap_or_else(|| input.clone());
             let out = match &steps[i] {
                 Step::Color(_) => {
@@ -435,6 +450,7 @@ impl Renderer {
                     self.fx_pass(pipeline, &out, &s, None, None, p);
                     out
                 }
+                Step::Time(_) => unreachable!("skipped above"),
             };
             if let Some(old) = cur.replace(out) {
                 self.release(old);

@@ -41,7 +41,7 @@ category (`color.rs`, `blur.rs`, `light.rs`, `distort.rs`, `stylize.rs`,
 - **`source`** names what an effect reads besides the picture: a WGSL file
   for `custom`, a `.cube` file for `lut` (both relative to the project
   file), and `"slot:<name>"`, a slot of the project, for
-  `displacement_map`. `edits check` reports a missing or unreadable file, a
+  `displacement_map` and (optionally) `time_displacement`. `edits check` reports a missing or unreadable file, a
   slot that does not exist, and a `source` on an effect that takes none.
 - **Options are choices that cannot be animated**, such as a pixelate's cell
   shape: `"options": { "shape": "hex" }`. Each option has a fixed list of
@@ -201,6 +201,39 @@ their options compiled in. To add one: a row in the category's file in
 `crates/edits-render/tests/` (`effects.rs`, or `fx_distort.rs`,
 `fx_stylize.rs`, `fx_color.rs` by category), and a line here. Ported code
 keeps its licence header and gets an entry in `THIRD_PARTY.md`.
+
+## Time
+
+Time effects show the layer at other times. They keep no memory of earlier
+frames (a frame is still a function of the project and the frame number):
+each other time is **rendered again**. On a picture, solid, text, video,
+particles or comp layer that is the layer as it is at that time (its
+position, keys, video frame, particles, comp picture) with its masks and the
+effects *before* the time effect in its list, at that time; opacity, blend
+mode, transition and track matte are not part of it (they apply once, to the
+result). On an adjustment layer it is every visible layer beneath it at that
+time, over the background, then the adjustment's effects before this one. A
+time where the layer is not active (before its `in`, after its `out`) adds
+nothing. Times are in the project's time base (beats or seconds).
+
+| Kind | Parameters (default) | What it does |
+| --- | --- | --- |
+| `echo` | `count` (3, 0..16), `interval` (-0.125), `decay` (0.6, 0..1), `start` (1, 0..1); option `mode` = `add` / `screen` / `max` / `min` / `over_back` / `over_front` / `average` | Picture i (0 is the current one, 1..`count` the echoes) is the input at t + i x `interval`, weighted `start` x `decay`^i (colour and alpha alike: a weaker echo is fainter, not darker). They are combined from the current picture outward: `add` sums them (no normalising: 3 echoes at decay 1 are 4 times as bright), `screen` sums without passing white, `max` / `min` keep the brightest / darkest of each channel, `over_back` puts each echo behind the ones before it (the current picture stays in front: trails behind a moving cut-out), `over_front` puts each echo over them, `average` divides the sum by the sum of the weights (never brightens: good on a full-frame picture or an adjustment layer). Alpha is clamped to 1. `count` 0, `decay` 0 (with `start` 1) and `enabled: false` plan nothing and cost nothing; an `interval` of 0 reuses the picture itself. |
+| `time_displacement` | `max` (-0.25), `levels` (16, 2..16); option `neutral` = `grey` / `black`; optional `source` = `"slot:<name>"` | Each pixel shows the input at a time shifted by the brightness of a map: the picture of a slot stretched over the frame, or, without `source`, the layer's own picture (its luminance, display-encoded). With `neutral` `grey` a map value of 0.5 shifts nothing, white shifts by `max` and black by -`max` (as in After Effects); with `black`, black shifts nothing and white by `max` (a one-sided slit scan: a ramp map makes the frame lag from one side to the other). The shifts are rounded to `levels` evenly spaced times, each rendered once and picked per pixel; a transparent map pixel is neutral. Skipped at `max` 0. |
+
+**Cost.** Each echo and each slice is a full render of the layer (or, on an
+adjustment layer, of everything beneath it), so an `echo` with `count` 3
+costs about four times its layer, a `time_displacement` with 16 `levels` up
+to sixteen times. Motion blur multiplies: every motion blur sample renders
+its echoes again, so 8 samples x 4 pictures is 32 renders of the layer per
+frame. Instants at which the layer and every time it echoes are the same are
+still rendered once. Time effects can nest (an echo of a layer whose effects
+before it echo, an echo inside a comp under an adjustment echo); each level
+multiplies, and more than 4 levels is refused with an error. Use a small
+`count`, a small `levels`, and key `count` or `decay` to 0 between hits
+(the `echo_hit` preset does) so the cost is paid only where the effect shows.
+`posterize time` is not an effect: a layer's `fps` field holds its frames
+(see [FORMAT.md](FORMAT.md#video-layers-and-layer-time)).
 
 ## Custom effects
 

@@ -120,6 +120,9 @@ pub enum SourceKind {
     Cube,
     /// A picture slot of the project, written `slot:<name>` (a map).
     Slot,
+    /// A slot as for [`SourceKind::Slot`], or nothing: the effect then reads
+    /// the layer's own picture (`time_displacement`).
+    OptionalSlot,
 }
 
 pub struct EffectSpec {

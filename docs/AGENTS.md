@@ -133,7 +133,7 @@ few calls, then refine with `project_edit`:
    `{preset: "punch", on: "kicks", audio}`, `{preset: "shake", on: "drop", audio}`.
    `layer: "fx"` puts the accents on one adjustment layer instead of each picture.
 4. `preset_apply {project, preset: "transition:whip_pan", layer: "cut9"}` at a
-   cut; `presets_list` shows the rest (`velocity`, `flip_3d`, `rgb_split`,
+   cut; `presets_list` shows the rest (`velocity`, `echo_hit`, `flip_3d`, `rgb_split`,
    `letterbox`, `sakura`, `sparkles`, `dust`, `beat_burst`, the text animations `typewriter`, `pop_in`, `random_flicker`, `wave`, ...) and `presets_list {name}` their variables.
 5. `render_sheet` (16 frames), or `{from: "drop-1b", to: "drop+1b", every_frame: true}`
    around a hit, and look. Every step above is one history entry:

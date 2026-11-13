@@ -30,6 +30,7 @@ mod particles;
 mod renderer;
 mod stack;
 mod text;
+mod time;
 mod transitions;
 
 pub mod font;
