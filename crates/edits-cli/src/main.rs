@@ -351,6 +351,8 @@ fn list_effects(as_json: bool) {
             println!("    {:<12} default {:<16} {}", p.name, default, p.doc);
         }
     }
+    let kinds: Vec<&str> = effects::TRANSITIONS.iter().map(|t| t.kind).collect();
+    println!("\ntransitions (a layer's \"transition\", not an effect; `edits transitions` describes them): {}", kinds.join(", "));
 }
 
 fn shader_check(file: &Path, as_json: bool) -> Result<ExitCode> {

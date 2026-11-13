@@ -21,11 +21,17 @@ use std::time::{Duration, Instant};
 
 const SERVER: &str = env!("CARGO_BIN_EXE_edits-mcp");
 
-const TOOLS: [&str; 18] = [
+const TOOLS: [&str; 25] = [
+    "audio_analyze",
+    "beats_accent",
+    "beats_cut",
     "doctor",
+    "effect_define",
     "effects_list",
     "job_cancel",
     "job_status",
+    "preset_apply",
+    "presets_list",
     "project_check",
     "project_describe",
     "project_edit",
@@ -40,6 +46,7 @@ const TOOLS: [&str; 18] = [
     "render_frame",
     "render_sheet",
     "render_video",
+    "ui_context",
 ];
 
 fn find(name: &str, env: &str) -> Option<PathBuf> {
@@ -235,7 +242,8 @@ fn stateless_lifecycle_tools_edit_and_render() {
     assert_eq!(tool("project_edit")["annotations"]["readOnlyHint"], json!(false));
     assert_eq!(tool("project_edit")["annotations"]["destructiveHint"], json!(true));
     assert_eq!(tool("render_frame")["inputSchema"]["required"], json!(["project"]));
-    assert_eq!(tool("render_frame")["inputSchema"]["properties"]["at"]["type"], "number");
+    // Times are numbers or text ("b12.5", "bar 4", "drop").
+    assert_eq!(tool("render_frame")["inputSchema"]["properties"]["at"]["type"], json!(["number", "string"]));
     let op = &tool("project_edit")["inputSchema"];
     assert!(op.to_string().contains("insert_layer") && op.to_string().contains("set_slot"), "{op}");
 
@@ -468,4 +476,76 @@ fn recipe_of_a_reference_edit_analyze_draft_compare() {
     assert!(fit["overall_before"].is_number() && fit["changes"].is_array(), "{said}");
     assert!(said.contains("overall ") && said.contains("NOT written"), "{said}");
     assert_eq!(std::fs::read_to_string(root.0.join("edit/project.json")).unwrap(), before);
+}
+
+/// The toolkit an agent uses to make an edit from a song and pictures:
+/// analyse the song, cut to the beat, accent, add a transition, look.
+#[test]
+fn a_song_cut_to_the_beat_with_presets() {
+    let Some((root, edits, analyze)) = setup("toolkit") else { return };
+    let project = root.0.join("demo/project.json");
+    let mut c = Client::start(&root.0, &edits, analyze.as_deref());
+    c.meta = Some(stateless_meta());
+
+    // The song: tempo, beats, onsets; written next to it and into the project.
+    let (said, song) = c.ok("audio_analyze", json!({ "input": "demo/audio/beat.wav", "project": "demo/project.json" }));
+    assert!(said.contains("123 BPM") && said.contains("demo/audio/beat.audio.json"), "{said}");
+    assert_eq!(song["structuredContent"]["bpm"], json!(123.0), "{song}");
+    assert!(root.0.join("demo/audio/beat.audio.json").is_file());
+
+    // The presets an agent chooses from.
+    let (said, _) = c.ok("presets_list", json!({}));
+    assert!(said.contains("punch:") && said.contains("flash:") && said.contains("transition:whip_pan"), "{said}");
+    let (said, _) = c.ok("presets_list", json!({ "name": "shake" }));
+    assert!(said.contains("amplitude (number") && said.contains("frequency"), "{said}");
+
+    // One picture per beat for 16 beats, then accents and a transition.
+    let (said, _) = c.ok("beats_cut", json!({ "project": "demo/project.json", "slots": ["a", "b", "c", "d"], "from": 0, "to": "b16", "below": "tex" }));
+    assert!(said.contains("16 image layer(s)") && said.contains("the project now runs to 16"), "{said}");
+    let (said, _) = c.ok("beats_accent", json!({ "project": "demo/project.json", "preset": "punch", "on": "kicks", "audio": "demo/audio/beat.audio.json", "vars": { "amount": 1.1 } }));
+    assert!(said.contains("punch on") && said.contains("cut1@0"), "{said}");
+    let (said, _) = c.ok("preset_apply", json!({ "project": "demo/project.json", "preset": "transition:whip_pan", "layer": "cut5" }));
+    assert!(said.contains("set cut5/transition") && said.contains("set cut4/out"), "{said}");
+    let (said, _) = c.ok("preset_apply", json!({ "project": "demo/project.json", "preset": "flash", "layer": "cut9", "at": "bar 3", "vars": { "strength": 0.9 } }));
+    assert!(said.contains("at 8:") && said.contains("added effect fade to cut9"), "{said}");
+    let doc: Value = serde_json::from_str(&std::fs::read_to_string(&project).unwrap()).unwrap();
+    let cut5 = doc["layers"].as_array().unwrap().iter().find(|l| l["id"] == "cut5").unwrap();
+    assert_eq!(cut5["transition"]["kind"], "whip_pan");
+    // Mistakes say what to do.
+    let why = c.err("preset_apply", json!({ "project": "demo/project.json", "preset": "flash", "at": 1, "vars": { "strenght": 1 } }));
+    assert!(why.contains("variables: color, decay, strength"), "{why}");
+    let why = c.err("beats_accent", json!({ "project": "demo/project.json", "preset": "flash", "on": "snares" }));
+    assert!(why.contains("audio_analyze") || why.contains("edits audio"), "{why}");
+    let (said, _) = c.ok("project_check", json!({ "project": "demo/project.json" }));
+    assert!(said.contains("0 error(s)"), "{said}");
+
+    // A custom effect: refused with a line number, then accepted and undoable.
+    let bad = c.err("effect_define", json!({ "project": "demo/project.json", "name": "dim", "wgsl": "fn effect(uv: vec2<f32>) -> vec4<f32> {\n    return src(uv) * nope;\n}\n" }));
+    assert!(bad.contains("line 2") && bad.contains("nope") && !root.0.join("demo/shaders/dim.wgsl").exists(), "{bad}");
+    let good = "fn effect(uv: vec2<f32>) -> vec4<f32> {\n    let c = src(uv);\n    return vec4<f32>(c.rgb * (1.0 - 0.5 * fx.p0), c.a);\n}\n";
+    let (said, _) = c.ok("effect_define", json!({ "project": "demo/project.json", "name": "dim", "wgsl": good, "params": { "p0": 0.5 } }));
+    assert!(said.contains("wrote demo/shaders/dim.wgsl") && said.contains("reads p0"), "{said}");
+    let (said, _) = c.ok("project_undo", json!({ "project": "demo/project.json" }));
+    assert!(said.contains("- /layers/@dim"), "{said}");
+
+    // What the window shows: nothing until it writes its file.
+    let (said, _) = c.ok("ui_context", json!({ "project": "demo/project.json" }));
+    assert!(said.contains("not open"), "{said}");
+    let ui = json!({ "format": "edits.ui/1", "project": "project.json", "updated": edits_core::edit::utc_stamp(std::time::SystemTime::now()),
+                     "playhead": { "t": 4.25 }, "selection": { "layer": "cut5" }, "note": "make this hit stronger" });
+    std::fs::create_dir_all(root.0.join("demo/.edits")).unwrap();
+    std::fs::write(root.0.join("demo/.edits/ui.json"), ui.to_string()).unwrap();
+    let (said, ctx) = c.ok("ui_context", json!({ "project": "demo/project.json" }));
+    assert!(said.contains("layer cut5") && said.contains("make this hit stronger") && said.contains("playhead at 4.25"), "{said}");
+    assert_eq!(ctx["structuredContent"]["open"], json!(true));
+
+    // Look at it.
+    let (_, doctor) = c.ok("doctor", json!({}));
+    if doctor["structuredContent"]["adapter"].is_null() {
+        eprintln!("skipping the sheet: no graphics adapter");
+        return;
+    }
+    let (said, sheet) = c.ok("render_sheet", json!({ "project": "demo/project.json", "from": "b3.5", "to": "b4.5", "count": 4, "samples": 1, "scale": 0.1 }));
+    assert!(sheet["content"].as_array().unwrap().iter().any(|b| b["type"] == "image"), "{said}");
+    assert!(said.contains("4 frames"), "{said}");
 }

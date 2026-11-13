@@ -3,6 +3,10 @@
 //! structured data). No state is kept between calls: the project path, the
 //! analysis path and the job id are arguments.
 
+mod toolkit;
+
+pub use toolkit::{AudioAnalyzeArgs, BeatsAccentArgs, BeatsCutArgs, EffectDefineArgs, PresetApplyArgs, PresetsArgs};
+
 use crate::edit::{self, EditOp};
 use crate::exec::{self, Tool};
 use crate::images;
@@ -37,6 +41,8 @@ const FRAME_EDGE: f64 = 540.0;
 pub const INSTRUCTIONS: &str = "edits renders short beat-synced video edits from one JSON project: slots (pictures) + layers (bottom to top) + keyframes + effects; time in beats, space in composition-height units. \
 Loop: project_describe, project_edit (atomic, validated; project_undo reverts), render_sheet or render_frame and look at the image, then render_video (a background job: poll job_status). \
 To reuse the recipe of a reference edit with other pictures: reference_analyze, reference_read, reference_draft, set the slots, then reference_compare and fix the largest differences. \
+To make an edit from a song and pictures: audio_analyze (tempo, bars, kick/snare/hat onsets, the drop), beats_cut (one picture per beat), beats_accent and preset_apply (flashes, punches, shakes, transitions: presets_list), then look at a render_sheet. \
+Times can be written \"b12.5\", \"bar 4\", \"drop+2b\". ui_context says what the person has selected in the preview window. \
 Every path must be inside the workspace root; relative paths start there. doctor reports the root and the renderer.";
 
 // ---- arguments -------------------------------------------------------------
@@ -676,13 +682,22 @@ impl EditsServer {
     async fn effects(&self, a: EffectsArgs) -> Out {
         let all = self.run_json(Tool::Edits, os(&["effects", "--json"])).await?;
         let list = all.as_array().cloned().unwrap_or_default();
+        let transitions = self.run_json(Tool::Edits, os(&["transitions", "--json"])).await?.as_array().cloned().unwrap_or_default();
         let chosen: Vec<Value> = match &a.kind {
             None => list,
             Some(kind) => {
                 let kinds: Vec<&str> = list.iter().filter_map(|e| e["kind"].as_str()).collect();
                 let found: Vec<Value> = list.iter().filter(|e| e["kind"].as_str() == Some(kind)).cloned().collect();
                 if found.is_empty() {
-                    return Err(format!("no effect \"{kind}\"; effects: {}", kinds.join(", ")));
+                    if let Some(t) = transitions.iter().find(|t| t["kind"].as_str() == Some(kind.trim_start_matches("transition:"))) {
+                        let mut text = format!("transition {}: {} (default {} beats; {})\nOn the incoming layer: \"transition\": {{ \"kind\": \"{}\", \"duration\": d, \"params\": {{...}}, \"ease\": \"linear\" }}, or preset_apply transition:{} which also overlaps the cut.", t["kind"].as_str().unwrap_or("?"), t["doc"].as_str().unwrap_or(""), t["duration"], t["credit"].as_str().unwrap_or(""), t["kind"].as_str().unwrap_or("?"), t["kind"].as_str().unwrap_or("?"));
+                        for p in t["params"].as_array().into_iter().flatten() {
+                            text.push_str(&format!("\n    {} = {}  {}", p["name"].as_str().unwrap_or("?"), jsonfmt::inline(&p["default"]), p["doc"].as_str().unwrap_or("")));
+                        }
+                        return Ok(Reply::data(text, json!({ "transition": t })));
+                    }
+                    let tkinds: Vec<&str> = transitions.iter().filter_map(|t| t["kind"].as_str()).collect();
+                    return Err(format!("no effect \"{kind}\"; effects: {}; transitions: {}", kinds.join(", "), tkinds.join(", ")));
                 }
                 found
             }
@@ -694,6 +709,11 @@ impl EditsServer {
                 let doc = p["doc"].as_str().filter(|d| !d.is_empty()).map(|d| format!("  {d}")).unwrap_or_default();
                 text.push_str(&format!("    {} = {}{doc}\n", p["name"].as_str().unwrap_or("?"), jsonfmt::inline(&p["default"])));
             }
+        }
+        if a.kind.is_none() {
+            let tkinds: Vec<&str> = transitions.iter().filter_map(|t| t["kind"].as_str()).collect();
+            text.push_str(&format!("Transitions (a layer's \"transition\" field, between the picture beneath and the layer; pass one as `kind` for its parameters): {}\n", tkinds.join(", ")));
+            return Ok(Reply::data(text.trim_end(), json!({ "effects": chosen, "transitions": transitions })));
         }
         Ok(Reply::data(text.trim_end(), json!({ "effects": chosen })))
     }
@@ -1371,6 +1391,69 @@ impl EditsServer {
     )]
     async fn project_fit(&self, Parameters(a): Parameters<FitArgs>) -> CallToolResult {
         finish(self.fit(a).await)
+    }
+
+    #[tool(
+        name = "audio_analyze",
+        description = "Analyse a song (or a video's soundtrack) for cutting: tempo and beat grid, bars, onsets in three bands (kick, snare, hat) with strengths, energy per beat, sections and the drop. Writes a JSON file to pass as `audio` to beats_cut, beats_accent and preset_apply; with `project`, also writes the tempo and markers (drop, sections) into the project.",
+        annotations(title = "Analyse song", read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn audio_analyze_tool(&self, Parameters(a): Parameters<AudioAnalyzeArgs>) -> CallToolResult {
+        finish(self.audio_analyze(a).await)
+    }
+
+    #[tool(
+        name = "presets_list",
+        description = "The preset library: named building blocks (flash, punch, shake, rgb_split, blur_in, slide_in, flip_3d, cube_turn, velocity, glow_pulse, letterbox, ... and transition:<kind>) with their typed variables and defaults. Pass `name` for one preset's variables in full.",
+        annotations(title = "List presets", read_only_hint = true, open_world_hint = false)
+    )]
+    async fn presets_list_tool(&self, Parameters(a): Parameters<PresetsArgs>) -> CallToolResult {
+        finish(self.presets_list(a).await)
+    }
+
+    #[tool(
+        name = "preset_apply",
+        description = "Apply a preset to a layer at one or more times, as one validated, undoable edit. It expands into ordinary keys, effects and layers that stay editable. `at` takes beats, bars and markers (\"b8\", \"bar 3\", \"drop\"); for transition:<kind>, give the incoming layer and it overlaps the cut.",
+        annotations(title = "Apply preset", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn preset_apply_tool(&self, Parameters(a): Parameters<PresetApplyArgs>) -> CallToolResult {
+        finish(self.preset_apply(a).await)
+    }
+
+    #[tool(
+        name = "beats_cut",
+        description = "Cut pictures to the music in one step: one image layer per beat (or every N beats, or on each kick or snare of a song analysis) between two times, cycling through slots. One undoable edit; the project grows if the range runs past its end.",
+        annotations(title = "Cut to the beat", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn beats_cut_tool(&self, Parameters(a): Parameters<BeatsCutArgs>) -> CallToolResult {
+        finish(self.beats_cut(a).await)
+    }
+
+    #[tool(
+        name = "beats_accent",
+        description = "Apply a preset on every beat, offbeat, downbeat, kick, snare or hat, or on the drop (onsets come from a song analysis), on the picture on screen at each time or on one adjustment layer. One undoable edit.",
+        annotations(title = "Accent beats", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn beats_accent_tool(&self, Parameters(a): Parameters<BeatsAccentArgs>) -> CallToolResult {
+        finish(self.beats_accent(a).await)
+    }
+
+    #[tool(
+        name = "effect_define",
+        description = "Write a custom WGSL effect next to the project (shaders/<name>.wgsl) after checking it against the custom-effect contract (errors come back with line numbers and nothing is written), then add it as a `custom` effect to a layer, or to a new adjustment layer on top. One undoable edit.",
+        annotations(title = "Define custom effect", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn effect_define_tool(&self, Parameters(a): Parameters<EffectDefineArgs>) -> CallToolResult {
+        finish(self.effect_define(a).await)
+    }
+
+    #[tool(
+        name = "ui_context",
+        description = "What the person is looking at in the preview window (edits-gui) for this project: the selected layer and property, the playhead, the visible range and loop, and the note they typed for you; or that the window is not open.",
+        annotations(title = "Window context", read_only_hint = true, open_world_hint = false)
+    )]
+    async fn ui_context_tool(&self, Parameters(a): Parameters<ProjectArgs>) -> CallToolResult {
+        finish(self.ui_context(&a.project).await)
     }
 
     #[tool(
