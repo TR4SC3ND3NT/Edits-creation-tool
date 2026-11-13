@@ -932,6 +932,69 @@ pub fn analyze_frames(frames: &Frames, audio: Option<(&[f32], u32)>, mut source:
     Analyzed { analysis, plate, sigs }
 }
 
+/// What measuring one shot on its own needs from the rest of its clip: the
+/// beat grid, the overlay mask and the vignette (both measured on the whole
+/// clip), and the clip's median saturation.
+#[derive(Clone, Debug)]
+pub struct ShotContext {
+    pub beats: Beats,
+    /// Pixels not covered by the static overlay, at analysis size.
+    pub usable: Vec<bool>,
+    /// The vignette's radial profile, if one was measured.
+    pub vignette: Option<Vec<f64>>,
+    pub global_sat: f64,
+}
+
+impl ShotContext {
+    /// The context [`analyze_frames`] used for `done`.
+    pub fn of(done: &Analyzed) -> ShotContext {
+        let a = &done.analysis;
+        let usable = if a.layers.overlay.is_some() { layers::usable_mask(&done.plate) } else { vec![true; done.plate.w * done.plate.h] };
+        let (a0, a1) = (a.ingest.analysed_f0, a.ingest.analysed_f1.min(done.sigs.len()));
+        let global_sat = if a1 > a0 { median(&(a0..a1).map(|i| done.sigs[i].sat as f64).collect::<Vec<_>>()) } else { 0.0 };
+        ShotContext { beats: a.beats.clone(), usable, vignette: a.layers.vignette.as_ref().map(|v| v.profile.clone()), global_sat }
+    }
+}
+
+/// Measure one shot without the rest of its clip, exactly as
+/// [`analyze_frames`] measures it once the cuts are known: `frames` holds
+/// frames `first..first + frames.len()` of the clip and the shot is `f0..f1`
+/// (absolute frame numbers, `first <= f0 < f1`). Give it the frame before the
+/// cut as well when there is one (`first = f0 - 1`): the choice of the
+/// reference frame looks at the difference to the previous frame. Returns the
+/// shot (numbered `id`) and its signature curves (`f0` = the shot's first frame).
+pub fn measure_shot(frames: &Frames, first: usize, f0: usize, f1: usize, id: usize, ctx: &ShotContext, opts: &AnalyzeOpts) -> (Shot, Signature) {
+    assert!(first <= f0 && f0 < f1 && f1 - first <= frames.len(), "measure_shot: frames {f0}..{f1} are not all in the {} frames from {first}", frames.len());
+    let rel = signals::signatures(frames);
+    let thumbs = signals::thumbnails(frames, shots::THUMB);
+    let toggles = shots::invert_toggles(&shots::pair_sims(&shots::prepare(&thumbs)));
+    let flat = match &ctx.vignette {
+        Some(p) => FlatField::from_profile(frames.w, frames.h, p),
+        None => FlatField::flat(frames.w, frames.h),
+    };
+    let usable: Vec<bool> = if ctx.usable.len() == frames.w * frames.h { ctx.usable.clone() } else { vec![true; frames.w * frames.h] };
+    let mut w = process_shot(frames, &rel, &toggles, &usable, &flat, f0 - first, f1 - first);
+    w.f0 += first;
+    w.f1 += first;
+    w.ref_frame += first;
+    // Signatures indexed by absolute frame number.
+    let mut sigs: Vec<FrameSig> = Vec::with_capacity(first + rel.len());
+    sigs.extend(std::iter::repeat_n(rel[0].clone(), first));
+    sigs.extend(rel.iter().cloned());
+    let dup = vec![false; sigs.len()];
+    let timing = Timing { beats: &ctx.beats, fps: frames.fps };
+    let shot = build_shot(id, &w, &sigs, &dup, &timing, None, ctx.global_sat, frames.h, opts);
+    let mut sig = Signature { f0, ..Default::default() };
+    for (k, m) in w.meas.iter().enumerate() {
+        sig.lum.push(round_to(sigs[f0 + k].lum as f64, 1));
+        sig.stops.push(round_to(m.exp.stops, 3));
+        sig.blur.push(round_to(100.0 * m.blur.sigma_px / frames.h as f64, 3));
+        sig.sat.push(round_to(m.tone.sat_ratio, 3));
+        sig.scale.push(if w.tracked && w.track[k].valid() { Some(round_to(w.track[k].sim.scale(), 4)) } else { None });
+    }
+    (shot, sig)
+}
+
 /// Decode a video and analyse it. With `out_dir`, also writes
 /// `reference_analysis.json`, `overlay.png` and `proxies/<slot>.png` there.
 pub fn analyze_video(path: &Path, out_dir: Option<&Path>, opts: &AnalyzeOpts) -> Result<Analysis> {

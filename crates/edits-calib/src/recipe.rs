@@ -568,8 +568,17 @@ mod tests {
             for l in a.project.layers.iter().filter(|l| is_shot_layer(&a.project, l)) {
                 assert!(cover_multiplier(&a.project, l) <= 1.0 + 1e-9, "seed {seed} layer {} does not cover the frame", l.id);
             }
+            // The flash is keyed on a beat and the first frame that shows it
+            // starts up to one frame later (the beat grid and the frame grid
+            // are not aligned), so the peak frame shows the key value after
+            // at most one frame of the `decay` ease: at least
+            // `stops * (k - k^N) / (1 - k^N)` with `k = 1 - rate`. (This
+            // used to require half the key, which a fast decay keyed late in
+            // a frame does not reach: seed 4 has rate 0.56, visible 0.48x.)
             for f in &a.truth.flashes {
-                assert!(f.visible > 0.5 * f.stops && f.visible <= f.stops + 1e-9, "seed {seed}: {f:?}");
+                let k = 1.0 - f.rate;
+                let one_frame = (k - k.powf(f.frames)) / (1.0 - k.powf(f.frames));
+                assert!(f.visible >= f.stops * one_frame - 1e-6 && f.visible <= f.stops + 1e-9, "seed {seed}: {f:?}");
             }
         }
     }
