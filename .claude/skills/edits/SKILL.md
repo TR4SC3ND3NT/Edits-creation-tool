@@ -238,6 +238,19 @@ picture and motion for two frames at 24 fps, the choppy anime look. `edits
 check` flags a missing clip, a negative speed and a bad trim; see
 `docs/FORMAT.md` (Video layers).
 
+**Text.** A `text` layer sets titles and captions:
+`{ "id": "title", "kind": "text", "text": "SAY MY\nNAME", "size": 14, "weight": 800, "stroke": { "color": [0, 0, 0], "width": 0.8 } }`.
+`size` and stroke `width` are percent of the frame's height, `fill` and
+stroke `color` are sRGB `[r, g, b]` (white and black by default), `weight`
+works on variable fonts (the built-in Inter is one: 100 to 900). The block is
+centred on the layer's `position`, capitals exactly; `align` (`left`,
+`center`, `right`) lines the lines up, and `max_width` (composition units,
+e.g. 1.2) wraps a long caption. Without `font` it is Inter; `"font":
+"fonts/Anton.ttf"` (relative to the project) uses another file, and `edits
+check` reports it when missing. Animate it like any layer (scale punch,
+position, opacity, effects); look at the frame with `edits frame` to check
+it fits. See `docs/FORMAT.md` (Text layers).
+
 ## Workflow 2: the recipe of a reference edit, with different pictures
 
 The goal is not to copy pixels. It is to recover **what the editor did**
