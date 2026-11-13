@@ -263,7 +263,7 @@ fn shot_layer(shot: &Shot, clock: &Clock, shift: usize, repeat: usize, aspect: f
         transform,
         blend: Blend::Normal,
         effects,
-        enabled: true, transition: None, fps: None,
+        enabled: true, transition: None, fps: None, masks: Vec::new(), matte: None, visible: true,
     }
 }
 
@@ -370,7 +370,7 @@ pub fn draft(a: &Analysis, opts: &DraftOpts) -> Project {
                 transform,
                 blend: Blend::Normal,
                 effects: vec![],
-                enabled: true, transition: None, fps: None,
+                enabled: true, transition: None, fps: None, masks: Vec::new(), matte: None, visible: true,
             });
         }
     }
@@ -394,7 +394,7 @@ pub fn draft(a: &Analysis, opts: &DraftOpts) -> Project {
                 transform: Transform::default(),
                 blend: Blend::Screen,
                 effects: vec![],
-                enabled: static_on, transition: None, fps: None,
+                enabled: static_on, transition: None, fps: None, masks: Vec::new(), matte: None, visible: true,
             });
         }
     }
@@ -412,7 +412,7 @@ pub fn draft(a: &Analysis, opts: &DraftOpts) -> Project {
             transform: Transform::default(),
             blend: Blend::Normal,
             effects: vec![Effect { kind: "vignette".into(), params, options: Default::default(), source: None, enabled: true }],
-            enabled: static_on, transition: None, fps: None,
+            enabled: static_on, transition: None, fps: None, masks: Vec::new(), matte: None, visible: true,
         });
     }
     if opts.proxies && (a.layers.overlay.is_some() || a.layers.vignette.is_some()) {

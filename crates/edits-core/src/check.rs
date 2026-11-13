@@ -107,6 +107,7 @@ pub fn check(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> {
         if let LayerKind::Text(text) = &l.kind {
             check_text(text, &lp, base_dir, &mut err, &mut warn);
         }
+        crate::mask::check_layer(l, &lp, &mut err, &mut warn);
         if let Some(fps) = l.fps {
             if !fps.is_finite() || fps <= 0.0 {
                 err(format!("{lp}.fps"), format!("fps must be positive, got {fps}"), Some("remove \"fps\" to follow the project's frame rate"));
@@ -231,6 +232,7 @@ pub fn check(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> {
             err(format!("{tp}.ease"), format!("unknown ease {:?}", tr.ease), Some(&format!("names: {}", ease::NAMES.join(", "))));
         }
     }
+    crate::mask::check_mattes(p, &mut err, &mut warn);
     for (name, prop) in [("fov", &p.camera.fov), ("position", &p.camera.position), ("rotation", &p.camera.rotation)] {
         check_prop(prop, &format!("camera.{name}"), &mut err);
     }
@@ -359,7 +361,7 @@ fn check_text(t: &Text, lp: &str, base_dir: Option<&Path>, err: &mut impl FnMut(
     }
 }
 
-fn check_prop(prop: &Prop, path: &str, err: &mut impl FnMut(String, String, Option<&str>)) {
+pub(crate) fn check_prop(prop: &Prop, path: &str, err: &mut impl FnMut(String, String, Option<&str>)) {
     let Prop::Anim(a) = prop else { return };
     if a.keys.is_empty() && a.base.is_none() && a.modifiers.is_empty() {
         err(path.into(), "animated property has no keys".into(), Some("give \"keys\", or a constant value"));

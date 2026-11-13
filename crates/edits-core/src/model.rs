@@ -213,6 +213,18 @@ pub struct Layer {
     /// the choppy "on twos" look. `None` follows the project's frame rate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fps: Option<f64>,
+    /// Shapes in layer space that limit where the layer shows, combined in
+    /// order (see `crate::mask`). On an adjustment layer they limit where
+    /// its effects apply.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub masks: Vec<crate::mask::Mask>,
+    /// A track matte: another layer's alpha or luminance at the same instant
+    /// multiplies this layer's alpha.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matte: Option<crate::mask::Matte>,
+    /// `false`: the layer is not drawn, but still works as another layer's matte.
+    #[serde(default = "yes", skip_serializing_if = "crate::mask::is_true")]
+    pub visible: bool,
 }
 
 /// A transition into a layer. From `in` to `in + duration`, the picture is

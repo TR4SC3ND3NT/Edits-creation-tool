@@ -14,6 +14,7 @@ pub mod edit;
 pub mod effects;
 pub mod eval;
 pub mod jsonfmt;
+pub mod mask;
 pub mod model;
 pub mod particles;
 pub mod pointer;
@@ -24,4 +25,5 @@ pub mod time;
 pub mod ui;
 
 pub use eval::{ClipInfo, Evaluator, ResolvedCamera, ResolvedEffect, ResolvedLayer, ResolvedTransition, SourceFrame};
+pub use mask::{Mask, MaskMode, MaskShape, Matte, MatteMode, ResolvedMask};
 pub use model::*;

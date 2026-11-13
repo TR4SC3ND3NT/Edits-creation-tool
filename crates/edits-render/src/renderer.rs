@@ -248,7 +248,7 @@ pub struct Renderer {
     linear: wgpu::Sampler,
     mirror: wgpu::Sampler,
     image_sampler: wgpu::Sampler,
-    white: Tex,
+    pub(crate) white: Tex,
     next_id: u64,
     pool: HashMap<(u32, u32, TexKind), Vec<Tex>>,
     pool_size: (u32, u32),
@@ -280,6 +280,8 @@ pub struct Renderer {
     profile: Option<Vec<PassTiming>>,
     /// The pipeline and buffers of particles layers (see `particles.rs`).
     pub(crate) particles: crate::particles::ParticleGpu,
+    /// How many track mattes deep the layer being drawn is (a guard against cycles).
+    pub(crate) matte_depth: u32,
 }
 
 fn file_key(path: &Path) -> String {
@@ -374,7 +376,7 @@ impl Renderer {
         });
         let identity_lut = make_lut(device, &gpu.queue, 2, &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [1.0, 1.0, 1.0]], 1);
 
-        let source = concat!(include_str!("shaders/common.wgsl"), include_str!("shaders/passes.wgsl"));
+        let source = concat!(include_str!("shaders/common.wgsl"), include_str!("shaders/passes.wgsl"), include_str!("shaders/mask.wgsl"));
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("edits passes"),
             source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -476,6 +478,7 @@ impl Renderer {
             label: String::new(),
             profile: None,
             particles: Default::default(),
+            matte_depth: 0,
         };
         r.white = r.upload_picture(&RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255])));
         r.flush();

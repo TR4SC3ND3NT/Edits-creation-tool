@@ -77,12 +77,21 @@ pub fn describe(p: &Project) -> String {
             l.start,
             end,
             if l.blend != Blend::Normal { format!(" blend={}", l.blend.name()) } else { String::new() },
-            if l.enabled { "" } else { " (disabled)" }
+            match (l.enabled, l.visible) {
+                (false, _) => " (disabled)",
+                (true, false) => " hidden (matte only)",
+                (true, true) => "",
+            }
         );
         if let Some(tr) = &l.transition {
             let params: Vec<String> = tr.params.iter().map(|(k, v)| format!("{k}={}", prop_summary(v).unwrap_or_else(|| const_text(v)))).collect();
             let ease = if tr.ease == Ease::default() { String::new() } else { format!(" {}", serde_json::to_string(&tr.ease).unwrap_or_default()) };
             let _ = writeln!(o, "      transition in: {} over {}{ease} {}", tr.kind, tr.duration, params.join("; "));
+        }
+        let mut lines = Vec::new();
+        crate::mask::describe(l, &mut lines);
+        for line in lines {
+            let _ = writeln!(o, "      {line}");
         }
         let t = &l.transform;
         for (n, pr) in [("position", &t.position), ("scale", &t.scale), ("rotation", &t.rotation), ("anchor", &t.anchor), ("opacity", &t.opacity)] {
@@ -158,7 +167,7 @@ fn text_summary(t: &Text) -> String {
     parts.join(" ")
 }
 
-fn const_text(p: &Prop) -> String {
+pub(crate) fn const_text(p: &Prop) -> String {
     match p {
         Prop::Const(Value::Num(n)) => format!("{n}"),
         Prop::Const(Value::Vec(v)) => format!("{v:?}"),
@@ -167,7 +176,7 @@ fn const_text(p: &Prop) -> String {
 }
 
 /// `None` for constants; otherwise a one-line summary of keys and modifiers.
-fn prop_summary(p: &Prop) -> Option<String> {
+pub(crate) fn prop_summary(p: &Prop) -> Option<String> {
     let Prop::Anim(a) = p else { return None };
     let mut parts: Vec<String> = a
         .keys
