@@ -213,6 +213,18 @@ When you need full control (or to understand what the presets write):
    with `output`, then `job_status` with the returned job id until
    `completed`). Preview first with `--scale 0.5`; render full size once.
 
+**Video clips.** A `video` layer plays a clip from a slot (any file ffmpeg
+reads; the slot's `"trim": [in_s, out_s]` picks the seconds that play):
+`{ "id": "op", "kind": "video", "slot": "clip", "in": 8, "out": 12 }`. Its
+time starts at `in`. `speed` (1 = real time; keyed, e.g. 1 → 0.2 over a beat
+for a velocity ramp) or `time_remap` (source seconds at each key) set what
+plays; `loop`, `reverse`, and `"frame_blend": "mix"` (smooth slow motion) do
+what they say; `"volume": 0` mutes the clip's sound, which is otherwise mixed
+into the render when the speed is constant. `"fps": 12` on any layer holds its
+picture and motion for two frames at 24 fps, the choppy anime look. `edits
+check` flags a missing clip, a negative speed and a bad trim; see
+`docs/FORMAT.md` (Video layers).
+
 ## Workflow 2: the recipe of a reference edit, with different pictures
 
 The goal is not to copy pixels. It is to recover **what the editor did**

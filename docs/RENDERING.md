@@ -132,3 +132,42 @@ Measured on 4 cores with lavapipe (Mesa 25.2, LLVM 20), the demo at
 100 to 150 ms. Opening the adapter and loading the demo's pictures takes about
 0.15 s, and the first frame about 0.2 to 0.5 s more than a later one because
 shaders are compiled on first use.
+
+## Video layers
+
+`src/video.rs` reads clips through the system `ffmpeg`; nothing is linked.
+
+- **Probing.** `prepare` runs `ffprobe -count_packets` once per file (cached by
+  path, size and modification time): size, sample aspect ratio, frame rate
+  (`avg_frame_rate`, else `r_frame_rate`), the number of frames (packets of
+  the video stream, which needs no decoding) and whether there is sound. The
+  slot's `trim` turns into a first frame and a frame count.
+- **Decode size.** Frames are decoded at square pixels and the displayed
+  aspect, no larger than the project's longer side and never upscaled
+  (`scale=W:H:flags=bicubic` when that differs from the stored size), as
+  premultiplied sRGB RGBA8. They are uploaded like pictures, with mip levels.
+- **One decoder per clip, read forward.** A decoder is `ffmpeg -ss <t> -i clip
+  -map 0:v:0 -pix_fmt rgba -f rawvideo pipe:1`, started half a frame before
+  the frame wanted, so that the first frame it gives is exactly that frame
+  whatever the container's timestamp rounding. It is then read in order: a
+  forward render reads each source frame once from one process, and speed 2
+  reads through the frames it skips. A frame behind the decoder, or more than
+  two seconds ahead of it, restarts it at that frame.
+- **Frame cache.** Every frame read goes into a least-recently-used cache with
+  a byte budget (512 MB; `EDITS_VIDEO_CACHE_MB` changes it), keyed by file,
+  decode size and frame index, so stepping back, motion blur samples and
+  frame blending find their frames there. The last six uploaded frames stay on
+  the GPU.
+- **Which frame.** `edits_core::Evaluator::source_frame` maps project time to
+  source frames: the layer's time (posterized by its `fps`), `time_remap` or
+  the integral of `speed` (midpoint rule on a grid of two samples per project
+  frame anchored at the layer's `in`, so a `hold` key lands the same way on
+  every frame), then `loop` or hold, then `reverse`. `frame_blend: mix` crosses
+  the frame with the next by the fraction between them, on the CPU in linear
+  light. A layer's signature includes the source frames, so motion blur
+  instants that show the same frame share a picture.
+
+None of this changes what a frame looks like: the picture of source frame
+`n` is the same whichever way it was reached, so a frame stays a pure
+function of the project and the frame number. `Renderer::video_stats()`
+counts decoders started, frames decoded and cache hits.

@@ -1,5 +1,6 @@
 //! Video encoding through the system `ffmpeg`: raw RGBA frames go in on
 //! stdin, an H.264 MP4 (with AAC audio when the project has any) comes out.
+//! The sound of video layers is mixed with the song through `amix`.
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::io::{Read, Write};
@@ -54,6 +55,59 @@ pub struct AudioInput {
     pub gain: f64,
 }
 
+/// The sound of a video layer, mixed into the render.
+#[derive(Clone, Debug)]
+pub struct ClipAudio {
+    pub path: PathBuf,
+    /// Seconds of the file that play, `[in, out)` (the slot's trim).
+    pub source: [f64; 2],
+    /// Seconds from the start of the rendered range to the layer's `in`
+    /// (negative when the layer started before the range).
+    pub at: f64,
+    /// Seconds the layer lasts.
+    pub length: f64,
+    /// Constant playback rate (pitch is kept).
+    pub speed: f64,
+    pub looped: bool,
+    pub reverse: bool,
+    pub volume: f64,
+}
+
+/// Rate every input is resampled to before mixing.
+const MIX_RATE: u32 = 48_000;
+
+/// The filter chain that turns input `input` into the layer's sound on the
+/// render's timeline, labelled `[label]`.
+fn clip_filter(input: usize, c: &ClipAudio, label: &str) -> String {
+    let [a, b] = c.source;
+    let mut f = format!("[{input}:a]aresample={MIX_RATE},atrim=start={a:.6}:end={b:.6},asetpts=PTS-STARTPTS");
+    if c.reverse {
+        f.push_str(",areverse");
+    }
+    if c.looped {
+        f.push_str(&format!(",aloop=loop=-1:size={}", ((b - a) * MIX_RATE as f64).round().max(1.0) as u64));
+    }
+    // atempo takes 0.5 to 100: slower than half speed is a chain of halves.
+    let mut speed = c.speed.clamp(1e-3, 100.0);
+    while speed < 0.5 {
+        f.push_str(",atempo=0.5");
+        speed /= 0.5;
+    }
+    if (speed - 1.0).abs() > 1e-9 {
+        f.push_str(&format!(",atempo={speed:.6}"));
+    }
+    f.push_str(&format!(",atrim=start={:.6}:end={:.6},asetpts=PTS-STARTPTS", (-c.at).max(0.0), c.length));
+    if (c.volume - 1.0).abs() > 1e-9 {
+        f.push_str(&format!(",volume={:.4}", c.volume));
+    }
+    let delay = (c.at.max(0.0) * 1000.0).round() as u64;
+    if delay > 0 {
+        f.push_str(&format!(",adelay={delay}:all=1"));
+    }
+    f.push_str(&format!("[{label}]"));
+    f
+}
+
 pub struct EncodeJob<'a> {
     pub output: &'a Path,
     pub width: u32,
@@ -63,6 +117,8 @@ pub struct EncodeJob<'a> {
     pub crf: u32,
     pub encoder: &'a str,
     pub audio: Option<AudioInput>,
+    /// Video layers whose sound is mixed in.
+    pub clips: Vec<ClipAudio>,
     pub aac: Option<&'a str>,
 }
 
@@ -82,9 +138,36 @@ pub fn arguments(job: &EncodeJob) -> Vec<String> {
         }
         push(&["-i", &au.path.to_string_lossy()]);
     }
+    // Clips that are heard somewhere in the rendered range.
+    let clips: Vec<&ClipAudio> = if job.aac.is_some() {
+        job.clips.iter().filter(|c| c.volume > 0.0 && c.speed > 0.0 && c.source[1] > c.source[0] && c.at < duration && c.at + c.length > 0.0).collect()
+    } else {
+        Vec::new()
+    };
+    let first_clip = if audio.is_some() { 2 } else { 1 };
+    for c in &clips {
+        push(&["-i", &c.path.to_string_lossy()]);
+    }
     push(&["-map", "0:v:0"]);
-    if audio.is_some() {
-        push(&["-map", "1:a:0"]);
+    if clips.is_empty() {
+        if audio.is_some() {
+            push(&["-map", "1:a:0"]);
+        }
+    } else {
+        let mut graph = Vec::new();
+        let mut labels = String::new();
+        if let Some(au) = audio {
+            graph.push(format!("[1:a]aresample={MIX_RATE},volume={:.4}[song]", au.gain.max(0.0)));
+            labels.push_str("[song]");
+        }
+        for (i, c) in clips.iter().enumerate() {
+            let label = format!("clip{i}");
+            graph.push(clip_filter(first_clip + i, c, &label));
+            labels.push_str(&format!("[{label}]"));
+        }
+        let inputs = clips.len() + usize::from(audio.is_some());
+        graph.push(format!("{labels}amix=inputs={inputs}:duration=longest:normalize=0[mix]"));
+        push(&["-filter_complex", &graph.join(";"), "-map", "[mix]"]);
     }
     // Full-range RGB to limited-range BT.709, tagged so players decode it the same way.
     push(&["-vf", "scale=in_range=pc:out_range=tv:out_color_matrix=bt709,format=yuv420p"]);
@@ -98,8 +181,10 @@ pub fn arguments(job: &EncodeJob) -> Vec<String> {
         push(&["-b:v", &format!("{}", bitrate as u64)]);
     }
     push(&["-pix_fmt", "yuv420p", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"]);
-    if let (Some(au), Some(aac)) = (audio, job.aac) {
+    if let (Some(aac), true) = (job.aac, audio.is_some() || !clips.is_empty()) {
         push(&["-c:a", aac, "-b:a", "192k"]);
+    }
+    if let (Some(au), true) = (audio, clips.is_empty()) {
         if (au.gain - 1.0).abs() > 1e-9 {
             push(&["-filter:a", &format!("volume={:.4}", au.gain.max(0.0))]);
         }
@@ -169,7 +254,37 @@ mod tests {
     use super::*;
 
     fn job<'a>(encoder: &'a str, audio: Option<AudioInput>) -> EncodeJob<'a> {
-        EncodeJob { output: Path::new("out.mp4"), width: 640, height: 360, fps: 25.0, frames: 50, crf: 18, encoder, audio, aac: Some("aac") }
+        EncodeJob { output: Path::new("out.mp4"), width: 640, height: 360, fps: 25.0, frames: 50, crf: 18, encoder, audio, clips: Vec::new(), aac: Some("aac") }
+    }
+
+    fn clip(at: f64) -> ClipAudio {
+        ClipAudio { path: "clip.mp4".into(), source: [1.0, 3.0], at, length: 1.5, speed: 1.0, looped: false, reverse: false, volume: 1.0 }
+    }
+
+    #[test]
+    fn clip_sound_is_mixed_with_the_song() {
+        let mut j = job("libx264", Some(AudioInput { path: "song.wav".into(), start: 0.0, gain: 0.5 }));
+        j.clips = vec![clip(0.5), ClipAudio { speed: 0.25, looped: true, reverse: true, volume: 0.8, ..clip(-0.25) }, ClipAudio { volume: 0.0, ..clip(0.0) }, clip(5.0)];
+        let a = arguments(&j);
+        let text = a.join(" ");
+        // The muted clip and the one after the range are left out.
+        assert!(text.contains("-i song.wav -i clip.mp4 -i clip.mp4 -map 0:v:0 -filter_complex"), "{text}");
+        let graph = &a[a.iter().position(|x| x == "-filter_complex").unwrap() + 1];
+        let parts: Vec<&str> = graph.split(';').collect();
+        assert_eq!(parts[0], "[1:a]aresample=48000,volume=0.5000[song]");
+        assert_eq!(parts[1], "[2:a]aresample=48000,atrim=start=1.000000:end=3.000000,asetpts=PTS-STARTPTS,atrim=start=0.000000:end=1.500000,asetpts=PTS-STARTPTS,adelay=500:all=1[clip0]");
+        assert_eq!(
+            parts[2],
+            "[3:a]aresample=48000,atrim=start=1.000000:end=3.000000,asetpts=PTS-STARTPTS,areverse,aloop=loop=-1:size=96000,atempo=0.5,atempo=0.500000,atrim=start=0.250000:end=1.500000,asetpts=PTS-STARTPTS,volume=0.8000[clip1]"
+        );
+        assert_eq!(parts[3], "[song][clip0][clip1]amix=inputs=3:duration=longest:normalize=0[mix]");
+        assert!(text.contains("-map [mix]") && text.contains("-c:a aac") && !text.contains("-filter:a"), "{text}");
+        // A clip alone still makes a sound track.
+        let mut j = job("libx264", None);
+        j.clips = vec![clip(0.0)];
+        let text = arguments(&j).join(" ");
+        assert!(text.contains("-i pipe:0 -i clip.mp4 -map 0:v:0 -filter_complex [1:a]aresample") && text.contains("[clip0]amix=inputs=1"), "{text}");
+        assert!(text.contains("-c:a aac"), "{text}");
     }
 
     #[test]

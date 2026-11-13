@@ -505,6 +505,49 @@ impl Progress {
     }
 }
 
+/// The sound of the project's video layers, for a render that starts `start`
+/// seconds into the project. A layer is heard when it is enabled, its
+/// `volume` is above 0, its file has sound, and its speed is constant with
+/// no `time_remap` (a ramp or a remap would need the sound retimed sample by
+/// sample; those layers are left silent, with a warning).
+fn clip_audio(project: &Project, dir: &Path, start: f64) -> Vec<encode::ClipAudio> {
+    let mut out = Vec::new();
+    for l in project.layers.iter().filter(|l| l.enabled) {
+        let edits_core::LayerKind::Video(v) = &l.kind else { continue };
+        let Some(slot) = project.slots.get(&v.slot) else { continue };
+        let Some(path) = slot.path.as_deref().map(|p| dir.join(p)) else { continue };
+        if v.volume <= 0.0 {
+            continue;
+        }
+        let Ok(info) = edits_render::video::probe(&path) else { continue };
+        if !info.has_audio {
+            continue;
+        }
+        let speed = match (&v.time_remap, &v.speed) {
+            (None, None) => 1.0,
+            (None, Some(edits_core::Prop::Const(edits_core::Value::Num(s)))) => *s,
+            _ => {
+                eprintln!("warning: layer \"{}\": the sound of a video with an animated speed or a time_remap is not mixed", l.id);
+                continue;
+            }
+        };
+        let (first, count) = slot.trim_frames(info.fps, info.frames);
+        let begin = project.to_seconds(l.start);
+        let end = project.to_seconds(l.end.unwrap_or(project.settings.duration).min(project.settings.duration));
+        out.push(encode::ClipAudio {
+            path,
+            source: [first as f64 / info.fps, (first + count) as f64 / info.fps],
+            at: begin - start,
+            length: end - begin,
+            speed,
+            looped: v.looped,
+            reverse: v.reverse,
+            volume: v.volume,
+        });
+    }
+    out
+}
+
 fn render(a: RenderArgs, adapter: Option<AdapterPolicy>) -> Result<ExitCode> {
     check_scale(a.scale)?;
     let (project, dir) = load(&a.project)?;
@@ -522,12 +565,14 @@ fn render(a: RenderArgs, adapter: Option<AdapterPolicy>) -> Result<ExitCode> {
         }
         _ => None,
     };
-    let has_audio = audio.is_some();
+    let clips = if a.no_audio || ffmpeg.aac.is_empty() { Vec::new() } else { clip_audio(&project, &dir, first as f64 / project.settings.fps) };
+    let has_audio = audio.is_some() || !clips.is_empty();
+    let clip_count = clips.len();
     let (mut renderer, startup_ms) = open(&project, &dir, adapter, a.samples)?;
     let (width, height) = renderer.output_size(a.scale)?;
     ensure_parent(&a.output)?;
     let frames = end - first;
-    let job = encode::EncodeJob { output: &a.output, width, height, fps: project.settings.fps, frames, crf: a.crf, encoder: &encoder, audio, aac: ffmpeg.aac.first().map(String::as_str) };
+    let job = encode::EncodeJob { output: &a.output, width, height, fps: project.settings.fps, frames, crf: a.crf, encoder: &encoder, audio, clips, aac: ffmpeg.aac.first().map(String::as_str) };
     let mut enc = encode::Encoder::start(&job)?;
 
     let started = Instant::now();
@@ -564,6 +609,7 @@ fn render(a: RenderArgs, adapter: Option<AdapterPolicy>) -> Result<ExitCode> {
         "adapter": adapter_json(&renderer),
         "encoder": encoder,
         "audio": has_audio,
+        "clip_audio": clip_count,
     }));
     Ok(ExitCode::SUCCESS)
 }
