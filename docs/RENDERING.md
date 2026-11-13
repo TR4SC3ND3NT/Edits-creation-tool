@@ -72,6 +72,25 @@ blend it with its mode and opacity. An adjustment layer runs its effects on
 the image so far (its opacity and blend mode mix the result with the
 original). The samples are averaged in linear light.
 
+In the code (`src/stack.rs`) this is two functions of time that everything
+else is built on:
+
+- `layer_content(layer, t) -> Option<Tex>`: one layer's own picture at
+  project time `t`, drawn through the camera with its whole effect chain into
+  a frame-sized texture, before its opacity, blend mode and transition. `None`
+  for an adjustment layer or a layer not visible at `t`.
+- `render_stack(layers, t, w, h) -> Tex`: a list of layers composited bottom
+  to top over the background at `t` (`render_stack_over` takes another
+  background, such as transparent black).
+
+A frame is `render_stack(project.layers, t)` at each motion blur instant,
+averaged. A layer's `layer_signature(t)` lists everything its picture at `t`
+depends on (transform, opacity, transition progress, effect values, and `t`
+itself for effects that read the clock), so two instants with equal
+signatures share a picture. The public `Renderer::render_layers(layers, t,
+scale)` and `Renderer::render_layer(layer, t, scale)` read these back as
+images, which is how the tests check that a stack of all layers is the frame.
+
 Sample `i` of `N` is at the frame's start time plus
 `i / N x shutter x frame length`; `shutter` is clamped to 0..1, so a frame
 never looks past the next cut. A frame is a pure function of the project and

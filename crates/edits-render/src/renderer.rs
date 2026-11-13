@@ -1121,9 +1121,9 @@ impl Renderer {
                     if alpha {
                         let a = half_to_f32(half(3)).clamp(0.0, 1.0);
                         px[3] = (a * 255.0).round() as u8;
-                        for c in 0..3 {
+                        for (c, out) in px[..3].iter_mut().enumerate() {
                             let v = if a > 0.0 { half_to_f32(half(c)) / a } else { 0.0 };
-                            px[c] = if v.is_nan() || v <= 0.0 { 0 } else { (assets::linear_to_srgb(v.min(1.0)) * 255.0).round() as u8 };
+                            *out = if v.is_nan() || v <= 0.0 { 0 } else { (assets::linear_to_srgb(v.min(1.0)) * 255.0).round() as u8 };
                         }
                     } else {
                         for c in 0..3 {
