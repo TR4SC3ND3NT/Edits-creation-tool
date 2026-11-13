@@ -1,0 +1,57 @@
+{
+  "format": "edits.preset/1",
+  "name": "wave",
+  "description": "A wave runs through the letters of a text layer, lifting them in turn, again and again.",
+  "tags": ["text", "loop", "caption"],
+  "layer_kind": "text",
+  "variables": {
+    "height": {
+      "type": "number",
+      "default": 4,
+      "min": -50,
+      "max": 50,
+      "unit": "% of height",
+      "doc": "How high a letter rises at the top of the wave (negative: down)."
+    },
+    "period": {
+      "type": "number",
+      "default": 2,
+      "min": 0.1,
+      "max": 64,
+      "unit": "beats",
+      "doc": "Time for the wave to run through the text once."
+    },
+    "width": {
+      "type": "number",
+      "default": 40,
+      "min": 1,
+      "max": 100,
+      "unit": "% of the letters",
+      "doc": "How many letters the wave lifts at once."
+    },
+    "units": {
+      "type": "string",
+      "default": "characters",
+      "doc": "What rises together: characters, words or lines."
+    }
+  },
+  "apply": [
+    {
+      "animator": {
+        "name": "wave",
+        "selector": {
+          "kind": "range",
+          "units": "$units",
+          "shape": "smooth",
+          "start": 0,
+          "end": "$width",
+          "offset": {
+            "keys": [ { "t": "=at", "v": "=-$width" }, { "t": "=at + $period * beat", "v": 100 } ],
+            "modifiers": [ { "kind": "loop", "from": "=at", "period": "=$period * beat" } ]
+          }
+        },
+        "position": "=vec(0, -$height / 100, 0)"
+      }
+    }
+  ]
+}

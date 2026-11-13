@@ -1410,7 +1410,7 @@ impl EditsServer {
 
     #[tool(
         name = "presets_list",
-        description = "The preset library: named building blocks (flash, punch, shake, rgb_split, blur_in, slide_in, flip_3d, cube_turn, velocity, glow_pulse, letterbox, sakura, sparkles, dust, beat_burst, ... and transition:<kind>) with their typed variables and defaults. Pass `name` for one preset's variables in full.",
+        description = "The preset library: named building blocks (flash, punch, shake, rgb_split, blur_in, slide_in, flip_3d, cube_turn, velocity, glow_pulse, letterbox, sakura, sparkles, dust, beat_burst, the text animations typewriter, pop_in, random_flicker and wave, ... and transition:<kind>) with their typed variables and defaults. Pass `name` for one preset's variables in full.",
         annotations(title = "List presets", read_only_hint = true, open_world_hint = false)
     )]
     async fn presets_list_tool(&self, Parameters(a): Parameters<PresetsArgs>) -> CallToolResult {

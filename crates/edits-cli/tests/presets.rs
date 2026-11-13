@@ -56,7 +56,21 @@ fn place(p: &preset::Preset) -> (Target, f64) {
     if p.name == "cube_turn" {
         return (Target::Layer("cube".into()), 2.5);
     }
+    if p.layer_kind.as_deref() == Some("text") {
+        // The caption added by `with_caption`, found by `auto`.
+        return (Target::Auto, 4.5);
+    }
     (Target::Layer("d".into()), 5.0)
+}
+
+/// The demo with a caption over its pictures from beat 4 to 8, for the
+/// presets that animate letters.
+fn with_caption(doc: &Value) -> Value {
+    let mut doc = doc.clone();
+    let caption = json!({ "id": "caption", "kind": "text", "text": "SAY MY\nNAME", "in": 4, "out": 8, "size": 18, "weight": 800,
+                          "stroke": { "color": [0, 0, 0], "width": 0.6 } });
+    doc["layers"].as_array_mut().unwrap().push(caption);
+    doc
 }
 
 #[test]
@@ -73,11 +87,14 @@ fn every_preset_applies_to_the_demo_checks_and_renders() {
             None
         }
     };
-    let original = Project::from_json(&text).unwrap();
+    let plain = Project::from_json(&text).unwrap();
+    let captioned: Project = serde_json::from_value(with_caption(&doc)).unwrap();
     let all = preset::builtin();
     assert!(all.len() >= 40, "{} presets", all.len());
     for p in &all {
         let (target, at) = place(p);
+        let text = p.layer_kind.as_deref() == Some("text");
+        let (doc, original) = if text { (with_caption(&doc), &captioned) } else { (doc.clone(), &plain) };
         let (out, applied) = preset::apply(&doc, p, &target, &[at], &Map::new(), &tc).unwrap_or_else(|e| panic!("{}: {e}", p.name));
         assert!(!applied[0].changes.is_empty(), "{} changed nothing", p.name);
         let project: Project = serde_json::from_value(out.clone()).unwrap_or_else(|e| panic!("{}: the result does not parse: {e}", p.name));
@@ -92,7 +109,7 @@ fn every_preset_applies_to_the_demo_checks_and_renders() {
         for dt in offsets {
             let frame = (project.to_seconds(at + dt) * project.settings.fps).floor() as u64;
             r.set_motion_blur_samples(Some(1));
-            r.prepare(&original, &dir).unwrap();
+            r.prepare(original, &dir).unwrap();
             let before = r.render_frame(frame, 0.1).unwrap();
             r.prepare(&project, &dir).unwrap_or_else(|e| panic!("{}: {e:#}", p.name));
             let after = r.render_frame(frame, 0.1).unwrap_or_else(|e| panic!("{}: {e:#}", p.name));

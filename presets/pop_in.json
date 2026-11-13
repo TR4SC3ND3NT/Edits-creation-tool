@@ -1,0 +1,55 @@
+{
+  "format": "edits.preset/1",
+  "name": "pop_in",
+  "description": "The letters of a text layer pop in one after another: each grows from nothing, overshoots and settles.",
+  "tags": ["text", "reveal", "caption", "bounce"],
+  "layer_kind": "text",
+  "variables": {
+    "duration": {
+      "type": "number",
+      "default": 1,
+      "min": 0.05,
+      "max": 64,
+      "unit": "beats",
+      "doc": "From the first letter starting to the last one settling."
+    },
+    "spread": {
+      "type": "number",
+      "default": 40,
+      "min": 1,
+      "max": 100,
+      "unit": "% of the letters",
+      "doc": "How many letters are growing at once: small is one by one, 100 all together."
+    },
+    "overshoot": {
+      "type": "number",
+      "default": 1.7,
+      "min": 0,
+      "max": 6,
+      "doc": "How far a letter grows past its size before it settles (0: no bounce)."
+    },
+    "units": {
+      "type": "string",
+      "default": "characters",
+      "doc": "What pops at each step: characters, words or lines."
+    }
+  },
+  "apply": [
+    {
+      "animator": {
+        "name": "pop in",
+        "selector": {
+          "kind": "range",
+          "units": "$units",
+          "shape": "ramp_up",
+          "start": 0,
+          "end": "$spread",
+          "offset": { "keys": [ { "t": "=at", "v": "=-$spread" }, { "t": "=at + $duration * beat", "v": 100 } ] },
+          "ease": { "name": "back_out", "overshoot": "$overshoot" }
+        },
+        "scale": 0,
+        "opacity": 0
+      }
+    }
+  ]
+}

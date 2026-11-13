@@ -43,6 +43,11 @@ pub struct Preset {
     /// `project`: adds layers of its own and needs no target.
     #[serde(default)]
     pub target: TargetKind,
+    /// The kind of layer it changes, when it needs one (`text` for the
+    /// presets that animate letters). With the target `auto`, the topmost
+    /// such layer visible at the time is taken.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer_kind: Option<String>,
     #[serde(default)]
     pub variables: BTreeMap<String, Variable>,
     pub apply: Vec<Value>,
@@ -126,6 +131,10 @@ builtin!(
     "sparkles",
     "dust",
     "beat_burst",
+    "typewriter",
+    "pop_in",
+    "random_flicker",
+    "wave",
 );
 
 /// Parse and check one preset file's text.
@@ -154,7 +163,7 @@ pub fn parse(text: &str, origin: &str) -> Result<Preset, String> {
 
 fn action_kind(a: &Value) -> Result<&'static str, String> {
     let obj = a.as_object().ok_or("an action is an object such as { \"pulse\": { ... } }")?;
-    let known = ["pulse", "effect", "layer", "set", "shake", "retime"];
+    let known = ["pulse", "effect", "layer", "set", "shake", "retime", "animator"];
     let found: Vec<&'static str> = known.iter().copied().filter(|k| obj.contains_key(*k)).collect();
     match found.as_slice() {
         [one] if obj.len() == 1 => Ok(one),
@@ -236,6 +245,7 @@ pub fn transition_preset(t: &effects::TransitionSpec) -> Preset {
         description: format!("Transition into the layer at its cut: {}", t.doc),
         tags: vec!["transition".into(), "cut".into()],
         target: TargetKind::Layer,
+        layer_kind: None,
         variables,
         apply: vec![
             json!({ "set": { "on": "previous", "pointer": "/out", "value": "=max(prev_out, at + (1 - $pre) * $duration * beat)" } }),
@@ -605,6 +615,12 @@ fn is_picture(l: &Value) -> bool {
     !matches!(kind, "adjustment" | "text") && blend == "normal"
 }
 
+/// The topmost layer of `kind` visible at `t`.
+fn layer_of_kind_at(doc: &Value, kind: &str, t: f64) -> Option<String> {
+    let duration = doc.pointer("/settings/duration").and_then(Value::as_f64).unwrap_or(f64::MAX);
+    layers(doc).iter().rev().find(|l| l.get("kind").and_then(Value::as_str) == Some(kind) && active(l, t, duration)).and_then(|l| l.get("id")?.as_str().map(str::to_string))
+}
+
 /// The topmost picture visible at `t`.
 pub fn picture_at(doc: &Value, t: f64) -> Option<String> {
     let duration = doc.pointer("/settings/duration").and_then(Value::as_f64).unwrap_or(f64::MAX);
@@ -662,6 +678,10 @@ fn apply_once(doc: &Value, preset: &Preset, target: &Target, at: f64, vars: &Map
         (TargetKind::Project, Target::Layer(id)) => Some(id.clone()),
         (TargetKind::Project, _) => None,
         (_, Target::Layer(id)) => Some(id.clone()),
+        (_, Target::Auto) if preset.layer_kind.is_some() => {
+            let kind = preset.layer_kind.as_deref().unwrap_or_default();
+            Some(layer_of_kind_at(&doc, kind, at + 0.5 * tc.frame_len()).ok_or_else(|| format!("no {kind} layer is visible at {at}; give --layer"))?)
+        }
         // Half a frame later: a hit right on a cut belongs to the picture after it.
         (_, Target::Auto) => Some(picture_at(&doc, at + 0.5 * tc.frame_len()).ok_or_else(|| format!("no picture is visible at {at}; give --layer"))?),
         (_, Target::Fx) => {
@@ -679,6 +699,12 @@ fn apply_once(doc: &Value, preset: &Preset, target: &Target, at: f64, vars: &Map
     };
     if let Some(i) = target {
         target_id = layers(&doc)[i].get("id").and_then(Value::as_str).map(str::to_string);
+        if let Some(kind) = &preset.layer_kind {
+            let has = layers(&doc)[i].get("kind").and_then(Value::as_str).unwrap_or("?");
+            if has != kind {
+                return Err(format!("preset \"{}\" changes a {kind} layer, and \"{}\" is a {has} layer; give a {kind} layer with --layer", preset.name, target_id.as_deref().unwrap_or("?")));
+            }
+        }
     }
     let project: Project = serde_json::from_value(doc.clone()).map_err(|e| format!("the project does not parse ({e}); run `edits check` first"))?;
     let mut env = numeric_env(vars);
@@ -747,6 +773,23 @@ impl Run<'_> {
                 Ok(())
             }
             "layer" => self.add_layer(&spec),
+            "animator" => {
+                let i = self.target("an animator")?;
+                if self.layer(i).get("kind").and_then(Value::as_str) != Some("text") {
+                    return Err(format!("an animator animates the letters of a text layer, and \"{}\" is not one", self.layer_id(i)));
+                }
+                let animator = subst(&Value::Object(spec), &self.env, &self.vars)?;
+                serde_json::from_value::<crate::text_select::TextAnimator>(animator.clone()).map_err(|e| format!("the animator is not valid: {e}"))?;
+                let what = animator.get("name").and_then(Value::as_str).unwrap_or("animator").to_string();
+                let l = self.layer_mut(i);
+                if l.get("animators").is_none() {
+                    l["animators"] = json!([]);
+                }
+                l["animators"].as_array_mut().ok_or("\"animators\" is not an array")?.push(animator);
+                let id = self.layer_id(i);
+                self.changes.push(format!("added {what} to {id}"));
+                Ok(())
+            }
             "set" => self.set(&spec),
             "retime" => self.retime(&spec),
             _ => unreachable!(),
@@ -1124,6 +1167,7 @@ pub fn from_layer(doc: &Value, id: &str, from: f64, to: f64, name: &str, descrip
         description: description.into(),
         tags: vec!["saved".into()],
         target: TargetKind::Layer,
+        layer_kind: None,
         variables: BTreeMap::new(),
         apply,
         credit: None,
@@ -1185,6 +1229,36 @@ mod tests {
         assert_eq!(names.len(), all.len());
         for (file, _) in BUILTIN {
             assert!(all.iter().any(|p| p.name == *file), "presets/{file}.json is named after its file");
+        }
+    }
+
+    #[test]
+    fn text_presets_find_the_caption_and_type_it_out() {
+        let mut d = doc();
+        d["layers"].as_array_mut().unwrap().push(json!({ "id": "cap", "kind": "text", "text": "HELLO", "in": 2, "out": 6 }));
+        let tc = ctx(&d);
+        let p = find("typewriter", None).unwrap();
+        // `auto` takes the text layer on screen, not the picture.
+        let (out, applied) = apply(&d, &p, &Target::Auto, &[2.0], &Map::new(), &tc).unwrap();
+        assert_eq!(applied[0].layer.as_deref(), Some("cap"));
+        let project: Project = serde_json::from_value(out).unwrap();
+        let LayerKind::Text(text) = &project.layers[3].kind else { panic!("not text") };
+        assert_eq!(text.animators.len(), 1);
+        // Two beats of typing: nothing at 2, about half at 3, everything at 4.
+        let e = Evaluator::new(&project);
+        let refs: Vec<_> = (0..5).map(|i| crate::text_select::GlyphRef { char_index: i, line: 0 }).collect();
+        let shown = |t: f64| e.text_glyphs(text, &refs, t).iter().filter(|g| g.opacity > 0.5).count();
+        assert_eq!((shown(2.0), shown(3.0), shown(4.0), shown(6.0)), (0, 2, 5, 5));
+        // A picture is not a text layer; no text on screen is an error that says so.
+        let err = apply(&d, &p, &Target::Layer("b".into()), &[5.0], &Map::new(), &tc).unwrap_err();
+        assert!(err.contains("text layer"), "{err}");
+        let err = apply(&d, &p, &Target::Auto, &[7.0], &Map::new(), &tc).unwrap_err();
+        assert!(err.contains("no text layer"), "{err}");
+        // Every text preset adds animators that check cleanly.
+        for name in ["pop_in", "random_flicker", "wave"] {
+            let (out, _) = apply(&d, &find(name, None).unwrap(), &Target::Auto, &[2.0], &Map::new(), &tc).unwrap();
+            let project: Project = serde_json::from_value(out).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(!crate::check::has_errors(&crate::check::check(&project, None)), "{name}");
         }
     }
 

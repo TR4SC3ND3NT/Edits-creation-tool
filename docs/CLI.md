@@ -450,7 +450,9 @@ Built in: `flash`, `flash_burn`, `punch`, `zoom_out`, `push_in`, `shake`,
 `rgb_split`, `blur_in`, `blur_out`, `bw_hit`, `invert_hit`, `threshold_hit`,
 `slide_in`, `slide_out`, `flip_3d`, `cube_turn`, `spin`, `velocity`,
 `glow_pulse`, `vignette_pulse`, `overlay_texture`, `letterbox`, and the
-particle layers `sakura`, `sparkles`, `dust`, `beat_burst`. The file
+particle layers `sakura`, `sparkles`, `dust`, `beat_burst`, and the text
+animations `typewriter`, `pop_in`, `random_flicker`, `wave` (target: a text
+layer; `auto` takes the text layer on screen at `--at`). The file
 format is in [FORMAT.md](FORMAT.md#presets-editspreset1).
 
 ## apply

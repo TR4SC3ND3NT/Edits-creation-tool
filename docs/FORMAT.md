@@ -49,7 +49,7 @@ and optionally `transition` (how it comes in; see [Transitions](#transitions)) a
 | `cube` | `faces` (slot ids: front, right, back, left, top, bottom), `size` `[w, h, d]` | A real 3D box with a picture on each face |
 | `adjustment` | none | Its effects apply to everything beneath it |
 | `video` | `slot`, optional `speed`, `time_remap`, `loop`, `reverse`, `frame_blend`, `volume` | A clip from a slot, decoded by ffmpeg; see [Video layers](#video-layers-and-layer-time) |
-| `text` | `text`, optional `font`, `size`, `weight`, `align`, `line_height`, `tracking`, `fill`, `stroke`, `max_width` | Lines of text in a font file (Inter when none is named); see [Text layers](#text-layers) |
+| `text` | `text`, optional `font`, `size`, `weight`, `align`, `line_height`, `tracking`, `fill`, `stroke`, `max_width`, `animators` | Lines of text in a font file (Inter when none is named), optionally animated letter by letter; see [Text layers](#text-layers) and [Text animators](#text-animators) |
 | `particles` | `emitter`, `rate`, `bursts`, `life`, `speed`, `direction`, `spread`, `gravity`, `sprite`, ... | Petals, sparkles, dust, a burst on a beat; see [Particle layers](#particle-layers) |
 
 `transform` has `position` `[x, y, z]`, `scale` (number, `[x, y]` or `[x, y, z]`),
@@ -269,6 +269,13 @@ them.
 | `layer` | Insert a layer (`"place": "top"`, `"above"` or `"below"` the target). Its `id` may contain `{target}`; it gets a suffix when taken. |
 | `set` | Set a value inside the target (`"pointer": "/transition"`), or inside the picture it cuts from (`"on": "previous"`). |
 | `retime` | Replay the target's keyed motion between `at` and `at + length` through a speed `curve` (an ease); `otherwise` lists actions for a layer that does not move. |
+| `animator` | Append a [text animator](#text-animators) to the target, which must be a `text` layer. |
+
+A preset with `"layer_kind": "text"` changes a text layer: with the target
+`auto` it takes the topmost text layer visible at the time, and any other
+kind of layer is an error. The built-in `typewriter`, `pop_in`,
+`random_flicker` and `wave` are such presets: `edits apply p.json typewriter
+--at 8 --var duration=2` types out the caption on screen at beat 8.
 
 ## Rendering model
 
@@ -424,4 +431,69 @@ directions is not reordered. There is no fallback to other fonts: a
 character the font lacks shows the font's missing-glyph box. Text renders
 sharp at any output size (`--scale`): glyphs are rasterised at their size
 in output pixels.
+
+### Text animators
+
+`animators` animate a text layer letter by letter: a typewriter, letters
+popping in on a beat, a flicker, a wave. Each animator has a `selector`,
+which gives every character (or word, or line) a selection between 0 and 1,
+and properties, which the selection scales: a glyph selected at 1 gets the
+animator's values in full, at 0 it is untouched, at 0.5 it is half way.
+
+```json
+{ "id": "title", "kind": "text", "text": "SAY MY NAME", "size": 14,
+  "animators": [
+    { "name": "typewriter",
+      "selector": { "kind": "range", "smoothness": 0,
+                    "start": { "keys": [ { "t": 8, "v": 0 }, { "t": 10, "v": 100 } ] } },
+      "opacity": 0 },
+    { "selector": { "kind": "wiggly", "amount": 60, "frequency": 3 },
+      "position": [0, 0.01, 0] } ] }
+```
+
+Here the characters from `start` to 100 % are selected and so invisible;
+`start` runs from 0 to 100 % between beats 8 and 10, so the text is typed
+out. Every value of a selector or a property is animatable (a constant or
+keys, like any value).
+
+| Property | Meaning at full selection |
+| --- | --- |
+| `position` | Offset `[x, y, z]` in composition units, added. |
+| `scale` | Scale of the glyph (a number, `[x, y]` or `[x, y, z]`); 0 hides it. Several animators multiply. |
+| `rotation` | `[x, y, z]` degrees about the middle of the glyph (half a cap height above the baseline), X then Y then Z like layers: `[0, 90, 0]` turns each letter edge-on, in 3D. Added. |
+| `opacity` | Opacity of the glyph, 0..1 (0 hides it). Several animators multiply. |
+| `fill` | Colour of the letters, `[r, g, b]` or `[r, g, b, a]` straight sRGB; the glyph's colour mixes toward it. The stroke keeps its colour. |
+| `tracking` | Extra space after the glyph, percent of the composition height; the lines stay aligned (a centred line grows both ways). |
+| `blur` | Gaussian blur of the glyph (sigma), percent of the composition height, in the text's own space. |
+
+An animator also takes `name` (shown by `describe`) and `enabled` (default
+true). Animators apply in order; offsets, turns, tracking and blur add,
+scale and opacity multiply.
+
+**`range` selector** (the default when `selector` is left out). After the
+After Effects range selector.
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `start`, `end` | 0, 100 | The range, in percent of the units. Reversed values are swapped. |
+| `offset` | 0 | Percent added to `start` and `end`: animate it to slide a range of fixed width through the text. |
+| `units` | `characters` | `characters` (every character but line breaks; spaces count), `words` (a space belongs to the word before it) or `lines` (as laid out, after wrapping). |
+| `shape` | `square` | `square` (1 inside, 0 outside), `ramp_up` (0 before the range, rising across it, 1 after), `ramp_down` (the reverse), `triangle`, `round`, `smooth` (0 at both ends, 1 in the middle). Each unit is measured at its middle. |
+| `smoothness` | 100 | `square` only: the width of its soft edge in percent of a unit. 100 selects a unit half inside the range at 0.5; 0 switches each unit at once (a typewriter). |
+| `ease_high`, `ease_low` | 0 | -100..100: positive eases into full selection (high) or out of none (low), negative makes the change abrupt. |
+| `amount` | 100 | -100..100 percent: scales the selection (negative inverts the properties). |
+| `ease` | linear | Any ease name: the curve each unit follows as it goes from selected (1) to not selected (0). `back_out` makes letters overshoot as they settle (`pop_in`). |
+| `randomize`, `seed` | false, 0 | Shuffle the order of the units, the same way for the same seed. |
+
+**`wiggly` selector**: smooth seeded noise per unit, between `-amount` and
+`amount` percent. Negative selections push the properties the other way
+(a `position` of `[0, 0.02, 0]` moves letters up and down). Its fields:
+`units`, `amount` (100), `frequency` (wiggles per second, 2), `correlation`
+(percent, 50: 100 moves every unit together, 0 each on its own) and `seed`
+(0). One value per glyph: all dimensions of a property move together.
+
+`check` reports animator values out of range (`smoothness` 0..100,
+`ease_high`, `ease_low` and `amount` -100..100, `correlation` 0..100), a
+`fill` that is not a colour, a negative `blur`, an unknown `ease`, and warns
+about an animator that sets no property.
 

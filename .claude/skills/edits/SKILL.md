@@ -290,6 +290,22 @@ check` reports it when missing. Animate it like any layer (scale punch,
 position, opacity, effects); look at the frame with `edits frame` to check
 it fits. See `docs/FORMAT.md` (Text layers).
 
+**Animated letters.** Four presets animate a text layer letter by letter;
+with `--layer auto` (the default) they take the text layer on screen at
+`--at`: `typewriter` (`--var duration=2` beats to type it out, `units=words`
+types word by word), `pop_in` (each letter grows from nothing with a bounce,
+staggered; `spread`, `overshoot`), `random_flicker` (letters flicker on in a
+random order; `seed`) and `wave` (a lift runs through the letters, looping;
+`height`, `period`). They add entries to the layer's `animators`, which you
+can also write: `{ "selector": { "kind": "range", "start": 0, "end": 50 },
+"opacity": 0 }` hides the first half of the characters; a selector's
+`start`, `end` and `offset` (percent) are keyable, `units` is `characters`,
+`words` or `lines`, `shape` is `square`, `ramp_up`, `ramp_down`, `triangle`,
+`round` or `smooth`, `randomize` shuffles the order; `{ "kind": "wiggly",
+"amount": 60, "frequency": 3 }` jitters each letter. Properties (scaled by the
+selection): `position` (offset), `scale`, `rotation` (per letter, in 3D),
+`opacity`, `fill`, `tracking`, `blur`. See `docs/FORMAT.md` (Text animators).
+
 ## Workflow 2: the recipe of a reference edit, with different pictures
 
 The goal is not to copy pixels. It is to recover **what the editor did**

@@ -243,6 +243,7 @@ fn preset_json(p: &Preset) -> Value {
         "description": p.description,
         "tags": p.tags,
         "target": p.target,
+        "layer_kind": p.layer_kind,
         "variables": p.variables,
         "credit": p.credit,
     })
@@ -256,7 +257,12 @@ pub fn presets(a: PresetsArgs) -> Result<ExitCode> {
             crate::print_json(&json!({ "preset": preset_json(&p), "apply": p.apply }));
         } else {
             println!("{}: {}", p.name, p.description);
-            println!("  tags: {}; target: {}", p.tags.join(", "), if p.target == preset::TargetKind::Project { "none (adds its own layers)" } else { "a layer (--layer id, auto or fx)" });
+            let target = match (&p.target, p.layer_kind.as_deref()) {
+                (preset::TargetKind::Project, _) => "none (adds its own layers)".to_string(),
+                (_, Some(kind)) => format!("a {kind} layer (--layer id, or auto: the {kind} layer on screen)"),
+                _ => "a layer (--layer id, auto or fx)".to_string(),
+            };
+            println!("  tags: {}; target: {target}", p.tags.join(", "));
             for (n, v) in &p.variables {
                 println!("  {}", preset::variable_line(n, v));
             }
