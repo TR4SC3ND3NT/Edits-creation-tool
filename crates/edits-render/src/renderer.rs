@@ -11,6 +11,7 @@ use crate::geometry::{self, FitUv};
 use crate::gpu::{AdapterInfo, AdapterPolicy, Gpu};
 use anyhow::{anyhow, bail, Context, Result};
 use bytemuck::{Pod, Zeroable};
+use crate::stack::stack_signature;
 use edits_core::{Blend, Evaluator, Layer, LayerKind, Project, Slot};
 use image::RgbaImage;
 use std::collections::HashMap;
@@ -117,7 +118,7 @@ pub(crate) struct Quad {
     fit: FitUv,
     color: [f32; 4],
     /// The quad covers every pixel of the frame.
-    covers: bool,
+    pub covers: bool,
     /// Widening (fractions of the quad's size) that lets its edges be faded
     /// by pixel coverage; zero for cube faces and for quads that cover the frame.
     margin: [f32; 2],
@@ -210,6 +211,9 @@ pub struct Renderer {
     readback: Option<Readback>,
     samples_override: Option<u32>,
     pub(crate) ctx: Ctx,
+    /// The output frame being rendered: grain and a custom shader's
+    /// `fx.frame` read it at every instant of the frame.
+    pub(crate) frame: u64,
     stats: FrameStats,
     /// Name of the pass being recorded, for profiling.
     label: String,
@@ -370,6 +374,7 @@ impl Renderer {
             readback: None,
             samples_override: None,
             ctx: Ctx::default(),
+            frame: 0,
             stats: FrameStats::default(),
             label: String::new(),
             profile: None,
@@ -543,7 +548,7 @@ impl Renderer {
     }
 
     /// One transition pass: `from` and `to` into `target`.
-    fn transition_pass(&mut self, target: &Tex, from: &Tex, to: &Tex, tr: &edits_core::ResolvedTransition) -> Result<()> {
+    pub(crate) fn transition_pass(&mut self, target: &Tex, from: &Tex, to: &Tex, tr: &edits_core::ResolvedTransition) -> Result<()> {
         let pipeline = self.transition_pipeline(tr.kind)?;
         let def = crate::transitions::def(tr.kind).expect("checked by transition_pipeline");
         let mut uni = Uni::zeroed();
@@ -827,7 +832,7 @@ impl Renderer {
 
     /// Draw a layer's quads into a fresh transparent texture. Flat layers
     /// fade their own edges; a cube (`depth`) is multisampled instead.
-    fn draw_quads(&mut self, quads: &[Quad], depth: bool) -> Tex {
+    pub(crate) fn draw_quads(&mut self, quads: &[Quad], depth: bool) -> Tex {
         let (w, h) = (self.ctx.w, self.ctx.h);
         let target = self.acquire(w, h);
         self.reserve_uniforms(quads.len() as u64);
@@ -877,7 +882,7 @@ impl Renderer {
     }
 
     /// The image so far as a texture: the background when nothing has been drawn yet.
-    fn materialise(&mut self, acc: &mut Option<Tex>, background: wgpu::Color) -> Tex {
+    pub(crate) fn materialise(&mut self, acc: &mut Option<Tex>, background: wgpu::Color) -> Tex {
         if let Some(t) = acc {
             return t.clone();
         }
@@ -889,7 +894,7 @@ impl Renderer {
     }
 
     /// Blend `source` (after the colour operations `ops`) over the image so far.
-    fn blend_over(&mut self, acc: &mut Option<Tex>, flat: [f32; 4], source: Source, ops: &[ColorOp], mode: Blend, opacity: f32) {
+    pub(crate) fn blend_over(&mut self, acc: &mut Option<Tex>, flat: [f32; 4], source: Source, ops: &[ColorOp], mode: Blend, opacity: f32) {
         let out = self.acquire(self.ctx.w, self.ctx.h);
         self.compose(&out, source, ops, Sink::Over { dst: acc.as_ref(), flat, mode, opacity });
         if let Some(old) = acc.replace(out) {
@@ -915,11 +920,9 @@ impl Renderer {
         self.render(time, frame, scale)
     }
 
-    fn render(&mut self, time: f64, frame: u64, scale: f32) -> Result<RgbaImage> {
-        let scene = self.scene.clone().ok_or_else(|| anyhow!("no project prepared: call prepare() first"))?;
-        let project = &scene.project;
-        let s = &project.settings;
-        let (w, h) = scaled_size(project, scale);
+    /// Check an output size and start a frame of that size: a different size
+    /// than the last frame's empties the texture pool.
+    fn begin_frame(&mut self, w: u32, h: u32, scale: f32, samples: u32) -> Result<()> {
         let max = self.gpu.device.limits().max_texture_dimension_2d;
         if w > max || h > max || w as u64 * h as u64 > MAX_PIXELS {
             bail!("a {w}x{h} frame is too large to render (scale {scale}); the limit is {max} pixels per side and {} megapixels", MAX_PIXELS / 1_000_000);
@@ -930,13 +933,19 @@ impl Renderer {
             self.binds.clear();
             self.pool_size = (w, h);
         }
-        let samples = self.samples_override.unwrap_or(s.motion_blur.samples).clamp(1, 64);
         self.stats = FrameStats { passes: 0, samples, rendered_samples: samples, width: w, height: h };
+        Ok(())
+    }
+
+    fn render(&mut self, time: f64, frame: u64, scale: f32) -> Result<RgbaImage> {
+        let scene = self.scene.clone().ok_or_else(|| anyhow!("no project prepared: call prepare() first"))?;
+        let project = &scene.project;
+        let s = &project.settings;
+        let (w, h) = scaled_size(project, scale);
+        let samples = self.samples_override.unwrap_or(s.motion_blur.samples).clamp(1, 64);
+        self.begin_frame(w, h, scale, samples)?;
+        self.frame = frame;
         let ev = Evaluator::new(project);
-        let aspect = s.width as f64 / s.height as f64;
-        let bg = s.background.map(|c| assets::srgb_to_linear(c.clamp(0.0, 1.0)) as f64);
-        let background = wgpu::Color { r: bg[0], g: bg[1], b: bg[2], a: 1.0 };
-        let flat = [bg[0] as f32, bg[1] as f32, bg[2] as f32, 1.0];
         let shutter = s.motion_blur.shutter.clamp(0.0, 1.0) * project.frame_len();
 
         // Sub-frame instants at which the project evaluates to exactly the
@@ -944,7 +953,7 @@ impl Renderer {
         let mut instants: Vec<(f64, Vec<u64>, u32)> = Vec::new();
         for i in 0..samples {
             let t = time + shutter * i as f64 / samples as f64;
-            let state = signature(&ev, t);
+            let state = stack_signature(&ev, &project.layers, t);
             match instants.iter_mut().find(|(_, s, _)| *s == state) {
                 Some(same) => same.2 += 1,
                 None => instants.push((t, state, 1)),
@@ -956,91 +965,7 @@ impl Renderer {
         let mut waiting: Option<(Tex, f32)> = None;
         let single = instants.len() == 1;
         for (t, _, count) in instants {
-            let seconds = project.to_seconds(t);
-            let beats = s.bpm.filter(|b| *b > 0.0).map(|bpm| (seconds - s.beat_offset) * bpm / 60.0).unwrap_or(0.0);
-            self.ctx = Ctx { w, h, time: [seconds as f32, beats as f32, frame as f32, aspect as f32] };
-
-            // `None` until something is drawn: the first layer blends over the
-            // flat background colour instead of over a cleared texture.
-            let mut acc: Option<Tex> = None;
-            let vp = geometry::view_projection(&ev.camera(t), aspect);
-            for layer in &project.layers {
-                if !ev.active(layer, t) {
-                    continue;
-                }
-                let rl = ev.layer(layer, t);
-                let opacity = rl.opacity as f32;
-                if opacity <= 0.0 {
-                    continue;
-                }
-                let effects: Vec<_> = layer.effects.iter().filter(|e| e.enabled).map(|e| ev.effect(e, t)).collect();
-                let steps = self.plan_effects(&layer.id, &effects, w as f32, h as f32)?;
-                if let Some(tr) = ev.transition(layer, t) {
-                    // "from" is the frame so far; "to" is the frame with this
-                    // layer on it, so the end of the transition is the plain cut.
-                    let from = self.materialise(&mut acc, background);
-                    let to = self.acquire(w, h);
-                    if matches!(layer.kind, LayerKind::Adjustment) {
-                        match self.run_effects(&from, &steps) {
-                            Some(out) => {
-                                self.compose(&to, Source::Tex(&out), &[], Sink::Over { dst: Some(&from), flat, mode: layer.blend, opacity });
-                                self.release(out);
-                            }
-                            None => self.compose(&to, Source::Tex(&from), &[], Sink::Plain),
-                        }
-                    } else {
-                        let (quads, depth) = self.layer_quads(&scene, layer, vp * geometry::model(&rl), aspect);
-                        let (head, tail) = crate::fx::split_tail(&steps);
-                        let mut content = self.draw_quads(&quads, depth);
-                        if let Some(out) = self.run_effects(&content, head) {
-                            self.release(std::mem::replace(&mut content, out));
-                        }
-                        self.compose(&to, Source::Tex(&content), &tail, Sink::Over { dst: Some(&from), flat, mode: layer.blend, opacity });
-                        self.release(content);
-                    }
-                    let out = self.acquire(w, h);
-                    self.transition_pass(&out, &from, &to, &tr).with_context(|| format!("layer \"{}\"", layer.id))?;
-                    self.release(to);
-                    if let Some(old) = acc.replace(out) {
-                        self.release(old);
-                    }
-                    continue;
-                }
-                if matches!(layer.kind, LayerKind::Adjustment) {
-                    if steps.is_empty() {
-                        continue;
-                    }
-                    let base = self.materialise(&mut acc, background);
-                    let Some(out) = self.run_effects(&base, &steps) else { continue };
-                    if opacity >= 1.0 && layer.blend == Blend::Normal {
-                        self.release(base);
-                        acc = Some(out);
-                    } else {
-                        self.blend_over(&mut acc, flat, Source::Tex(&out), &[], layer.blend, opacity);
-                        self.release(out);
-                    }
-                    continue;
-                }
-                let (quads, depth) = self.layer_quads(&scene, layer, vp * geometry::model(&rl), aspect);
-                // Colour effects at the end of the chain ride along with the blend.
-                let (head, tail) = crate::fx::split_tail(&steps);
-                // A flat layer that hides the whole frame has no visible edges; if
-                // nothing has to look at neighbouring pixels it is drawn, graded
-                // and blended in a single pass.
-                let covers = !depth && quads.len() == 1 && quads[0].covers;
-                if covers && head.is_empty() {
-                    self.blend_over(&mut acc, flat, Source::Quad(&quads[0]), &tail, layer.blend, opacity);
-                    continue;
-                }
-                let mut content = self.draw_quads(&quads, depth);
-                if let Some(out) = self.run_effects(&content, head) {
-                    self.release(std::mem::replace(&mut content, out));
-                }
-                self.blend_over(&mut acc, flat, Source::Tex(&content), &tail, layer.blend, opacity);
-                self.release(content);
-            }
-            let acc = self.materialise(&mut acc, background);
-
+            let acc = self.render_stack(&project.layers, t, w, h)?;
             if single {
                 sum = Some(acc);
                 break;
@@ -1068,8 +993,45 @@ impl Renderer {
         image
     }
 
+    /// Composite some layers of the prepared project at project time `time`
+    /// (one instant: no motion blur) over the background, at `scale` times
+    /// the project resolution. `render_layers(&project.layers, t, s)` is the
+    /// frame at `t` without motion blur; a subset shows what those layers
+    /// alone look like. The layers need not be the project's own, but the
+    /// slots and custom shaders they use must have been prepared.
+    pub fn render_layers(&mut self, layers: &[Layer], time: f64, scale: f32) -> Result<RgbaImage> {
+        let scene = self.scene.clone().ok_or_else(|| anyhow!("no project prepared: call prepare() first"))?;
+        let p = &scene.project;
+        let (w, h) = scaled_size(p, scale);
+        self.begin_frame(w, h, scale, 1)?;
+        self.frame = (p.to_seconds(time) * p.settings.fps + 1e-6).floor().max(0.0) as u64;
+        let out = self.render_stack(layers, time, w, h)?;
+        let image = self.read_back(&out);
+        self.release(out);
+        image
+    }
+
+    /// One layer's own picture at project time `time` (see
+    /// `Renderer::layer_content`): drawn through the camera with all of its
+    /// effects, without its opacity, blend mode or transition, over
+    /// transparent black. Straight sRGB RGBA8 like a frame, but with alpha
+    /// kept. `None` for an adjustment layer or when the layer is not visible
+    /// at `time`.
+    pub fn render_layer(&mut self, layer: &Layer, time: f64, scale: f32) -> Result<Option<RgbaImage>> {
+        let scene = self.scene.clone().ok_or_else(|| anyhow!("no project prepared: call prepare() first"))?;
+        let p = &scene.project;
+        let (w, h) = scaled_size(p, scale);
+        self.begin_frame(w, h, scale, 1)?;
+        self.frame = (p.to_seconds(time) * p.settings.fps + 1e-6).floor().max(0.0) as u64;
+        self.set_time(p, time, w, h);
+        let Some(content) = self.layer_content(layer, time)? else { return Ok(None) };
+        let image = self.read_back_alpha(&content, true);
+        self.release(content);
+        image.map(Some)
+    }
+
     /// The quads of an image, solid or cube layer, and whether they need a depth buffer.
-    fn layer_quads(&self, scene: &Scene, layer: &Layer, mvp: glam::DMat4, aspect: f64) -> (Vec<Quad>, bool) {
+    pub(crate) fn layer_quads(&self, scene: &Scene, layer: &Layer, mvp: glam::DMat4, aspect: f64) -> (Vec<Quad>, bool) {
         let white = [1.0, 1.0, 1.0, 1.0];
         let (w, h) = (self.ctx.w, self.ctx.h);
         let flat = !matches!(layer.kind, LayerKind::Cube { .. });
@@ -1116,6 +1078,12 @@ impl Renderer {
     /// Copy a finished frame out and encode it: linear RGBA16Float in,
     /// straight sRGB RGBA8 out. The background is opaque, so alpha is 255.
     fn read_back(&mut self, src: &Tex) -> Result<RgbaImage> {
+        self.read_back_alpha(src, false)
+    }
+
+    /// [`Self::read_back`], keeping alpha when `alpha` is true (colour is then
+    /// un-premultiplied before it is encoded).
+    fn read_back_alpha(&mut self, src: &Tex, alpha: bool) -> Result<RgbaImage> {
         let (w, h) = (src.w, src.h);
         if self.readback.as_ref().is_none_or(|r| (r.w, r.h) != (w, h)) {
             let row_bytes = (8 * w).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -1149,14 +1117,45 @@ impl Renderer {
             let data = buffer.get_mapped_range(..).map_err(|e| anyhow!("frame readback failed: {e}"))?;
             for (row, out) in data.chunks(row_bytes as usize).zip(pixels.chunks_exact_mut((4 * w) as usize)) {
                 for (texel, px) in row.chunks_exact(8).zip(out.chunks_exact_mut(4)) {
-                    for c in 0..3 {
-                        px[c] = lut[u16::from_le_bytes([texel[2 * c], texel[2 * c + 1]]) as usize];
+                    let half = |c: usize| u16::from_le_bytes([texel[2 * c], texel[2 * c + 1]]);
+                    if alpha {
+                        let a = half_to_f32(half(3)).clamp(0.0, 1.0);
+                        px[3] = (a * 255.0).round() as u8;
+                        for c in 0..3 {
+                            let v = if a > 0.0 { half_to_f32(half(c)) / a } else { 0.0 };
+                            px[c] = if v.is_nan() || v <= 0.0 { 0 } else { (assets::linear_to_srgb(v.min(1.0)) * 255.0).round() as u8 };
+                        }
+                    } else {
+                        for c in 0..3 {
+                            px[c] = lut[half(c) as usize];
+                        }
                     }
                 }
             }
         }
         buffer.unmap();
         RgbaImage::from_raw(w, h, pixels).ok_or_else(|| anyhow!("frame readback returned the wrong size"))
+    }
+}
+
+/// The value of a half-float bit pattern.
+fn half_to_f32(bits: u16) -> f32 {
+    let (exponent, mantissa) = ((bits >> 10) & 0x1F, (bits & 0x3FF) as f32);
+    let value = match exponent {
+        0 => mantissa * 2f32.powi(-24),
+        31 => {
+            if mantissa == 0.0 {
+                f32::INFINITY
+            } else {
+                f32::NAN
+            }
+        }
+        e => (1.0 + mantissa / 1024.0) * 2f32.powi(e as i32 - 15),
+    };
+    if bits & 0x8000 != 0 {
+        -value
+    } else {
+        value
     }
 }
 
@@ -1167,19 +1166,8 @@ fn srgb_lut() -> &'static [u8] {
     LUT.get_or_init(|| {
         (0..=u16::MAX)
             .map(|bits| {
-                let (exponent, mantissa) = ((bits >> 10) & 0x1F, (bits & 0x3FF) as f32);
-                let value = match exponent {
-                    0 => mantissa * 2f32.powi(-24),
-                    31 => {
-                        if mantissa == 0.0 {
-                            f32::INFINITY
-                        } else {
-                            f32::NAN
-                        }
-                    }
-                    e => (1.0 + mantissa / 1024.0) * 2f32.powi(e as i32 - 15),
-                };
-                if bits & 0x8000 != 0 || value.is_nan() {
+                let value = half_to_f32(bits);
+                if value.is_nan() || value <= 0.0 {
                     0
                 } else {
                     (assets::linear_to_srgb(value.min(1.0)) * 255.0).round() as u8
@@ -1187,39 +1175,6 @@ fn srgb_lut() -> &'static [u8] {
             })
             .collect()
     })
-}
-
-/// Everything the picture at project time `t` depends on, as raw bits: two
-/// instants with equal signatures render identically.
-fn signature(ev: &Evaluator, t: f64) -> Vec<u64> {
-    let mut out = Vec::with_capacity(64);
-    let cam = ev.camera(t);
-    out.push(cam.fov.to_bits());
-    out.extend(cam.position.iter().chain(&cam.rotation).map(|v| v.to_bits()));
-    for (i, layer) in ev.project.layers.iter().enumerate() {
-        if !ev.active(layer, t) {
-            continue;
-        }
-        let l = ev.layer(layer, t);
-        out.push(u64::MAX - i as u64);
-        out.extend(l.position.iter().chain(&l.scale).chain(&l.rotation).chain(&l.anchor).map(|v| v.to_bits()));
-        out.push(l.opacity.to_bits());
-        if let Some(tr) = ev.transition(layer, t) {
-            out.push(tr.progress.to_bits());
-            out.extend(tr.params.values().flatten().map(|v| v.to_bits()));
-        }
-        for e in layer.effects.iter().filter(|e| e.enabled) {
-            if e.kind == "custom" {
-                // Custom shaders can read the time itself.
-                out.push(t.to_bits());
-            }
-            for values in ev.effect(e, t).params.values() {
-                out.push(values.len() as u64);
-                out.extend(values.iter().map(|v| v.to_bits()));
-            }
-        }
-    }
-    out
 }
 
 /// Project size at `scale`, each side rounded to an even number of pixels.

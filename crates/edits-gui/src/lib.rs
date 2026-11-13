@@ -26,9 +26,13 @@ pub mod cache;
 pub mod clock;
 pub mod editing;
 pub mod export;
+pub mod presets;
 pub mod reload;
 pub mod rows;
+pub mod song;
 pub mod timemap;
+pub mod transitions;
+pub mod uictx;
 pub mod worker;
 
 pub mod palette;

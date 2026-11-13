@@ -506,3 +506,46 @@ fn rendering_needs_a_prepared_project_and_reports_missing_pictures() {
     assert!(err.contains("slot \"a\"") && err.contains("nope.png"), "{err}");
     assert!(!fresh.info().name.is_empty() && !fresh.info().backend.is_empty());
 }
+
+#[test]
+fn render_stack_matches_frame() {
+    gpu!(r);
+    // The example project: pictures, cubes, adjustment layers, transitions.
+    let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/beat-loop.json")).unwrap();
+    let p = edits_core::Project::from_json(&text).unwrap();
+    r.prepare(&p, &dir()).unwrap();
+    r.set_motion_blur_samples(Some(1));
+    for frame in [0, 12, 30, 37, 52, 80] {
+        let whole = r.render_frame(frame, 0.25).unwrap();
+        let stack = r.render_layers(&p.layers, p.frame_time(frame), 0.25).unwrap();
+        assert!(whole == stack, "frame {frame}: the stack of all layers differs from the frame");
+    }
+    r.set_motion_blur_samples(None);
+
+    // A subset of the layers is the frame of a project holding only those.
+    let q = quadrants("quad.png", 64, 64);
+    let layers = format!(
+        r#""slots":{{"a":{{"path":"{q}"}}}},"layers":[
+            {{"id":"bg","kind":"solid","color":[0.2,0.3,0.4,1]}},
+            {{"id":"a","kind":"image","slot":"a","transform":{{"scale":0.6,"rotation":[0,0,10]}},"effects":[{{"kind":"gaussian_blur","params":{{"radius":3}}}},{{"kind":"exposure","params":{{"stops":1}}}}]}},
+            {{"id":"c","kind":"cube","faces":["a"],"size":[0.4,0.4,0.4],"transform":{{"rotation":[20,30,0]}},"in":1}},
+            {{"id":"fx","kind":"adjustment","effects":[{{"kind":"vignette","params":{{"amount":0.8}}}}],"blend":"multiply","transform":{{"opacity":0.7}}}}]"#
+    );
+    let full = project("", &layers);
+    r.prepare(&full, &dir()).unwrap();
+    let ids = ["bg", "a", "fx"];
+    let subset: Vec<edits_core::Layer> = full.layers.iter().filter(|l| ids.contains(&l.id.as_str())).cloned().collect();
+    let alone = r.render_layers(&subset, 2.0, 1.0).unwrap();
+    let mut only = full.clone();
+    only.layers = subset;
+    assert!(alone == render(r, &only, 20), "a subset of layers differs from a project of only those layers");
+
+    // One layer's own picture: through the camera, effects applied, opacity not.
+    let solid = project("", r#""layers":[{"id":"s","kind":"solid","color":[1,0,0,1],"transform":{"scale":0.5,"opacity":0.5},"in":1,"effects":[{"kind":"exposure","params":{"stops":-1}}]},{"id":"fx","kind":"adjustment"}]"#);
+    r.prepare(&solid, &dir()).unwrap();
+    let img = r.render_layer(&solid.layers[0], 2.0, 1.0).unwrap().expect("visible at 2");
+    assert_eq!(img.get_pixel(32, 32).0, [byte(0.5), 0, 0, 255]);
+    assert_eq!(img.get_pixel(2, 2).0[3], 0, "outside the layer is transparent");
+    assert!(r.render_layer(&solid.layers[0], 0.5, 1.0).unwrap().is_none(), "not visible before its in");
+    assert!(r.render_layer(&solid.layers[1], 2.0, 1.0).unwrap().is_none(), "an adjustment layer has no picture");
+}
