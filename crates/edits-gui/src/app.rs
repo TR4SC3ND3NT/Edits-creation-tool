@@ -296,6 +296,8 @@ pub(crate) struct App {
     /// The person's note for the agent, and the text being typed into the note dialog.
     pub note: Option<Note>,
     pub note_dialog: Option<String>,
+    /// The frame a dialog was opened in: the click that opened it must not also close it.
+    pub modal_opened: u64,
     /// The part of the timeline in view (project time), as drawn last.
     pub visible: Option<(f64, f64)>,
     /// The preset library, read when the drawer first opens.
@@ -322,11 +324,13 @@ pub(crate) struct PresetUi {
     pub preview: bool,
     /// Why the preview (and so the apply) would fail.
     pub error: Option<String>,
+    /// The card was just opened: scroll it into view.
+    pub scroll: bool,
 }
 
 impl Default for PresetUi {
     fn default() -> Self {
-        PresetUi { query: String::new(), open: None, values: Default::default(), target: TargetChoice::Selected, at: AtChoice::Playhead, preview: true, error: None }
+        PresetUi { query: String::new(), open: None, values: Default::default(), target: TargetChoice::Selected, at: AtChoice::Playhead, preview: true, error: None, scroll: false }
     }
 }
 
@@ -422,6 +426,7 @@ impl App {
             ui_file: UiFile::new(&path_for_ui),
             note: None,
             note_dialog: None,
+            modal_opened: u64::MAX,
             visible: None,
             presets: None,
             pre: PresetUi::default(),
@@ -828,6 +833,7 @@ impl App {
         self.pre.at = presets::default_at(&p);
         self.pre.target = TargetChoice::Selected;
         self.pre.error = None;
+        self.pre.scroll = true;
         self.pre.open = Some(p.name);
     }
 
@@ -876,7 +882,11 @@ impl App {
                 self.worker.set_project(ProjectMsg { revision, project: project.clone(), base_dir: self.base.clone() });
                 self.posted = None;
                 self.ghost = Some(Ghost { revision, project });
-                self.preview = Some((sig, format!("{} at {} on {}", p.name, editing::tidy(at), presets::target_text(&target))));
+                let on = match &target {
+                    edits_core::preset::Target::Auto => edits_core::preset::picture_at(&doc, at + 0.5 * tm_frame(self.tm)).map_or("the picture on screen".to_string(), |id| format!("{id} (on screen)")),
+                    t => presets::target_text(t),
+                };
+                self.preview = Some((sig, format!("{} at {} on {on}", p.name, editing::tidy(at))));
             }
             Err(e) => {
                 self.pre.error = Some(e);
@@ -1279,10 +1289,19 @@ impl App {
             Cmd::RemoveTransition(id) => self.remove_transition(&id),
             Cmd::AnalyseSong => self.analyse_song(),
             Cmd::SongMarks(l) => self.song.toggles.flip(l),
-            Cmd::CutDialog => self.open_cut(),
-            Cmd::AccentDialog => self.open_accent(None),
+            Cmd::CutDialog => {
+                self.modal_opened = self.ctx.cumulative_frame_nr();
+                self.open_cut();
+            }
+            Cmd::AccentDialog => {
+                self.modal_opened = self.ctx.cumulative_frame_nr();
+                self.open_accent(None);
+            }
             Cmd::SyncSong => self.sync_song(),
-            Cmd::NoteDialog => self.note_dialog = Some(self.note.as_ref().map(|n| n.text.clone()).unwrap_or_default()),
+            Cmd::NoteDialog => {
+                self.modal_opened = self.ctx.cumulative_frame_nr();
+                self.note_dialog = Some(self.note.as_ref().map(|n| n.text.clone()).unwrap_or_default());
+            }
             Cmd::ClearNote => self.set_note(""),
         }
     }
@@ -1799,12 +1818,13 @@ impl App {
                 });
             });
             ui.label(RichText::new(format!("The agent reads this note with ui_context, together with what you are looking at ({context}). It is not sent as a message: tell the agent in your chat to look, e.g. \"see my note in the window\".")).color(color::TEXT_MUTED));
+            // Ctrl+Enter saves (taken before the text field sees the Enter).
+            if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) {
+                save = true;
+            }
             let r = ui.add(egui::TextEdit::multiline(&mut text).hint_text("make this hit stronger").desired_rows(4).desired_width(f32::INFINITY).margin(egui::Margin::symmetric(8, 6)));
             if !r.has_focus() && !r.lost_focus() && ui.memory(|m| m.focused().is_none()) {
                 r.request_focus();
-            }
-            if r.has_focus() && ui.input(|i| i.modifiers.command && i.key_pressed(Key::Enter)) {
-                save = true;
             }
             if let Some(n) = &self.note {
                 ui.label(RichText::new(format!("Saved at {} UTC", n.at.get(9..15).map(|t| format!("{}:{}:{}", &t[0..2], &t[2..4], &t[4..6])).unwrap_or_default())).font(theme::small()).color(color::TEXT_FAINT));
@@ -1825,9 +1845,14 @@ impl App {
             self.set_note(&text);
         } else if clear {
             self.set_note("");
-        } else if !(close || resp.should_close()) {
+        } else if !(close || (resp.should_close() && !self.modal_is_new())) {
             self.note_dialog = Some(text);
         }
+    }
+
+    /// A dialog opened in this frame: a click outside it now is the click that opened it.
+    pub fn modal_is_new(&self) -> bool {
+        self.ctx.cumulative_frame_nr() == self.modal_opened
     }
 
     fn preview(&mut self, ui: &mut Ui, area: Rect) {
@@ -2157,6 +2182,11 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
+}
+
+/// One frame in project time (for "the picture on screen", which the presets look up half a frame late).
+fn tm_frame(tm: Option<TimeMap>) -> f64 {
+    tm.map_or(0.0, |tm| tm.from_seconds(1.0 / tm.fps) - tm.from_seconds(0.0))
 }
 
 /// Whose edit an entry of the history was, for a message.

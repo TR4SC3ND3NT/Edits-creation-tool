@@ -243,6 +243,10 @@ fn preset_row(app: &mut App, ui: &mut Ui, p: &Preset, tag: &str, slots: &[String
     }
     if open {
         card(app, ui, p, slots);
+        if std::mem::take(&mut app.pre.scroll) {
+            let shown = egui::Rect::from_min_max(rect.min, pos2(rect.right(), ui.cursor().top()));
+            ui.scroll_to_rect(shown, None);
+        }
     }
 }
 

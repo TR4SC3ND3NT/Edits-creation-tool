@@ -173,9 +173,10 @@ fn title(ui: &mut Ui, icon: Icon, text_: &str) -> bool {
 /// A row of a form: a label column, then the controls.
 fn row(ui: &mut Ui, label: &str, hover: &str, add: impl FnOnce(&mut Ui)) {
     ui.horizontal(|ui| {
-        let r = ui.add_sized(vec2(96.0, 24.0), egui::Label::new(RichText::new(label).color(color::TEXT_MUTED)));
+        let (r, resp) = ui.allocate_exact_size(vec2(96.0, 24.0), egui::Sense::hover());
+        ui.painter().text(pos2(r.left(), r.center().y), Align2::LEFT_CENTER, label, theme::body(), color::TEXT_MUTED);
         if !hover.is_empty() {
-            r.on_hover_text(hover);
+            resp.on_hover_text(hover);
         }
         add(ui);
     });
@@ -273,7 +274,7 @@ fn cut_dialog(app: &mut App, ctx: &egui::Context) {
             }
         });
     });
-    if close || resp.should_close() {
+    if close || (resp.should_close() && !app.modal_is_new()) {
         return;
     }
     app.cut_form = Some(form);
@@ -315,14 +316,14 @@ fn accent_dialog(app: &mut App, ctx: &egui::Context) {
                     }
                 }
             });
-            ui.label(RichText::new("every").color(color::TEXT_MUTED));
-            let suffix = match form.every_nth {
-                1 => "st",
-                2 => "nd",
-                3 => "rd",
-                _ => "th",
+            ui.label(RichText::new("keep").color(color::TEXT_MUTED));
+            ui.add(egui::DragValue::new(&mut form.every_nth).range(1..=16).speed(0.05)).on_hover_text("1: every time; 2: every other time; 4: every fourth");
+            let what = match form.every_nth {
+                1 => "all of them".to_string(),
+                2 => "every other one".to_string(),
+                n => format!("one in {n}"),
             };
-            ui.add(egui::DragValue::new(&mut form.every_nth).range(1..=16).speed(0.05).suffix(suffix));
+            ui.label(RichText::new(what).color(color::TEXT_MUTED));
         });
         if matches!(form.on.as_str(), "kicks" | "snares" | "hats") {
             row(ui, "Min strength", "Onsets weaker than this (0 to 1) are skipped", |ui| {
@@ -376,7 +377,7 @@ fn accent_dialog(app: &mut App, ctx: &egui::Context) {
             }
         });
     });
-    if close || resp.should_close() {
+    if close || (resp.should_close() && !app.modal_is_new()) {
         return;
     }
     app.accent_form = Some(form);

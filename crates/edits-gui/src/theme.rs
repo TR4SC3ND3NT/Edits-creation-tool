@@ -69,7 +69,7 @@ pub mod color {
     /// (pink), downbeats (a light grey line), sections (alternating bands).
     pub const SONG_KICK: Color32 = Color32::from_rgb(0xF7, 0x6B, 0x15);
     pub const SONG_SNARE: Color32 = Color32::from_rgb(0xE9, 0x3D, 0x82);
-    pub const SONG_BEAT: Color32 = Color32::from_rgb(0x6F, 0x6F, 0x6F);
+    pub const SONG_BEAT: Color32 = Color32::from_rgb(0xA0, 0xA0, 0xA0);
     pub const SONG_SECTION: Color32 = Color32::from_rgb(0x1C, 0x1C, 0x1C);
     pub const SONG_SECTION_ALT: Color32 = Color32::from_rgb(0x24, 0x24, 0x24);
     /// A transition's wedge at the start of a layer's bar.
