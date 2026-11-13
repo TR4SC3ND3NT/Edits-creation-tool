@@ -3,6 +3,8 @@
 //! ```text
 //! cargo run --release -p edits-calib --example calib -- run  [--cases 36] [--seed 1] [--height 320] [--degrade 1500] [--no-roundtrip] [--no-audio] [--out DIR]
 //! cargo run --release -p edits-calib --example calib -- case <case.json> [--out DIR]
+//! cargo run --release -p edits-calib --example calib -- fit <project.json> <reference_analysis.json> [--dry-run] [--budget N] [--shots 1,2] [--params exposure,blur] [--json OUT]
+//! cargo run --release -p edits-calib --example calib -- sig <reference_analysis.json> <video>
 //! ```
 //!
 //! `run` writes `report.txt`, `report.json` and the worst cases into `--out`
@@ -41,6 +43,56 @@ fn main() -> Result<()> {
             let r = harness::replay(std::path::Path::new(path), &out.join("work"))?;
             print!("{}", harness::describe(&r.outcome));
             print!("{}", edits_calib::report::table(&r.report));
+        }
+        Some("fit") => {
+            let (Some(p), Some(r)) = (args.get(1), args.get(2)) else { bail!("usage: calib fit <project.json> <reference_analysis.json> [--dry-run] [--budget N] [--shots 1,2] [--params a,b] [--scale S] [--json OUT]") };
+            let list = |name: &str| value(name).map(|v| v.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect::<Vec<_>>());
+            let opts = edits_calib::fit::FitOpts {
+                shots: list("--shots").unwrap_or_default().iter().map(|x| x.parse::<usize>()).collect::<Result<_, _>>().context("--shots takes shot numbers")?,
+                params: list("--params").unwrap_or_else(|| vec!["auto".into()]),
+                budget: num("--budget", 24)? as usize,
+                scale: value("--scale").map(|v| v.parse::<f32>()).transpose().context("--scale takes a number")?,
+                dry_run: flag("--dry-run"),
+                seed: num("--seed", 1)?,
+            };
+            let report = edits_calib::fit::fit_file(std::path::Path::new(p), std::path::Path::new(r), &opts)?;
+            if let Some(out) = value("--json") {
+                std::fs::write(&out, serde_json::to_string_pretty(&report)?)?;
+            }
+            print!("{}", edits_calib::fit::summary(&report));
+        }
+        Some("sig") => {
+            // Reference and candidate signatures side by side, shot by shot (the candidate analysed as `compare` does).
+            let (Some(r), Some(v)) = (args.get(1), args.get(2)) else { bail!("usage: calib sig <reference_analysis.json> <video>") };
+            let reference = edits_analyze::pipeline::load(std::path::Path::new(r))?;
+            let opts = edits_analyze::AnalyzeOpts {
+                height: reference.source.analysis_height as u32,
+                bpm: Some(reference.beats.bpm.value),
+                beat_offset: Some(reference.beats.offset_seconds.value),
+                samples: false,
+                whole: false,
+                range: Some((reference.ingest.analysed_f0, reference.ingest.analysed_f1)),
+            };
+            let cand = edits_analyze::pipeline::analyze_video(std::path::Path::new(v), None, &opts)?;
+            if let Some(out) = value("--json") {
+                std::fs::write(&out, edits_analyze::jsonfmt::to_string(&cand)?)?;
+            }
+            let (rs, cs) = (&reference.signature, &cand.signature);
+            let ev = |a: &edits_analyze::Analysis, f: usize| -> String {
+                a.shots.iter().flat_map(|s| s.events.iter()).filter(|e| e.frame == f).map(|e| match e.kind.as_str() {
+                    "flash" => format!("flash {:.1}", e.params["peak"].value),
+                    k => format!("{k} {}-{}", e.f0, e.f1),
+                }).collect::<Vec<_>>().join(",")
+            };
+            for sh in &reference.shots {
+                let cref = cand.shots.iter().find(|c| c.f0 <= sh.ref_frame && sh.ref_frame < c.f1).map(|c| c.ref_frame);
+                println!("shot {} frames {}..{} ref {} | candidate ref {:?}", sh.id, sh.f0, sh.f1, sh.ref_frame, cref);
+                for f in sh.f0..sh.f1 {
+                    let (i, j) = (f - rs.f0, f - cs.f0);
+                    println!("  {f:4} st {:6.2} {:6.2} | bl {:5.2} {:5.2} | sat {:5.2} {:5.2} | sc {:>7} {:>7} | {} | {}", rs.stops[i], cs.stops[j], rs.blur[i], cs.blur[j], rs.sat[i], cs.sat[j],
+                        rs.scale[i].map(|v| format!("{v:.3}")).unwrap_or("-".into()), cs.scale[j].map(|v| format!("{v:.3}")).unwrap_or("-".into()), ev(&reference, f), ev(&cand, f));
+                }
+            }
         }
         _ => bail!("usage: calib run [--cases N] [--seed S] [--height H] [--degrade KBPS] [--no-roundtrip] [--no-audio] [--out DIR] | calib case <case.json>"),
     }

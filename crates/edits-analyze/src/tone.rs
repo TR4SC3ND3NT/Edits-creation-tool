@@ -17,6 +17,8 @@ pub struct ToneSample {
     /// Saturation of the frame divided by that of the reference frame.
     pub sat_ratio: f64,
     pub sat_confidence: f64,
+    /// Share of the frame's blocks the saturation was measured on (not clipped, not too dark).
+    pub sat_share: f64,
     /// Chroma/luminance, in linear light, of the frame and of the reference frame.
     pub sat_cur: f64,
     pub sat_ref: f64,
@@ -36,55 +38,83 @@ pub struct ToneSample {
 /// chroma / luminance between the two frames *is* the saturation amount,
 /// whatever the exposure. (Measured on display values instead, a 3-stop flash
 /// alone read as 0.87x.) Block means are used so that noise (which reads as
-/// chroma in dark areas) does not pass for colour. Returns (chroma cur,
-/// luminance cur, chroma ref, luminance ref, share of blocks used).
+/// chroma in dark areas) does not pass for colour. Blocks next to a block
+/// that the flash has clipped (white in the frame, not in the reference
+/// frame) are left out too: video stores colour at half resolution (4:2:0)
+/// and a codec smears it further, so the grey of a clipped area bleeds into
+/// its neighbours (`edits calib`: line art under a flash read 0.74x after
+/// H.264 at 1.5 Mbit/s with only the clipped blocks left out). Returns
+/// (chroma cur, luminance cur, chroma ref, luminance ref, share of blocks used).
 fn chroma_stats(pair: &Pair) -> (f64, f64, f64, f64, f64) {
     let lut = crate::img::srgb_lut();
     let b = (pair.h / 90).max(3);
-    let (mut cc, mut cv, mut rc, mut rv) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
-    let (mut blocks, mut used) = (0usize, 0usize);
-    let mut y = 0;
-    while y + b <= pair.h {
-        let mut x = 0;
-        while x + b <= pair.w {
+    let (bw, bh) = (pair.w / b, pair.h / b);
+    // Per block: channel means of the frame and of the reference, and whether any pixel is clipped.
+    struct Block {
+        c: [f64; 3],
+        r: [f64; 3],
+        ok: bool,
+        /// Clipped in the frame; clipped by the flash (not already white in the reference frame).
+        clipped: bool,
+        flashed: bool,
+    }
+    let mut blocks: Vec<Block> = Vec::with_capacity(bw * bh);
+    for by in 0..bh {
+        for bx in 0..bw {
             let (mut c, mut r, mut k) = ([0.0f64; 3], [0.0f64; 3], 0.0f64);
-            let mut clipped = false;
-            for yy in y..y + b {
-                for xx in x..x + b {
+            let (mut clipped, mut ref_clipped) = (false, false);
+            for yy in by * b..(by + 1) * b {
+                for xx in bx * b..(bx + 1) * b {
                     let i = yy * pair.w + xx;
+                    // White is 255 only where there is no vignette.
+                    let white = pair.flat.map(|f| f.white[i]).unwrap_or(255) as f32;
+                    let px = &pair.cur[i * 3..i * 3 + 3];
                     if pair.mask[i] {
-                        // White is 255 only where there is no vignette.
-                        let white = pair.flat.map(|f| f.white[i]).unwrap_or(255) as f32;
+                        clipped |= px.iter().any(|v| *v as f32 >= 0.96 * white);
+                        ref_clipped |= pair.refw[i * 3..i * 3 + 3].iter().any(|v| *v as f32 >= 0.96 * white);
                         for ch in 0..3 {
-                            c[ch] += lut[pair.cur[i * 3 + ch] as usize] as f64;
+                            c[ch] += lut[px[ch] as usize] as f64;
                             r[ch] += lut[pair.refw[i * 3 + ch] as usize] as f64;
-                            clipped |= pair.cur[i * 3 + ch] as f32 >= 0.96 * white;
                         }
                         k += 1.0;
                     }
                 }
             }
-            x += b;
-            if k < (b * b) as f64 * 0.5 {
+            let ok = k >= (b * b) as f64 * 0.5;
+            if ok {
+                for ch in 0..3 {
+                    c[ch] /= k;
+                    r[ch] /= k;
+                }
+            }
+            blocks.push(Block { c, r, ok, clipped, flashed: clipped && !ref_clipped });
+        }
+    }
+    let (mut cc, mut cv, mut rc, mut rv) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    let (mut total, mut used) = (0usize, 0usize);
+    let mx = |v: &[f64; 3]| v[0].max(v[1]).max(v[2]);
+    let mn = |v: &[f64; 3]| v[0].min(v[1]).min(v[2]);
+    let lum = |v: &[f64; 3]| 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+    for by in 0..bh {
+        for bx in 0..bw {
+            let blk = &blocks[by * bw + bx];
+            if !blk.ok {
                 continue;
             }
-            blocks += 1;
-            let mx = |v: &[f64; 3]| v[0].max(v[1]).max(v[2]) / k;
-            let mn = |v: &[f64; 3]| v[0].min(v[1]).min(v[2]) / k;
-            let lum = |v: &[f64; 3]| (0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]) / k;
+            total += 1;
+            let near_clip = blk.clipped || (by.saturating_sub(1)..(by + 2).min(bh)).any(|y| (bx.saturating_sub(1)..(bx + 2).min(bw)).any(|x| blocks[y * bw + x].flashed));
             // Too dark in the reference frame to carry a readable colour (about code 24).
-            if clipped || mx(&r) <= 0.009 {
+            if near_clip || mx(&blk.r) <= 0.009 {
                 continue;
             }
             used += 1;
-            cc += mx(&c) - mn(&c);
-            cv += lum(&c);
-            rc += mx(&r) - mn(&r);
-            rv += lum(&r);
+            cc += mx(&blk.c) - mn(&blk.c);
+            cv += lum(&blk.c);
+            rc += mx(&blk.r) - mn(&blk.r);
+            rv += lum(&blk.r);
         }
-        y += b;
     }
-    (cc, cv, rc, rv, used as f64 / blocks.max(1) as f64)
+    (cc, cv, rc, rv, used as f64 / total.max(1) as f64)
 }
 
 /// Smallest number of 32-level-wide bins that hold 90% of the channel values.
@@ -213,7 +243,7 @@ pub fn measure(pair: &Pair, inverted: bool) -> ToneSample {
             }
         }
     }
-    ToneSample { sat_ratio, sat_confidence, sat_cur, sat_ref, lum_corr, threshold, posterize }
+    ToneSample { sat_ratio, sat_confidence, sat_share: share, sat_cur, sat_ref, lum_corr, threshold, posterize }
 }
 
 /// Runs of `true` as (start, end) index pairs.

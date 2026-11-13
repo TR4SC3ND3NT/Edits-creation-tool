@@ -145,7 +145,12 @@ pub fn reference_frame(sigs: &[FrameSig], inverted: &[bool], f0: usize, f1: usiz
     let sat: Vec<f64> = (f0..f1).map(|i| sigs[i].sat as f64).collect();
     let lum_cap = crate::img::percentile(&lum, 0.6) + 2.0;
     let lum_floor = 0.5 * median(&lum);
-    let sat_floor = 0.6 * median(&sat);
+    // Relative to the most colourful frames, not the median: when a
+    // black-and-white hit covers half the shot or more, a median floor lets a
+    // grey frame become the reference, and every coloured frame then reads
+    // as 3-4x "saturation" (`edits calib`: a draft rendered with line art
+    // put its reference frame inside its own saturation hit).
+    let sat_floor = 0.6 * crate::img::percentile(&sat, 0.85);
     let ok = |i: usize| !inverted[i] && (sigs[i].lum_center as f64) <= lum_cap && (sigs[i].lum_center as f64) >= lum_floor && sigs[i].sat as f64 >= sat_floor && sigs[i].contrast > 4.0;
     let mut cands: Vec<usize> = (f0..f1).filter(|i| ok(*i)).collect();
     if cands.is_empty() {
@@ -250,7 +255,7 @@ pub fn measure_frame(frames: &Frames, ref_frame: usize, i: usize, sim: Option<&S
                     blur = BlurSample { sigma_px: j.sigma_px, anisotropy: first.anisotropy, fit_rms: first.fit_rms };
                     let pb = pair.with_reference(pair.blurred_reference(j.sigma_px as f32));
                     let t2 = tone::measure(&pb, false);
-                    (tone.sat_ratio, tone.sat_confidence, tone.sat_cur, tone.sat_ref) = (t2.sat_ratio, t2.sat_confidence, t2.sat_cur, t2.sat_ref);
+                    (tone.sat_ratio, tone.sat_confidence, tone.sat_share, tone.sat_cur, tone.sat_ref) = (t2.sat_ratio, t2.sat_confidence, t2.sat_share, t2.sat_cur, t2.sat_ref);
                     exp = exposure::measure(&pb, false, sat_of(&tone));
                 }
             }
@@ -263,7 +268,7 @@ pub fn measure_frame(frames: &Frames, ref_frame: usize, i: usize, sim: Option<&S
             for _ in 0..4 {
                 let pb = pair.with_reference(pair.blurred_reference(s2.sqrt() as f32));
                 let t2 = tone::measure(&pb, false);
-                (tone.sat_ratio, tone.sat_confidence, tone.sat_cur, tone.sat_ref) = (t2.sat_ratio, t2.sat_confidence, t2.sat_cur, t2.sat_ref);
+                (tone.sat_ratio, tone.sat_confidence, tone.sat_share, tone.sat_cur, tone.sat_ref) = (t2.sat_ratio, t2.sat_confidence, t2.sat_share, t2.sat_cur, t2.sat_ref);
                 exp = exposure::measure(&pb, false, sat_of(&tone));
                 if exp.bound {
                     break;
@@ -609,8 +614,14 @@ fn build_shot(id: usize, w: &ShotWork, sigs: &[FrameSig], dup: &[bool], t: &Timi
             bw_frames[i] = true;
         }
     }
+    // A single grey frame on a flash peak (over 1.5 stops) is read as part of
+    // the flash, not as a saturation hit: what survives a strong flash is a
+    // few dark blocks whose colour a codec has smeared with the grey of their
+    // clipped neighbours, and whether that happens depends on the picture,
+    // so the same edit would report the hit on one picture and not on another.
     let sat_runs: Vec<(usize, usize, f64)> = tone::runs(&bw_frames)
         .into_iter()
+        .filter(|(a, b)| !(b - a == 1 && w.meas[*a].exp.stops > 1.5))
         .map(|(a, b)| {
             let v = median(&(a..b).map(|i| w.meas[i].tone.sat_ratio).collect::<Vec<_>>());
             (a, b, if v < 0.1 { 0.0 } else { round_to(v, 2) })
@@ -622,7 +633,21 @@ fn build_shot(id: usize, w: &ShotWork, sigs: &[FrameSig], dup: &[bool], t: &Timi
         params.insert("amount".into(), Est::measured(*v, "x reference frame (0 = black and white)", conf));
         events.push(t.event("saturation", f0 + a, f0 + b, f0 + a, params, None));
     }
-    if !sat_runs.is_empty() {
+    // Saturation that moves outside the hits (an edit that drains colour on a
+    // flash and brings it back stronger as the flash decays) is drafted as a
+    // fitted curve: the renderer's `saturation.amount` multiplies exactly the
+    // ratio measured here, so the curve is the measurement. Without such
+    // movement the hits are written as steps.
+    let sat_ok: Vec<f64> = w.meas.iter().enumerate().map(|(i, m)| if m.tone.sat_share >= 0.06 && m.tone.threshold.is_none() && !m.inverted && !dup[f0 + i] { 1.0 } else { 0.0 }).collect();
+    let in_hit = |i: usize| sat_runs.iter().any(|(a, b, _)| (*a..*b).contains(&i));
+    let moving = (0..n).filter(|i| sat_ok[*i] > 0.0 && !in_hit(*i) && (w.meas[*i].tone.sat_ratio - 1.0).abs() > 0.2).count();
+    if moving >= 2 && n >= 3 {
+        let y: Vec<Vec<f64>> = w.meas.iter().map(|m| vec![m.tone.sat_ratio.clamp(0.0, 2.5)]).collect();
+        let fsat = curves::fit(&y, &sat_ok, 0.04);
+        let mut keys: Vec<CurveKey> = fsat.keys.iter().map(|k| t.key(f0, k, 3)).collect();
+        keys.iter_mut().for_each(|k| k.v[0] = k.v[0].max(0.0));
+        curves_out.push(Curve { prop: "saturation.amount".into(), unit: "x reference frame".into(), confidence: round_to(0.6 * trust, 2), identifiability: Ident::Measured, keys });
+    } else if !sat_runs.is_empty() {
         curves_out.push(Curve { prop: "saturation.amount".into(), unit: "x reference frame".into(), confidence: round_to(0.8 * trust, 2), identifiability: Ident::Measured, keys: step_curve(t, f0, n, &sat_runs, 1.0) });
     } else {
         // Black and white throughout: cannot be told from a black-and-white picture.
@@ -909,7 +934,7 @@ pub fn analyze_frames(frames: &Frames, audio: Option<(&[f32], u32)>, mut source:
             sig.lum.push(round_to(sigs[i].lum as f64, 1));
             sig.stops.push(round_to(m.exp.stops, 3));
             sig.blur.push(round_to(100.0 * m.blur.sigma_px / frames.h as f64, 3));
-            sig.sat.push(round_to(m.tone.sat_ratio, 3));
+            sig.sat.push(round_to(signature_sat(m), 3));
             sig.scale.push(if w.tracked && w.track[k].valid() { Some(round_to(w.track[k].sim.scale(), 4)) } else { None });
         }
     }
@@ -930,6 +955,18 @@ pub fn analyze_frames(frames: &Frames, audio: Option<(&[f32], u32)>, mut source:
         notes,
     };
     Analyzed { analysis, plate, sigs }
+}
+
+/// Saturation as the signature records it: the neutral 1 where the
+/// measurement rests on too few blocks to mean anything (under 6% of them) (under a flash that
+/// clips most of the frame the ratio of a handful of dark blocks swings
+/// between 0 and the clamp at 4, and `compare` would score that noise).
+fn signature_sat(m: &FrameMeasure) -> f64 {
+    if m.tone.sat_share < 0.06 {
+        1.0
+    } else {
+        m.tone.sat_ratio
+    }
 }
 
 /// What measuring one shot on its own needs from the rest of its clip: the
@@ -989,7 +1026,7 @@ pub fn measure_shot(frames: &Frames, first: usize, f0: usize, f1: usize, id: usi
         sig.lum.push(round_to(sigs[f0 + k].lum as f64, 1));
         sig.stops.push(round_to(m.exp.stops, 3));
         sig.blur.push(round_to(100.0 * m.blur.sigma_px / frames.h as f64, 3));
-        sig.sat.push(round_to(m.tone.sat_ratio, 3));
+        sig.sat.push(round_to(signature_sat(m), 3));
         sig.scale.push(if w.tracked && w.track[k].valid() { Some(round_to(w.track[k].sim.scale(), 4)) } else { None });
     }
     (shot, sig)

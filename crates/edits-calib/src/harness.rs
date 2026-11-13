@@ -84,6 +84,12 @@ pub fn analyse(frames: &Frames, audio: Option<&[f32]>, name: &str) -> Analyzed {
     analyze_frames(frames, audio.map(|a| (a, 22050)), source_of(frames, name, audio.is_some()), &opts)
 }
 
+/// `EDITS_CALIB_KEEP=1` keeps a replayed case's scratch folder, with the
+/// draft and both analyses of the round trip in it.
+fn keep() -> bool {
+    std::env::var_os("EDITS_CALIB_KEEP").is_some()
+}
+
 /// Draft a project from `first`, put the case's pictures into its slots,
 /// render it and compare its analysis with `first`.
 pub fn roundtrip(stage: &mut Stage, case: &Case, first: &Analyzed, dir: &Path) -> Result<Comparison> {
@@ -113,6 +119,11 @@ pub fn roundtrip(stage: &mut Stage, case: &Case, first: &Analyzed, dir: &Path) -
         ..Default::default()
     };
     let second = analyze_frames(&frames, None, source_of(&frames, "draft", false), &opts);
+    if keep() {
+        std::fs::write(dir.join("draft.json"), project.to_json())?;
+        std::fs::write(dir.join("first.json"), edits_analyze::jsonfmt::to_string(&a)?)?;
+        std::fs::write(dir.join("second.json"), edits_analyze::jsonfmt::to_string(&second.analysis)?)?;
+    }
     Ok(compare_analyses(&a, &second.analysis, None))
 }
 
@@ -266,7 +277,9 @@ pub fn replay(path: &Path, work: &Path) -> Result<Replay> {
     let mut stage = Stage::new()?;
     let dir = work.join(format!("case_{}", file.spec.seed));
     let outcome = run_case(&mut stage, &file.spec, &dir, file.degrade.as_ref(), file.roundtrip)?;
-    let _ = std::fs::remove_dir_all(&dir);
+    if !keep() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     let (rows, events) = report::aggregate(&outcome.results);
     let report = Report {
         schema: report::SCHEMA.into(),

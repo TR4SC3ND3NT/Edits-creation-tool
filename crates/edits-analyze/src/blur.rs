@@ -100,6 +100,39 @@ fn fit(pc: &[f64], pr: &[f64], n: usize, f_hi: f64) -> Option<(f64, f64)> {
     Some((-slope, rms))
 }
 
+/// Take the noise floor off both spectra. Rendering, 8-bit quantisation and
+/// a codec add power at every frequency; where the picture's own power is
+/// not far above it (smooth pictures at the upper end of the fitted range)
+/// the ratio flattens towards 1 and the fitted slope, so the blur, comes out
+/// low (`edits calib`: -26% on photographic pictures, -58% after H.264). The
+/// floor is the median power of the top frequencies (above 0.42 cycles per
+/// pixel) of whichever spectrum is lower there, i.e. of the blurred one,
+/// which holds no picture there any more. Bins that are not at least the
+/// floor above it are dropped (set to 0, which `fit` skips).
+fn denoise(pc: &mut [Vec<f64>], pr: &mut [Vec<f64>], n: usize) {
+    let top = |p: &[f64]| {
+        let v: Vec<f64> = (0..p.len()).filter(|k| *k as f64 / n as f64 > 0.42).map(|k| p[k]).collect();
+        crate::img::median(&v)
+    };
+    let floor = top(&pc[0]).min(top(&pr[0]));
+    if floor <= 0.0 {
+        return;
+    }
+    for (c, r) in pc.iter_mut().zip(pr.iter_mut()) {
+        // Sector profiles average fewer coefficients but have the same expected floor.
+        for k in 0..c.len() {
+            let (a, b) = (c[k] - floor, r[k] - floor);
+            if a < floor || b < floor {
+                c[k] = 0.0;
+                r[k] = 0.0;
+            } else {
+                c[k] = a;
+                r[k] = b;
+            }
+        }
+    }
+}
+
 /// Blur of `cur` relative to `reference` (luminance images of the same size and geometry).
 pub fn measure(cur: &Gray, reference: &Gray) -> BlurSample {
     measure_signed(cur, reference).1
@@ -120,8 +153,9 @@ pub fn measure_signed(cur: &Gray, reference: &Gray) -> (f64, BlurSample) {
 pub fn measure_signed_at(cur: &Gray, reference: &Gray, blurred_px: f64) -> (f64, BlurSample) {
     let n = window(cur.w, cur.h);
     let sectors = 4;
-    let pc = radial_power(cur, n, sectors);
-    let pr = radial_power(reference, n, sectors);
+    let mut pc = radial_power(cur, n, sectors);
+    let mut pr = radial_power(reference, n, sectors);
+    denoise(&mut pc, &mut pr, n);
     let sigma_of = |k: f64| k.max(0.0).sqrt() / std::f64::consts::TAU;
     // Fit only where the blurred signal is still above the noise: up to the
     // frequency at which the fitted Gaussian has fallen to e^-4. Start with the

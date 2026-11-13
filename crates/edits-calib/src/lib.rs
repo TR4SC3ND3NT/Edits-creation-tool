@@ -6,6 +6,8 @@
 //!   platform-like degradation (H.264 at a low bitrate);
 //! - [`score`] and [`report`]: every `edits-analyze` estimator against the
 //!   truth: bias, spread, hit and miss rates by picture kind and condition;
+//! - [`fit`]: automatic fitting of a project's magnitudes to a reference
+//!   analysis, in signature space, by rendering and measuring each shot;
 //! - [`harness`]: the whole loop, the worst cases saved for replay, and the
 //!   draft round trip (a project drafted from an analysis must reproduce it).
 //!
@@ -13,6 +15,7 @@
 
 #![allow(clippy::needless_range_loop, clippy::too_many_arguments)]
 
+pub mod fit;
 pub mod harness;
 pub mod pictures;
 pub mod recipe;

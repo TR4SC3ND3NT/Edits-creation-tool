@@ -74,10 +74,19 @@ struct Clock<'a> {
 
 impl Clock<'_> {
     /// Project time at which something first seen on `frame` should be keyed.
+    /// With snapping, the nearest quarter beat is used only when the renderer
+    /// shows it on that same frame (the quarter beat falls inside the frame
+    /// before it): a key moved to another frame would not reproduce the
+    /// reference. (`edits calib` measured the earlier rule, which allowed a
+    /// frame either way, putting the real reference's flashes and punches a
+    /// frame late on 4 of 17 cuts.)
     fn time(&self, frame: usize) -> f64 {
         if self.snap {
             if let Some(q) = self.beats.snap(frame as f64, self.fps) {
-                return q;
+                let shown = (self.beats.frame_of_beat(q, self.fps) - 1e-6).ceil();
+                if (shown - frame as f64).abs() < 0.5 {
+                    return q;
+                }
             }
         }
         // A hair before the frame's own time, so rounding cannot push it to the next frame.
@@ -153,6 +162,48 @@ fn anim(times: &[f64], keys: &[CurveKey], value: impl Fn(&CurveKey) -> Value) ->
     })
 }
 
+/// Key values that make the rendered curve pass through the measured values
+/// on the key frames. A key snapped to a quarter beat sits up to one frame
+/// before the frame on which it was measured, so by the time that frame is
+/// shown its segment has already moved: a `decay` at rate 0.5 keyed 0.8 of a
+/// frame early shows only 57% of its key value. For each segment the eased
+/// fraction `e` reached at the frame is computed with the renderer's easing,
+/// and the key value is set to `(v - e * next) / (1 - e)` (last key first, so
+/// `next` is already corrected). Segments that have moved more than 60% of
+/// the way, and segments that are not front-loaded (`decay`, `out`,
+/// `quad_out`, `quint_out`, `expo_out`) or that another segment ramps into
+/// (the correction would bend that ramp), are left alone.
+fn on_frames(c: &Curve, times: &[f64], clock: &Clock, shift: usize) -> Vec<CurveKey> {
+    let mut keys = c.keys.clone();
+    for i in (0..keys.len().saturating_sub(1)).rev() {
+        let (t0, t1) = (times[i], times[i + 1]);
+        if t1 <= t0 {
+            continue;
+        }
+        let tf = clock.beats.beat_of_frame((keys[i].frame + shift) as f64, clock.fps);
+        let u = (tf - t0) / (t1 - t0);
+        if u <= 1e-4 {
+            continue;
+        }
+        // Only easings that move fastest at their start need it; a linear
+        // ramp or a hold is off by a fraction of a frame's share at most, and
+        // correcting a ramp would pull the frames before the key the wrong way.
+        let front_loaded = matches!(&keys[i].ease, edits_core::Ease::Name(n) | edits_core::Ease::Params { name: n, .. } if matches!(n.as_str(), "decay" | "out" | "quad_out" | "quint_out" | "expo_out"));
+        let e = ease::apply(&keys[i].ease, u, (t1 - t0) / clock.frame_len());
+        // The segment before the key ends on the corrected value too: only
+        // correct a key that nothing ramps into (the first key, or one after a hold).
+        let ramped_into = i > 0 && !matches!(&keys[i - 1].ease, edits_core::Ease::Name(n) if n == "hold");
+        if !front_loaded || ramped_into || !(1e-4..0.6).contains(&e) {
+            continue;
+        }
+        let next = keys[i + 1].v.clone();
+        for (v, n) in keys[i].v.iter_mut().zip(&next) {
+            *v = (*v - e * n) / (1.0 - e);
+        }
+    }
+    keys
+}
+
 const EFFECT_ORDER: [&str; 5] = ["gaussian_blur", "saturation", "invert", "threshold", "exposure"];
 
 fn shot_layer(shot: &Shot, clock: &Clock, shift: usize, repeat: usize, aspect: f64) -> Layer {
@@ -163,13 +214,14 @@ fn shot_layer(shot: &Shot, clock: &Clock, shift: usize, repeat: usize, aspect: f
         let mut has_scale = false;
         for c in &shot.curves {
             let t = key_times(c);
+            let keys = on_frames(c, &t, clock, shift);
             match c.prop.as_str() {
                 "scale" => {
                     has_scale = true;
-                    transform.scale = anim(&t, &c.keys, |k| Value::Num(round_to(k.v[0] * m, 4)));
+                    transform.scale = anim(&t, &keys, |k| Value::Num(round_to(k.v[0] * m, 4)));
                 }
-                "position" => transform.position = anim(&t, &c.keys, |k| Value::Vec(vec![k.v[0], k.v[1], 0.0])),
-                "rotation" => transform.rotation = anim(&t, &c.keys, |k| Value::Vec(vec![0.0, 0.0, k.v[0]])),
+                "position" => transform.position = anim(&t, &keys, |k| Value::Vec(vec![round_to(k.v[0], 4), round_to(k.v[1], 4), 0.0])),
+                "rotation" => transform.rotation = anim(&t, &keys, |k| Value::Vec(vec![0.0, 0.0, round_to(k.v[0], 2)])),
                 _ => {}
             }
         }
@@ -183,7 +235,11 @@ fn shot_layer(shot: &Shot, clock: &Clock, shift: usize, repeat: usize, aspect: f
         for c in &shot.curves {
             if let Some((k, p)) = c.prop.split_once('.') {
                 if k == kind {
-                    params.insert(p.to_string(), anim(&key_times(c), &c.keys, |key| Value::Num(key.v[0])));
+                    let t = key_times(c);
+                    let keys = on_frames(c, &t, clock, shift);
+                    // Blur radii and saturation amounts cannot go below 0.
+                    let floor = if matches!(kind, "gaussian_blur" | "saturation") { 0.0 } else { f64::MIN };
+                    params.insert(p.to_string(), anim(&t, &keys, |key| Value::Num(round_to(key.v[0].max(floor), 4))));
                 }
             }
         }
@@ -390,6 +446,50 @@ pub fn draft(a: &Analysis, opts: &DraftOpts) -> Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn beats(bpm: f64, offset: f64, fps: f64) -> Beats {
+        serde_json::from_value(serde_json::json!({
+            "source": "override",
+            "bpm": { "value": bpm, "unit": "bpm", "confidence": 1.0, "identifiability": "measured" },
+            "bpm_raw": bpm,
+            "offset_seconds": { "value": offset, "unit": "s", "confidence": 1.0, "identifiability": "measured" },
+            "refine_shift_frames": 0.0,
+            "frames_per_beat": fps * 60.0 / bpm,
+            "candidates": []
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn keys_stay_on_their_frame_and_show_the_measured_value() {
+        // 120 bpm at 25 fps: 12.5 frames per beat, beat 0 at 0.1 s (frame 2.5).
+        let b = beats(120.0, 0.1, 25.0);
+        let clock = Clock { beats: &b, fps: 25.0, snap: true };
+        // Frame 6 starts at beat 0.28; the quarter beat 0.25 is shown on frame 6 (it starts at frame 5.625): snapped.
+        assert_eq!(clock.time(6), 0.25);
+        // Frame 5 starts at beat 0.2; the quarter beat 0.25 would be shown on frame 6: not snapped.
+        assert!((clock.time(5) - 0.2).abs() < 1e-3, "{}", clock.time(5));
+        // A flash measured at 3 stops on frame 6, decaying at rate 0.5 to 0 on frame 12 (keyed at 0.25 and 0.75).
+        let key = |frame: usize, v: f64, ease: edits_core::Ease| CurveKey { frame, beat: 0.0, beat_snapped: None, v: vec![v], ease, rms: None, runner_up: None };
+        let mut args = std::collections::BTreeMap::new();
+        args.insert("rate".to_string(), 0.5);
+        let c = Curve {
+            prop: "exposure.stops".into(),
+            unit: "stops".into(),
+            confidence: 1.0,
+            identifiability: Ident::Measured,
+            keys: vec![key(6, 3.0, edits_core::Ease::Params { name: "decay".into(), args }), key(12, 0.0, edits_core::Ease::Name("hold".into()))],
+        };
+        let times = clock.times(&[6, 12]);
+        assert_eq!(times, vec![0.25, 0.75]);
+        let keys = on_frames(&c, &times, &clock, 0);
+        // The key sits 0.375 frames before frame 6: the key value is raised so that frame 6 shows 3 stops.
+        let (t0, t1) = (times[0], times[1]);
+        let u = (b.beat_of_frame(6.0, 25.0) - t0) / (t1 - t0);
+        let shown = keys[0].v[0] * (1.0 - ease::apply(&keys[0].ease, u, (t1 - t0) * 12.5));
+        assert!(keys[0].v[0] > 3.3 && (shown - 3.0).abs() < 1e-9, "key {} shows {shown}", keys[0].v[0]);
+        assert_eq!(keys[1].v[0], 0.0);
+    }
 
     #[test]
     fn relative_paths() {
