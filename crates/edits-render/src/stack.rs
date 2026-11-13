@@ -91,7 +91,7 @@ impl Renderer {
             return Ok(self.draw_content(&quads, depth, steps));
         };
         let mvp = self.layer_mvp(ev, at, t);
-        let mut content = self.draw_text(&layer.id, text, mvp)?;
+        let mut content = self.draw_text(&layer.id, text, mvp, ev.layer_time(layer, t))?;
         if let Some(out) = self.run_effects(&content, steps) {
             self.release(std::mem::replace(&mut content, out));
         }
@@ -273,6 +273,12 @@ pub(crate) fn layer_signature(ev: &Evaluator, scene: &Scene, layer: &Layer, t: f
     if let LayerKind::Particles(_) = &layer.kind {
         // Particles move at every instant.
         out.push(lt.to_bits());
+    }
+    if let LayerKind::Text(text) = &layer.kind {
+        // Animated letters change at every instant.
+        if text.animators.iter().any(|a| a.enabled) {
+            out.push(lt.to_bits());
+        }
     }
     for e in layer.effects.iter().filter(|e| e.enabled) {
         if effect_reads_time(&e.kind) {
