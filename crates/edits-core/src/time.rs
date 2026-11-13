@@ -1,7 +1,8 @@
 //! Times written the way an editor thinks of them.
 //!
 //! Wherever a command or an edit takes a time (`--at`, `--from`, `--to`, a
-//! layer's `in` / `out`, a key's `t`, an audio clip's `at`), it accepts a
+//! layer's `in` / `out`, a key's `t`, an audio clip's `at`, a particle
+//! burst's `t`), it accepts a
 //! number in the project's time base or a string:
 //!
 //! | Text | Means |
@@ -310,6 +311,11 @@ pub fn resolve_doc(doc: &mut Value, extra: Option<&TimeCtx>) -> Result<(), Strin
             fix(layer, "out", &format!("{at}/out"), &ctx, false, &mut errors);
             if let Some(tr) = layer.get_mut("transition") {
                 fix(tr, "duration", &format!("{at}/transition/duration"), &ctx, true, &mut errors);
+            }
+            if let Some(bursts) = layer.get_mut("bursts").and_then(Value::as_array_mut) {
+                for (j, burst) in bursts.iter_mut().enumerate() {
+                    fix(burst, "t", &format!("{at}/bursts/{j}/t"), &ctx, false, &mut errors);
+                }
             }
             keys(layer, &at, &ctx, &mut errors);
         }

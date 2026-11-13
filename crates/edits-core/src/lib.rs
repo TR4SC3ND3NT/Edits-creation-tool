@@ -15,6 +15,7 @@ pub mod effects;
 pub mod eval;
 pub mod jsonfmt;
 pub mod model;
+pub mod particles;
 pub mod pointer;
 pub mod preset;
 pub mod beatops;

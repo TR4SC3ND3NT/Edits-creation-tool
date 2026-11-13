@@ -230,3 +230,32 @@ None of this changes what a frame looks like: the picture of source frame
 `n` is the same whichever way it was reached, so a frame stays a pure
 function of the project and the frame number. `Renderer::video_stats()`
 counts decoders started, frames decoded and cache hits.
+
+## Particle layers
+
+A particles layer's state comes from `edits_core::particles::evaluate(layer,
+t)`, which lists the particles alive at the layer's time `t` in closed form:
+the rate particles born in `(t - life, t]` (evenly spaced at the rate; a keyed
+rate is integrated on a grid of half frames anchored at the emission start, so
+a particle's birth time never changes), the burst particles of bursts in that
+window, each with random numbers hashed from (`seed`, stream, index). Motion
+is ballistic with linear drag, `x(t) = x0 + v0 f + g (t - f) / k` with
+`f = (1 - e^(-k t)) / k` (and `v0 t + g t² / 2` without drag), plus a curl
+noise drift: the curl of a two-octave 3D value-noise potential at the
+particle's position and the eddies' phase, minus the same at its birth.
+Nothing is carried between frames, so seeking costs nothing and every motion
+blur sample is exact.
+
+`src/particles.rs` turns that list into one instance per particle (centre,
+axis, half extents, colour and opacity, in layer space) and draws them all
+with one instanced draw of `shaders/particles.wgsl` into a frame-sized
+transparent texture, through the camera and the layer's model matrix like a
+flat layer, blended "over" (premultiplied) in list order (oldest first). The
+sprites are drawn procedurally in the fragment shader (`dot`, `spark` along
+the velocity, `star`, `petal`) or sampled from a slot's picture. A particle
+smaller than a pixel and a half across is drawn at that size and fainter by
+the area it lacks, so it neither flickers nor disappears. The texture comes
+back to the stack as one quad covering the frame, so the layer's effects,
+opacity, blend mode and transition apply as for any layer. Its signature
+includes its time, so every motion blur instant is rendered.
+

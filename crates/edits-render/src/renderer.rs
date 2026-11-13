@@ -137,6 +137,16 @@ pub(crate) struct Quad {
     margin: [f32; 2],
 }
 
+impl Quad {
+    /// A frame-sized texture shown pixel for pixel: the unit quad scaled to
+    /// clip space, y up.
+    pub(crate) fn frame(tex: Tex) -> Quad {
+        let mvp = glam::DMat4::from_scale(glam::DVec3::new(2.0, -2.0, 1.0));
+        let fit = geometry::fit_uv(edits_core::Fit::Stretch, [0.5, 0.5], 1.0, 1.0);
+        Quad { mvp: mat(mvp), tex, fit, color: [1.0, 1.0, 1.0, 1.0], covers: true, margin: [0.0, 0.0] }
+    }
+}
+
 pub(crate) struct Scene {
     pub project: Project,
     slots: HashMap<String, Picture>,
@@ -215,7 +225,7 @@ pub struct FrameStats {
 }
 
 pub struct Renderer {
-    gpu: Gpu,
+    pub(crate) gpu: Gpu,
     msaa: u32,
     tex_layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
@@ -232,7 +242,7 @@ pub struct Renderer {
     ubuf: wgpu::Buffer,
     ubind: wgpu::BindGroup,
     staging: Vec<u8>,
-    encoder: Option<wgpu::CommandEncoder>,
+    pub(crate) encoder: Option<wgpu::CommandEncoder>,
     linear: wgpu::Sampler,
     mirror: wgpu::Sampler,
     image_sampler: wgpu::Sampler,
@@ -264,6 +274,8 @@ pub struct Renderer {
     /// Name of the pass being recorded, for profiling.
     label: String,
     profile: Option<Vec<PassTiming>>,
+    /// The pipeline and buffers of particles layers (see `particles.rs`).
+    pub(crate) particles: crate::particles::ParticleGpu,
 }
 
 fn file_key(path: &Path) -> String {
@@ -458,6 +470,7 @@ impl Renderer {
             stats: FrameStats::default(),
             label: String::new(),
             profile: None,
+            particles: Default::default(),
         };
         r.white = r.upload_picture(&RgbaImage::from_pixel(1, 1, image::Rgba([255, 255, 255, 255])));
         r.flush();
@@ -523,6 +536,7 @@ impl Renderer {
                 LayerKind::Image { slot } => used.push(slot),
                 LayerKind::Cube { faces, .. } => used.extend(faces.iter().map(String::as_str)),
                 LayerKind::Solid { .. } | LayerKind::Adjustment => {}
+                LayerKind::Particles(ps) => used.extend(ps.sprite_slot()),
                 LayerKind::Video(v) => {
                     let Some(slot) = project.slots.get(&v.slot).filter(|s| s.path.is_some()) else {
                         // An empty slot shows its placeholder, like a picture.
@@ -1299,6 +1313,8 @@ impl Renderer {
                 (quads, true)
             }
             LayerKind::Adjustment => (Vec::new(), false),
+            // Drawn by `particle_quads` instead.
+            LayerKind::Particles(_) => (Vec::new(), false),
         }
     }
 

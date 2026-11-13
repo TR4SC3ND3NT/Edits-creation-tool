@@ -124,6 +124,7 @@ pub fn kind_text(kind: &LayerKind) -> String {
         LayerKind::Cube { .. } => "cube".to_string(),
         LayerKind::Adjustment => "adjustment".to_string(),
         LayerKind::Video(v) => format!("video {}", v.slot),
+        LayerKind::Particles(p) => format!("particles {}", p.sprite),
     }
 }
 

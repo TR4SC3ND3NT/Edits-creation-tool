@@ -46,6 +46,7 @@ pub fn describe(p: &Project) -> String {
             LayerKind::Solid { color } => format!("solid {color:?}"),
             LayerKind::Cube { faces, size } => format!("cube {size:?} faces {}", faces.join(",")),
             LayerKind::Adjustment => "adjustment".to_string(),
+            LayerKind::Particles(ps) => ps.describe(),
             LayerKind::Video(v) => {
                 let mut parts = vec![format!("video {}", v.slot)];
                 if let Some(remap) = &v.time_remap {

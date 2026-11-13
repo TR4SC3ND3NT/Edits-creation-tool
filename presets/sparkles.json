@@ -1,0 +1,76 @@
+{
+  "format": "edits.preset/1",
+  "name": "sparkles",
+  "description": "Four-point twinkles that flash up and fade all over the frame (added light).",
+  "tags": [
+    "particles",
+    "overlay",
+    "glow"
+  ],
+  "target": "project",
+  "variables": {
+    "density": {
+      "type": "number",
+      "default": 12,
+      "min": 0.5,
+      "max": 100,
+      "unit": "sparkles per beat",
+      "doc": "How many sparkles appear each beat."
+    },
+    "size": {
+      "type": "number",
+      "default": 5,
+      "min": 0.5,
+      "max": 30,
+      "unit": "% of height",
+      "doc": "Span of a sparkle's rays at its brightest."
+    },
+    "color": {
+      "type": "color",
+      "default": [1, 0.92, 0.75],
+      "doc": "Sparkle colour (linear RGB)."
+    },
+    "length": {
+      "type": "number",
+      "default": 8,
+      "min": 0.25,
+      "max": 256,
+      "unit": "beats",
+      "doc": "How long it sparkles (it stops at the end of the project)."
+    },
+    "seed": {
+      "type": "integer",
+      "default": 1,
+      "doc": "Another number gives other sparkles."
+    }
+  },
+  "apply": [
+    {
+      "layer": {
+        "place": "top",
+        "layer": {
+          "id": "sparkles",
+          "kind": "particles",
+          "in": "=at",
+          "out": "=min(end, at + $length * beat)",
+          "blend": "add",
+          "sprite": "star",
+          "emitter": { "shape": "rect", "size": ["=aspect * 0.95", 0.9] },
+          "rate": "=$density / beat",
+          "life": "=1.5 * beat",
+          "prewarm": true,
+          "speed": 0.02,
+          "size": "$size",
+          "size_end": "=$size * 0.4",
+          "size_random": 0.5,
+          "color": "$color",
+          "fade_in": 0.3,
+          "fade_out": 0.6,
+          "spin": 25,
+          "spin_random": 25,
+          "seed": "$seed"
+        }
+      }
+    }
+  ]
+}

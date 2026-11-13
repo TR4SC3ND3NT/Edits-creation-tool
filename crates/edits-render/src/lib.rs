@@ -23,6 +23,7 @@ mod fx;
 mod fxlib;
 mod geometry;
 mod gpu;
+mod particles;
 mod renderer;
 mod stack;
 mod transitions;

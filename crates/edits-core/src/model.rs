@@ -251,6 +251,9 @@ pub enum LayerKind {
     Adjustment,
     /// A video clip from a slot, played from the slot's `trim` in.
     Video(Video),
+    /// Particles (petals, sparkles, dust, bursts), closed form per instant.
+    /// See `crate::particles`.
+    Particles(Box<crate::particles::Particles>),
 }
 
 /// A `video` layer: which clip, and how its time runs.

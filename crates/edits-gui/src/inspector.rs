@@ -594,6 +594,9 @@ fn layer(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, l: &Layer,
                     info_row(ui, "Timing", timing.join(", "));
                 }
             }
+            LayerKind::Particles(p) => {
+                info_row(ui, "Particles", p.describe());
+            }
         }
         for (field, value, label) in [("in", l.start, "In"), ("out", end, "Out")] {
             field_row(ui, label, &format!("In {unit}. Or drag the edge of the bar in the timeline (snaps to quarter beats; Alt: frames)."), |ui| {

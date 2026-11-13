@@ -61,6 +61,15 @@ postprocessing, ISF), no code was taken from it.
 
 `outline` (jump flooding after Rong and Tan, 2006) and `drop_shadow` are ours.
 
+## Particles
+
+| Our file | Source | Licence | What was taken |
+| --- | --- | --- | --- |
+| `crates/edits-core/src/particles.rs` (`evaluate`, `rate_births`) | EffectCraft, https://github.com/storytold/effectcraft, `crates/effects/src/sim/weather.rs` | MIT OR Apache-2.0 (used under MIT) | The closed-form idea only: particles born at fixed intervals of the rate, per-item constants hashed from (index, seed), and only the items whose birth falls in the live window `[t - life, t]` evaluated. The emitter shapes, bursts, keyed-rate integration, drag and gravity formula and the code are ours; nothing was copied. |
+| `crates/edits-core/src/particles.rs` (`curl`, `turbulence`) | EffectCraft, `crates/gpu/src/shaders/fx_particles.wgsl` (`fxp_curl_pot`, `fxp_curl_vel`) | MIT OR Apache-2.0 (used under MIT) | A divergence-free field as the curl of a scalar noise potential (its gradient by central differences, turned by 90 degrees). Our version evaluates a 3D value-noise potential on the CPU per particle and applies it as a bounded drift (curl now minus curl at birth) instead of advecting pixels. |
+
+The particle sprites in `crates/edits-render/src/shaders/particles.wgsl` are ours.
+
 ## Licence texts
 
 ### EffectCraft (MIT)

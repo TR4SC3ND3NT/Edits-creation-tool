@@ -255,6 +255,7 @@ pub(crate) fn slots(app: &mut App, ui: &mut Ui) {
                     edits_core::LayerKind::Image { slot } => slot == name,
                     edits_core::LayerKind::Cube { faces, .. } => faces.contains(name),
                     edits_core::LayerKind::Video(v) => &v.slot == name,
+                    edits_core::LayerKind::Particles(p) => p.sprite_slot() == Some(name.as_str()),
                     _ => false,
                 })
                 .map(|l| l.id.as_str())

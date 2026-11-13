@@ -122,6 +122,10 @@ builtin!(
     "vignette_pulse",
     "overlay_texture",
     "letterbox",
+    "sakura",
+    "sparkles",
+    "dust",
+    "beat_burst",
 );
 
 /// Parse and check one preset file's text.
