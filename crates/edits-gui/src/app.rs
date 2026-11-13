@@ -448,6 +448,8 @@ impl App {
             app.start_playing(app.playhead);
         }
         app.load_saved_song();
+        // The palette lists the presets too: read them now (a few small files).
+        app.library();
         app
     }
 
@@ -841,7 +843,7 @@ impl App {
         let doc = self.state.doc.clone()?;
         let tm = self.tm?;
         let target = presets::target(&p, self.pre.target, self.selected_layer().as_deref());
-        let at = presets::at_time(&doc, self.pre.at, &target, tm.frame_time(self.playhead));
+        let at = editing::tidy(presets::at_time(&doc, self.pre.at, &target, tm.frame_time(self.playhead)));
         Some((p, target, at))
     }
 
@@ -903,7 +905,8 @@ impl App {
             presets::apply(d, &p, &target, at, &values, &tc)
         });
         if ok {
-            // A layer the preset made (accents) or the one it changed: show it.
+            // Done: the card closes (its preview would now show the preset twice).
+            self.pre.open = None;
             if let edits_core::preset::Target::Layer(id) = &target {
                 self.selected = Some(Selected::Layer(id.clone()));
             }

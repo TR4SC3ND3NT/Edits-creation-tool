@@ -45,6 +45,8 @@ fn ht_disc_radius(cover: f32) -> f32 {
 struct HtCell {
     centre: vec2<f32>,
     local: vec2<f32>,
+    // The screen's x axis (a unit vector).
+    axis: vec2<f32>,
 }
 
 fn ht_cell(q: vec2<f32>, a: f32) -> HtCell {
@@ -56,6 +58,7 @@ fn ht_cell(q: vec2<f32>, a: f32) -> HtCell {
     var out: HtCell;
     out.centre = vec2<f32>(m.x * cs - m.y * sn, m.x * sn + m.y * cs);
     out.local = g - gi;
+    out.axis = vec2<f32>(cs, sn);
     return out;
 }
 
@@ -76,8 +79,17 @@ fn ht_ink(local: vec2<f32>, cover: f32) -> f32 {
     return 1.0 - smoothstep(r - w, r + w, length(local));
 }
 
-fn ht_colour(centre: vec2<f32>) -> vec3<f32> {
-    return max(fx_straight(src(fx_to_uv(centre))), vec3<f32>(0.0));
+// The colour a cell stands for: the average of five points of the cell (its
+// centre and four points toward its corners), so that detail smaller than a
+// cell is averaged rather than hit or missed.
+fn ht_colour(s: HtCell) -> vec3<f32> {
+    let k = 0.3 * fx.p0;
+    let u = s.axis * k;
+    let v = vec2<f32>(-s.axis.y, s.axis.x) * k;
+    var sum = src(fx_to_uv(s.centre)) * 2.0;
+    sum += src(fx_to_uv(s.centre + u + v)) + src(fx_to_uv(s.centre + u - v));
+    sum += src(fx_to_uv(s.centre - u + v)) + src(fx_to_uv(s.centre - u - v));
+    return max(fx_straight(sum), vec3<f32>(0.0));
 }
 
 fn effect(uv: vec2<f32>) -> vec4<f32> {
@@ -89,24 +101,24 @@ fn effect(uv: vec2<f32>) -> vec4<f32> {
     if OPT_MODE == MODE_MONO {
         // Black ink on white paper.
         let s = ht_cell(q, a);
-        let l = fx_luma(ht_colour(s.centre));
+        let l = fx_luma(ht_colour(s));
         rgb = vec3<f32>(1.0 - ht_ink(s.local, 1.0 - l));
     } else if OPT_MODE == MODE_RGB {
         // Dots of red, green and blue light on black.
         let r = ht_cell(q, a - 30.0 * deg);
         let g = ht_cell(q, a);
         let b = ht_cell(q, a + 30.0 * deg);
-        rgb = vec3<f32>(ht_ink(r.local, ht_colour(r.centre).r), ht_ink(g.local, ht_colour(g.centre).g), ht_ink(b.local, ht_colour(b.centre).b));
+        rgb = vec3<f32>(ht_ink(r.local, ht_colour(r).r), ht_ink(g.local, ht_colour(g).g), ht_ink(b.local, ht_colour(b).b));
     } else {
         // Cyan, magenta, yellow and black ink on white paper.
         let sc = ht_cell(q, a - 30.0 * deg);
         let sm = ht_cell(q, a);
         let sy = ht_cell(q, a - 45.0 * deg);
         let sk = ht_cell(q, a + 30.0 * deg);
-        let cc = min(ht_colour(sc.centre), vec3<f32>(1.0));
-        let cm = min(ht_colour(sm.centre), vec3<f32>(1.0));
-        let cy = min(ht_colour(sy.centre), vec3<f32>(1.0));
-        let ck = min(ht_colour(sk.centre), vec3<f32>(1.0));
+        let cc = min(ht_colour(sc), vec3<f32>(1.0));
+        let cm = min(ht_colour(sm), vec3<f32>(1.0));
+        let cy = min(ht_colour(sy), vec3<f32>(1.0));
+        let ck = min(ht_colour(sk), vec3<f32>(1.0));
         // Each screen separates the colour under its own dot.
         let kc = 1.0 - max(cc.r, max(cc.g, cc.b));
         let km = 1.0 - max(cm.r, max(cm.g, cm.b));
