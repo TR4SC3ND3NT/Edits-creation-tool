@@ -1065,7 +1065,7 @@ impl App {
             prop,
             key,
             visible: self.visible,
-            looping: self.looping.then(|| (tm.start_time(), tm.end_time())),
+            looping: self.looping.then(|| (tm.start_time().max(0.0), tm.duration)),
             note: self.note.as_ref(),
         };
         Some(uictx::context(&inputs))

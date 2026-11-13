@@ -40,7 +40,7 @@ impl Renderer {
 
     /// Evaluate `layer` at `t` for a `w` x `h` target (the context must already be
     /// set for `t`). `None` when the layer is not visible then.
-    fn layer_at(&self, ev: &Evaluator, layer: &Layer, t: f64) -> Result<Option<LayerAt>> {
+    fn layer_at(&mut self, ev: &Evaluator, layer: &Layer, t: f64) -> Result<Option<LayerAt>> {
         if !ev.active(layer, t) {
             return Ok(None);
         }
@@ -227,7 +227,7 @@ pub(crate) fn layer_signature(ev: &Evaluator, layer: &Layer, t: f64) -> Option<V
 /// Effects whose picture changes with the time even when their parameters
 /// do not.
 fn effect_reads_time(kind: &str) -> bool {
-    kind == "custom"
+    edits_core::effects::spec(kind).is_some_and(|s| s.reads_time)
 }
 
 /// Everything the composite of `layers` at `t` depends on: the camera and

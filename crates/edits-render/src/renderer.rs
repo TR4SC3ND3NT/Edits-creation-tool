@@ -188,6 +188,15 @@ pub struct Renderer {
     msaa: u32,
     tex_layout: wgpu::BindGroupLayout,
     pipeline_layout: wgpu::PipelineLayout,
+    /// Effects (built-in and custom): the picture, an auxiliary picture, the
+    /// two samplers and a 3D lookup table (see `shaders/fx/prelude.wgsl`).
+    fx_layout: wgpu::BindGroupLayout,
+    fx_pipeline_layout: wgpu::PipelineLayout,
+    fx_binds: HashMap<(u64, u64, u64), wgpu::BindGroup>,
+    /// Built-in effect pipelines by kind and chosen options, compiled on first use.
+    fx_pipes: HashMap<(&'static str, Vec<u8>), wgpu::RenderPipeline>,
+    /// Bound when an effect has no lookup table of its own.
+    identity_lut: Lut,
     pipes: Pipes,
     ubuf: wgpu::Buffer,
     ubind: wgpu::BindGroup,
@@ -286,6 +295,31 @@ impl Renderer {
             bind_group_layouts: &[Some(&uniform_layout), Some(&tex_layout)],
             immediate_size: 0,
         });
+        let fx_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("edits effect textures"),
+            entries: &[
+                texture_entry(0),
+                texture_entry(1),
+                sampler_entry(2),
+                sampler_entry(3),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let fx_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("edits effects"),
+            bind_group_layouts: &[Some(&uniform_layout), Some(&fx_layout)],
+            immediate_size: 0,
+        });
+        let identity_lut = make_lut(device, &gpu.queue, 2, &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [1.0, 1.0, 1.0]], 1);
 
         let source = concat!(include_str!("shaders/common.wgsl"), include_str!("shaders/passes.wgsl"));
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -355,6 +389,11 @@ impl Renderer {
             msaa,
             tex_layout,
             pipeline_layout,
+            fx_layout,
+            fx_pipeline_layout,
+            fx_binds: HashMap::new(),
+            fx_pipes: HashMap::new(),
+            identity_lut,
             pipes,
             ubuf,
             ubind,
@@ -508,16 +547,17 @@ impl Renderer {
         self.pictures.retain(|key, _| kept.contains(key));
         self.custom.retain(|key, _| custom.values().any(|k| k == key));
         self.binds.clear();
+        self.fx_binds.clear();
         self.scene = Some(Arc::new(Scene { project: project.clone(), slots, custom }));
         Ok(())
     }
 
     fn compile_custom(&mut self, name: &str, text: &str) -> Result<wgpu::RenderPipeline> {
         let device = &self.gpu.device;
-        let source = format!("{text}\n{}", include_str!("shaders/custom.wgsl"));
+        let source = format!("{text}\n{}", crate::shader::CUSTOM_CONTRACT);
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(name), source: wgpu::ShaderSource::Wgsl(source.into()) });
-        let pipeline = make_pipeline(device, &self.pipeline_layout, &module, "edits_vs", "edits_fs", WORK_FORMAT, None, 1, false);
+        let pipeline = make_pipeline(device, &self.fx_pipeline_layout, &module, "edits_vs", "edits_fs", WORK_FORMAT, None, 1, false);
         if let Some(err) = pollster::block_on(scope.pop()) {
             let message = err.to_string();
             let message = message.trim();
@@ -527,6 +567,68 @@ impl Renderer {
             );
         }
         Ok(pipeline)
+    }
+
+    /// The pipeline of a built-in effect with the options `key` (see
+    /// `fxlib::option_key`), compiled the first time it is used.
+    pub(crate) fn builtin_pipeline(&mut self, b: &'static crate::fxlib::Builtin, key: &[u8]) -> Result<wgpu::RenderPipeline> {
+        if let Some(p) = self.fx_pipes.get(&(b.kind, key.to_vec())) {
+            return Ok(p.clone());
+        }
+        let spec = edits_core::effects::spec(b.kind).ok_or_else(|| anyhow!("effect \"{}\" is not in the registry", b.kind))?;
+        let device = &self.gpu.device;
+        let source = crate::fxlib::source(b, spec, key);
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(b.kind), source: wgpu::ShaderSource::Wgsl(source.into()) });
+        let pipeline = make_pipeline(device, &self.fx_pipeline_layout, &module, "edits_vs", "edits_fs", WORK_FORMAT, None, 1, false);
+        if let Some(err) = pollster::block_on(scope.pop()) {
+            bail!("effect \"{}\" does not compile on this adapter: {}", b.kind, err.to_string().trim());
+        }
+        self.fx_pipes.insert((b.kind, key.to_vec()), pipeline.clone());
+        Ok(pipeline)
+    }
+
+    /// Upload a 3D lookup table of `size`^3 linear RGB entries, red varying
+    /// fastest, then green, then blue (the order of a `.cube` file).
+    pub(crate) fn upload_lut(&mut self, size: u32, rgb: &[[f32; 3]]) -> Result<Lut> {
+        if !(2..=256).contains(&size) || rgb.len() != (size * size * size) as usize {
+            bail!("a 3D lookup table needs size^3 entries with a size of 2 to 256 (got {} entries for size {size})", rgb.len());
+        }
+        let id = self.new_id();
+        Ok(make_lut(&self.gpu.device, &self.gpu.queue, size, rgb, id))
+    }
+
+    /// One effect pass: `pipeline` (a built-in or custom effect) reads `src`
+    /// (and `aux`, and `lut`) and writes `target`, with `p` as `fx.p0` .. `fx.p15`.
+    pub(crate) fn fx_pass(&mut self, pipeline: &wgpu::RenderPipeline, target: &Tex, src: &Tex, aux: Option<&Tex>, lut: Option<&Lut>, p: &[f32; 16]) {
+        let aux = aux.unwrap_or(&self.white).clone();
+        let lut = lut.unwrap_or(&self.identity_lut).clone();
+        let key = (src.id, aux.id, lut.id);
+        let bind = match self.fx_binds.get(&key) {
+            Some(g) => g.clone(),
+            None => {
+                let g = self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: None,
+                    layout: &self.fx_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&src.view) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&aux.view) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.linear) },
+                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.mirror) },
+                        wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&lut.view) },
+                    ],
+                });
+                self.fx_binds.insert(key, g.clone());
+                g
+            }
+        };
+        let packed = [[p[0], p[1], p[2], p[3]], [p[4], p[5], p[6], p[7]], [p[8], p[9], p[10], p[11]], [p[12], p[13], p[14], p[15]]];
+        let uni = self.uniform(target, &packed);
+        let offset = self.push_uniform(&uni);
+        if self.label.is_empty() {
+            self.name(|| "effect".into());
+        }
+        self.raw_pass(pipeline, &target.view, None, None, Some(wgpu::Color::TRANSPARENT), &[(bind, offset, 3)]);
     }
 
     /// The pipeline of a transition, compiled the first time it is used.
@@ -931,6 +1033,7 @@ impl Renderer {
             // A different output size: the pooled textures are of no use any more.
             self.pool.clear();
             self.binds.clear();
+            self.fx_binds.clear();
             self.pool_size = (w, h);
         }
         self.stats = FrameStats { passes: 0, samples, rendered_samples: samples, width: w, height: h };
@@ -1184,6 +1287,65 @@ pub(crate) fn scaled_size(project: &Project, scale: f32) -> (u32, u32) {
     (side(project.settings.width), side(project.settings.height))
 }
 
+/// A 3D lookup table on the GPU.
+#[derive(Clone)]
+pub(crate) struct Lut {
+    pub id: u64,
+    pub view: wgpu::TextureView,
+}
+
+fn make_lut(device: &wgpu::Device, queue: &wgpu::Queue, size: u32, rgb: &[[f32; 3]], id: u64) -> Lut {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("edits lut"),
+        size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: size },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D3,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let mut bytes = Vec::with_capacity(rgb.len() * 8);
+    for c in rgb {
+        for v in [c[0], c[1], c[2], 1.0] {
+            bytes.extend_from_slice(&f32_to_half(v).to_le_bytes());
+        }
+    }
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+        &bytes,
+        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(8 * size), rows_per_image: Some(size) },
+        wgpu::Extent3d { width: size, height: size, depth_or_array_layers: size },
+    );
+    Lut { id, view: texture.create_view(&wgpu::TextureViewDescriptor::default()) }
+}
+
+/// The nearest half-float to `v` (round to nearest even).
+fn f32_to_half(v: f32) -> u16 {
+    let x = v.to_bits();
+    let sign = ((x >> 16) & 0x8000) as u16;
+    let exp = ((x >> 23) & 0xff) as i32;
+    let mant = x & 0x7f_ffff;
+    if exp == 255 {
+        return sign | 0x7c00 | if mant != 0 { 0x200 } else { 0 };
+    }
+    let round = |value: u32, rest: u32, halfway: u32| if rest > halfway || (rest == halfway && value & 1 == 1) { value + 1 } else { value };
+    let e = exp - 127 + 15;
+    if e >= 31 {
+        return sign | 0x7c00;
+    }
+    if e <= 0 {
+        if e < -10 {
+            return sign;
+        }
+        let m = mant | 0x80_0000;
+        let shift = (14 - e) as u32;
+        return sign | round(m >> shift, m & ((1 << shift) - 1), 1 << (shift - 1)) as u16;
+    }
+    // A carry out of the mantissa correctly moves to the next exponent (or to infinity).
+    sign | round(((e as u32) << 10) | (mant >> 13), mant & 0x1fff, 0x1000) as u16
+}
+
 /// A stand-in bound to texture slots a pass does not use (replaced by a white pixel once uploads work).
 fn dummy(device: &wgpu::Device) -> Tex {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -1240,4 +1402,25 @@ fn make_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn half_floats_round_trip() {
+        for v in [0.0f32, 1.0, -2.5, 0.5, 65504.0, 1e-5, 6.1e-5, 0.333_333, 1e9, -1e-9] {
+            let back = half_to_f32(f32_to_half(v));
+            let tolerance = (v.abs() * 1e-3).max(6e-8);
+            if v.abs() > 65520.0 {
+                assert!(back.is_infinite(), "{v}");
+            } else {
+                assert!((back - v).abs() <= tolerance, "{v} -> {back}");
+            }
+        }
+        assert_eq!(f32_to_half(1.0), 0x3c00);
+        assert_eq!(f32_to_half(-0.0), 0x8000);
+        assert!(half_to_f32(f32_to_half(f32::NAN)).is_nan());
+    }
 }

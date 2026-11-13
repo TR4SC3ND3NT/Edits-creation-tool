@@ -1,4 +1,6 @@
-//! Effect chains: every kind in `edits_core::effects::EFFECTS`.
+//! Effect chains: every kind in `edits_core::effects::EFFECTS`. The kinds in
+//! [`NATIVE`] are implemented here (colour operations, blurs, glow, ...);
+//! every other kind is a built-in one-pass shader from `fxlib`.
 //!
 //! Sizes given in "% of height" become pixels of the frame being rendered, so
 //! a chain looks the same at any `scale`. Effects whose strength is zero are
@@ -48,6 +50,12 @@ fn color_op(e: &ResolvedEffect, height: f32, frame: f32) -> Option<ColorOp> {
     op
 }
 
+/// The effects implemented in this file rather than as `fxlib` shaders.
+pub(crate) const NATIVE: &[&str] = &[
+    "exposure", "fade", "brightness_contrast", "saturation", "hue", "invert", "threshold", "posterize", "tint", "vignette", "grain",
+    "gaussian_blur", "directional_blur", "zoom_blur", "spin_blur", "glow", "rgb_split", "transform2d", "custom",
+];
+
 fn is_color(kind: &str) -> bool {
     matches!(kind, "exposure" | "fade" | "brightness_contrast" | "saturation" | "hue" | "invert" | "threshold" | "posterize" | "tint" | "vignette" | "grain")
 }
@@ -65,20 +73,31 @@ pub(crate) enum Step {
     RgbSplit([f32; 2]),
     /// 1 / scale, radians, mirror, offset in composition units.
     Transform(f32, f32, f32, [f32; 2]),
-    Custom(wgpu::RenderPipeline, [f32; 8]),
+    /// A built-in one-pass effect (`fxlib`) and its numbers.
+    Builtin(wgpu::RenderPipeline, crate::fxlib::Params),
+    Custom(wgpu::RenderPipeline, crate::fxlib::Params),
 }
 
 impl Renderer {
     /// Turn resolved effects into the steps that will actually run for a
     /// `w` x `h` frame. Effects that would change nothing are left out, so an
     /// empty result means the chain can be skipped altogether.
-    pub(crate) fn plan_effects(&self, layer: &str, effects: &[ResolvedEffect], w: f32, h: f32) -> Result<Vec<Step>> {
+    pub(crate) fn plan_effects(&mut self, layer: &str, effects: &[ResolvedEffect], w: f32, h: f32) -> Result<Vec<Step>> {
         let aspect = self.ctx.time[3];
         let frame = self.ctx.time[2];
         let mut steps = Vec::new();
         for e in effects {
             if is_color(&e.kind) {
                 steps.extend(color_op(e, h, frame).map(Step::Color));
+                continue;
+            }
+            if let Some(b) = crate::fxlib::builtin(&e.kind) {
+                let spec = edits_core::effects::spec(b.kind).ok_or_else(|| anyhow!("effect \"{}\" is not in the registry", b.kind))?;
+                if let Some(p) = (b.pack)(e, &crate::fxlib::Frame { w, h, aspect }) {
+                    let key = crate::fxlib::option_key(spec, e);
+                    let pipeline = self.builtin_pipeline(b, &key).map_err(|err| anyhow!("layer \"{layer}\": {err}"))?;
+                    steps.push(Step::Builtin(pipeline, p));
+                }
                 continue;
             }
             let n = |name: &str| e.num(name) as f32;
@@ -137,7 +156,7 @@ impl Renderer {
                         .and_then(|key| self.custom.get(key))
                         .cloned()
                         .ok_or_else(|| anyhow!("layer \"{layer}\": custom effect \"{source}\" was not prepared"))?;
-                    let mut p = [0.0; 8];
+                    let mut p = [0.0; 16];
                     for (i, v) in p.iter_mut().enumerate() {
                         *v = n(&format!("p{i}"));
                     }
@@ -190,9 +209,9 @@ impl Renderer {
                     self.pass(Pipe::Transform2d, &out, false, &s, None, &[[*inv, *radians, *mirror, aspect], [offset[0], offset[1], 0.0, 0.0]]);
                     out
                 }
-                Step::Custom(pipeline, p) => {
+                Step::Builtin(pipeline, p) | Step::Custom(pipeline, p) => {
                     let out = self.acquire(s.w, s.h);
-                    self.pass_with(pipeline, &out, false, &s, None, &[[p[0], p[1], p[2], p[3]], [p[4], p[5], p[6], p[7]]]);
+                    self.fx_pass(pipeline, &out, &s, None, None, p);
                     out
                 }
             };
