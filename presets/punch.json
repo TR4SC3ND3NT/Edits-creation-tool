@@ -1,0 +1,54 @@
+{
+  "format": "edits.preset/1",
+  "name": "punch",
+  "description": "A zoom punch on the hit: the picture jumps in and settles back.",
+  "tags": [
+    "hit",
+    "zoom",
+    "camera",
+    "accent"
+  ],
+  "variables": {
+    "amount": {
+      "type": "number",
+      "default": 1.15,
+      "min": 1,
+      "max": 3,
+      "doc": "Scale at the peak (1.15 is 15% bigger)."
+    },
+    "decay": {
+      "type": "number",
+      "default": 0.5,
+      "min": 0.05,
+      "max": 8,
+      "unit": "beats",
+      "doc": "Time to fall back to the picture."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "transform": "scale",
+        "adjustment": {
+          "effect": "transform2d",
+          "param": "scale",
+          "base": 1
+        },
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=base * $amount",
+            "ease": {
+              "name": "decay",
+              "rate": 0.35
+            }
+          },
+          {
+            "dt": "=$decay * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}

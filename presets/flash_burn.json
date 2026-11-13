@@ -1,0 +1,48 @@
+{
+  "format": "edits.preset/1",
+  "name": "flash_burn",
+  "description": "An exposure flash: the picture burns out to white so that only the dark ink survives, then comes back.",
+  "tags": [
+    "hit",
+    "light",
+    "accent",
+    "manga"
+  ],
+  "variables": {
+    "stops": {
+      "type": "number",
+      "default": 4,
+      "min": 0,
+      "max": 10,
+      "doc": "Exposure at the peak, in stops."
+    },
+    "decay": {
+      "type": "number",
+      "default": 0.5,
+      "min": 0.05,
+      "max": 8,
+      "unit": "beats",
+      "doc": "Time to fall back to the picture."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "effect": "exposure",
+        "param": "stops",
+        "base": 0,
+        "keys": [
+          {
+            "dt": 0,
+            "v": "$stops",
+            "ease": "out"
+          },
+          {
+            "dt": "=$decay * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}

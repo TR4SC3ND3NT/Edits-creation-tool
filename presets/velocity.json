@@ -1,0 +1,74 @@
+{
+  "format": "edits.preset/1",
+  "name": "velocity",
+  "description": "Velocity speed ramp: the layer's own motion slows, rushes through the middle and slows again; a still layer gets a push that does the same.",
+  "tags": [
+    "speed",
+    "move",
+    "velocity"
+  ],
+  "variables": {
+    "length": {
+      "type": "number",
+      "default": 2,
+      "min": 0.05,
+      "max": 16,
+      "unit": "beats",
+      "doc": "Length of the ramp."
+    },
+    "curve": {
+      "type": "enum",
+      "default": "snap",
+      "options": {
+        "snap": {
+          "curve_ease": [
+            0.85,
+            0,
+            0.15,
+            1
+          ]
+        },
+        "rush": {
+          "curve_ease": "expo_in"
+        },
+        "settle": {
+          "curve_ease": "expo_out"
+        }
+      },
+      "doc": "snap: slow-fast-slow; rush: slow then fast; settle: fast then slow."
+    },
+    "zoom": {
+      "type": "number",
+      "default": 1.2,
+      "min": 1,
+      "max": 3,
+      "doc": "For a still layer: how far the push goes."
+    }
+  },
+  "apply": [
+    {
+      "retime": {
+        "length": "=$length * beat",
+        "curve": "$curve_ease",
+        "otherwise": [
+          {
+            "pulse": {
+              "transform": "scale",
+              "keys": [
+                {
+                  "dt": 0,
+                  "v": "=base",
+                  "ease": "$curve_ease"
+                },
+                {
+                  "dt": "=$length * beat",
+                  "v": "=orig * $zoom"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

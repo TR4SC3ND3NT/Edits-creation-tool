@@ -1,0 +1,50 @@
+{
+  "format": "edits.preset/1",
+  "name": "push_in",
+  "description": "A slow push in: the picture grows steadily and stays there.",
+  "tags": [
+    "zoom",
+    "camera",
+    "move"
+  ],
+  "variables": {
+    "amount": {
+      "type": "number",
+      "default": 1.15,
+      "min": 1,
+      "max": 4,
+      "doc": "Scale at the end, relative to the start."
+    },
+    "length": {
+      "type": "number",
+      "default": 4,
+      "min": 0.05,
+      "max": 16,
+      "unit": "beats",
+      "doc": "How long the push takes."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "transform": "scale",
+        "adjustment": {
+          "effect": "transform2d",
+          "param": "scale",
+          "base": 1
+        },
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=base",
+            "ease": "sine_in_out"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig * $amount"
+          }
+        ]
+      }
+    }
+  ]
+}

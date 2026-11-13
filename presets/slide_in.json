@@ -1,0 +1,68 @@
+{
+  "format": "edits.preset/1",
+  "name": "slide_in",
+  "description": "The picture slides into frame and settles smoothly.",
+  "tags": [
+    "move",
+    "intro",
+    "slide"
+  ],
+  "variables": {
+    "direction": {
+      "type": "enum",
+      "default": "from_right",
+      "options": {
+        "from_left": {
+          "dx": -1,
+          "dy": 0
+        },
+        "from_right": {
+          "dx": 1,
+          "dy": 0
+        },
+        "from_top": {
+          "dx": 0,
+          "dy": -1
+        },
+        "from_bottom": {
+          "dx": 0,
+          "dy": 1
+        }
+      },
+      "doc": "Where it comes from."
+    },
+    "distance": {
+      "type": "number",
+      "default": 1,
+      "min": 0,
+      "max": 4,
+      "doc": "How far it travels, in frame widths (sideways) or heights (up and down)."
+    },
+    "length": {
+      "type": "number",
+      "default": 0.5,
+      "min": 0.05,
+      "max": 16,
+      "unit": "beats",
+      "doc": "How long it takes."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "transform": "position",
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=orig + vec($dx * aspect, $dy, 0) * $distance",
+            "ease": "quint_out"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -55,6 +55,11 @@ pub fn describe(p: &Project) -> String {
             if l.blend != Blend::Normal { format!(" blend={:?}", l.blend).to_lowercase() } else { String::new() },
             if l.enabled { "" } else { " (disabled)" }
         );
+        if let Some(tr) = &l.transition {
+            let params: Vec<String> = tr.params.iter().map(|(k, v)| format!("{k}={}", prop_summary(v).unwrap_or_else(|| const_text(v)))).collect();
+            let ease = if tr.ease == Ease::default() { String::new() } else { format!(" {}", serde_json::to_string(&tr.ease).unwrap_or_default()) };
+            let _ = writeln!(o, "      transition in: {} over {}{ease} {}", tr.kind, tr.duration, params.join("; "));
+        }
         let t = &l.transform;
         for (n, pr) in [("position", &t.position), ("scale", &t.scale), ("rotation", &t.rotation), ("anchor", &t.anchor), ("opacity", &t.opacity)] {
             if let Some(sum) = prop_summary(pr) {

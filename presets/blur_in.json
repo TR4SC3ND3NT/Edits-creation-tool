@@ -1,0 +1,47 @@
+{
+  "format": "edits.preset/1",
+  "name": "blur_in",
+  "description": "The picture comes into focus from a blur.",
+  "tags": [
+    "blur",
+    "focus",
+    "intro"
+  ],
+  "variables": {
+    "radius": {
+      "type": "number",
+      "default": 4,
+      "min": 0,
+      "max": 30,
+      "doc": "Blur at the start, % of height."
+    },
+    "length": {
+      "type": "number",
+      "default": 1,
+      "min": 0.05,
+      "max": 16,
+      "unit": "beats",
+      "doc": "How long it takes."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "effect": "gaussian_blur",
+        "param": "radius",
+        "base": 0,
+        "keys": [
+          {
+            "dt": 0,
+            "v": "$radius",
+            "ease": "out"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}

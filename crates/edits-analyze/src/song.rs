@@ -234,9 +234,13 @@ pub fn analyze_samples(samples: &[f32], sr: u32, source: &str, opts: &SongOpts) 
         anyhow::bail!("{source} is {duration:.2} s long; a song analysis needs at least 2 s of audio");
     }
     let bpb = opts.beats_per_bar.clamp(1, 16);
-    let flux = beats::band_flux(samples, sr, &BANDS);
+    // Silence in front, so that a hit on the very first sample is an onset too.
+    let pad = 1024usize;
+    let mut padded = vec![0.0f32; pad];
+    padded.extend_from_slice(samples);
+    let flux = beats::band_flux(&padded, sr, &BANDS);
     let rate = flux.rate;
-    let t0 = flux.t0;
+    let t0 = flux.t0 - pad as f64 / sr as f64;
     let full = beats::normalise_envelope(&flux.full, rate);
     let bands: Vec<Vec<f32>> = flux.bands.iter().map(|b| beats::normalise_envelope(b, rate)).collect();
     // The tempo is read from the bands added with equal weight, so that busy
@@ -247,7 +251,10 @@ pub fn analyze_samples(samples: &[f32], sr: u32, source: &str, opts: &SongOpts) 
     let tempo = beats::tempo(&onset, &TempoOpts { bpm: opts.bpm, ..Default::default() })
         .ok_or_else(|| anyhow::anyhow!("no tempo found in {source}: the audio has no repeating onsets (is it silent?)"))?;
     let period = 60.0 / tempo.bpm;
-    let offset = tempo.phase;
+    // The estimator gives the phase in [0, period): a beat a few milliseconds
+    // before the start of the file (the first hit of a loop) would otherwise
+    // become the second beat.
+    let offset = if tempo.phase > period - 0.035 { tempo.phase - period } else { tempo.phase };
     let beat_time = |b: f64| offset + b * period;
     let beat_of = |t: f64| (t - offset) / period;
     let n_beats = ((duration - offset) / period).floor().max(0.0) as i64 + 1;
@@ -260,7 +267,7 @@ pub fn analyze_samples(samples: &[f32], sr: u32, source: &str, opts: &SongOpts) 
     let strength_ref = percentile(&full_at, 0.95).max(1e-6);
 
     // Loudness per beat, from the analysis windows' RMS.
-    let win_centre = |i: usize| (i as f64 * 256.0 + 512.0) / sr as f64;
+    let win_centre = |i: usize| (i as f64 * 256.0 + 512.0 - pad as f64) / sr as f64;
     let mut beat_rms = vec![(0.0f64, 0usize); n_beats];
     for (i, &v) in flux.rms.iter().enumerate() {
         let b = beat_of(win_centre(i)).floor();
@@ -297,20 +304,27 @@ pub fn analyze_samples(samples: &[f32], sr: u32, source: &str, opts: &SongOpts) 
     let change_total: f64 = change.iter().map(|c| c * c).sum::<f64>().max(1e-9);
     let mut scores: Vec<(u32, f64)> = Vec::new();
     for k in 0..bpb {
-        let (mut on, mut on_n, mut back, mut back_n) = (0.0, 0usize, 0.0, 0usize);
+        let (mut on, mut on_n, mut back, mut back_n) = (0.0, 0.0f64, 0.0, 0.0f64);
         for b in 0..n_beats {
+            // Beats cut off by the ends of the file would bias the vote.
+            let t = beat_time(b as f64);
+            if t < 0.02 || t > duration - 0.15 {
+                continue;
+            }
+            // Loud beats count more, silent ones (a tail, a break) not at all.
+            let w = energy[b];
             let pos = (b as i64 - k as i64).rem_euclid(bpb as i64) as u32;
             if pos == 0 {
-                on += low_at[b] - 0.5 * mid_at[b];
-                on_n += 1;
+                on += w * (low_at[b] - 0.5 * mid_at[b]);
+                on_n += w;
             } else if bpb == 4 && (pos == 1 || pos == 3) {
-                back += mid_at[b];
-                back_n += 1;
+                back += w * mid_at[b];
+                back_n += w;
             }
         }
         let at_bar: f64 = (0..n_beats).filter(|b| (*b as i64 - k as i64).rem_euclid(bpb as i64) == 0).map(|b| change[b] * change[b]).sum();
         let sections = if change_total > 0.05 { at_bar / change_total } else { 0.0 };
-        let score = on / on_n.max(1) as f64 + 0.5 * back / back_n.max(1) as f64 + sections + 1e-3 * (bpb - k) as f64;
+        let score = on / on_n.max(1e-6) + 0.5 * back / back_n.max(1e-6) + sections + if k == 0 { 0.02 } else { 0.0 };
         scores.push((k, score));
     }
     scores.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -321,7 +335,7 @@ pub fn analyze_samples(samples: &[f32], sr: u32, source: &str, opts: &SongOpts) 
     let beats_out: Vec<Beat> = (0..n_beats)
         .map(|b| {
             let pos = (b as i64 - downbeat as i64).rem_euclid(bpb as i64) as u32 + 1;
-            Beat { b: b as i64, t: r(beat_time(b as f64), 3), bar: bar_of(b as f64), beat: pos, s: r((full_at[b] / strength_ref).clamp(0.0, 1.0), 2) }
+            Beat { b: b as i64, t: r(beat_time(b as f64).max(0.0), 3), bar: bar_of(b as f64), beat: pos, s: r((full_at[b] / strength_ref).clamp(0.0, 1.0), 2) }
         })
         .collect();
     let downbeats: Vec<Downbeat> = beats_out.iter().filter(|b| b.beat == 1).map(|b| Downbeat { bar: b.bar, t: b.t, b: b.b as f64 }).collect();
@@ -335,8 +349,8 @@ pub fn analyze_samples(samples: &[f32], sr: u32, source: &str, opts: &SongOpts) 
         lists.push(
             peaks
                 .into_iter()
-                .filter(|p| p.0 >= 0.0 && p.0 < duration)
-                .map(|(t, v)| Hit { t: r(t, 3), b: r(beat_of(t), 2), s: r((v / top) as f64, 2) })
+                .filter(|p| p.0 >= -0.05 && p.0 < duration)
+                .map(|(t, v)| Hit { t: r(t.max(0.0), 3), b: r(beat_of(t), 2), s: r((v / top) as f64, 2) })
                 .filter(|h| h.s >= 0.1)
                 .collect(),
         );
@@ -441,7 +455,7 @@ pub fn analyze_samples(samples: &[f32], sr: u32, source: &str, opts: &SongOpts) 
     if let Some(d) = &drop {
         markers.push(Marker { label: "drop".into(), t: d.t, b: d.b });
     }
-    for s in &sections {
+    for s in sections.iter().filter(|_| sections.len() > 1) {
         if s.label != "drop" {
             markers.push(Marker { label: s.label.clone(), t: s.from, b: s.from_beat });
         }

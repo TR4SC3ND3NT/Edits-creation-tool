@@ -1,0 +1,58 @@
+{
+  "format": "edits.preset/1",
+  "name": "rgb_split",
+  "description": "Chromatic aberration hit: red and blue split apart and come back together.",
+  "tags": [
+    "hit",
+    "glitch",
+    "colour",
+    "accent"
+  ],
+  "variables": {
+    "amount": {
+      "type": "number",
+      "default": 1.5,
+      "min": 0,
+      "max": 20,
+      "doc": "Split at the peak, % of height."
+    },
+    "angle": {
+      "type": "number",
+      "default": 0,
+      "min": -360,
+      "max": 360,
+      "doc": "Direction of the split, degrees."
+    },
+    "decay": {
+      "type": "number",
+      "default": 0.5,
+      "min": 0.05,
+      "max": 8,
+      "unit": "beats",
+      "doc": "Time to fall back to the picture."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "effect": "rgb_split",
+        "param": "amount",
+        "base": 0,
+        "params": {
+          "angle": "$angle"
+        },
+        "keys": [
+          {
+            "dt": 0,
+            "v": "$amount",
+            "ease": "out"
+          },
+          {
+            "dt": "=$decay * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}

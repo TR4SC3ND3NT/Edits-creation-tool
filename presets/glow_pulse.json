@@ -1,0 +1,66 @@
+{
+  "format": "edits.preset/1",
+  "name": "glow_pulse",
+  "description": "A bloom that swells on the hit and fades.",
+  "tags": [
+    "hit",
+    "light",
+    "glow",
+    "accent"
+  ],
+  "variables": {
+    "intensity": {
+      "type": "number",
+      "default": 1.5,
+      "min": 0,
+      "max": 10,
+      "doc": "Glow strength at the peak."
+    },
+    "threshold": {
+      "type": "number",
+      "default": 0.5,
+      "min": 0,
+      "max": 1,
+      "doc": "Brightness above which pixels glow."
+    },
+    "radius": {
+      "type": "number",
+      "default": 3,
+      "min": 0,
+      "max": 30,
+      "doc": "Glow size, % of height."
+    },
+    "decay": {
+      "type": "number",
+      "default": 1,
+      "min": 0.05,
+      "max": 8,
+      "unit": "beats",
+      "doc": "Time to fall back to the picture."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "effect": "glow",
+        "param": "intensity",
+        "base": 0,
+        "params": {
+          "threshold": "$threshold",
+          "radius": "$radius"
+        },
+        "keys": [
+          {
+            "dt": 0,
+            "v": "$intensity",
+            "ease": "out"
+          },
+          {
+            "dt": "=$decay * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}

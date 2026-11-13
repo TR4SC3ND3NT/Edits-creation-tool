@@ -1,0 +1,50 @@
+{
+  "format": "edits.preset/1",
+  "name": "zoom_out",
+  "description": "Starts zoomed in and pulls back smoothly to the framing.",
+  "tags": [
+    "zoom",
+    "camera",
+    "move"
+  ],
+  "variables": {
+    "amount": {
+      "type": "number",
+      "default": 1.35,
+      "min": 1,
+      "max": 4,
+      "doc": "Scale at the start."
+    },
+    "length": {
+      "type": "number",
+      "default": 2,
+      "min": 0.05,
+      "max": 16,
+      "unit": "beats",
+      "doc": "How long the pull-back takes."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "transform": "scale",
+        "adjustment": {
+          "effect": "transform2d",
+          "param": "scale",
+          "base": 1
+        },
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=base * $amount",
+            "ease": "quint_out"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}

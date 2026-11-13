@@ -680,6 +680,8 @@ fn apply_once(doc: &Value, preset: &Preset, target: &Target, at: f64, vars: &Map
     env.insert("beat".into(), vec![tc.beat_len()]);
     env.insert("frame".into(), vec![tc.frame_len()]);
     env.insert("end".into(), vec![tc.duration]);
+    let size = |k: &str| doc.pointer(&format!("/settings/{k}")).and_then(Value::as_f64).unwrap_or(1.0);
+    env.insert("aspect".into(), vec![size("width") / size("height").max(1.0)]);
     if let Some(i) = target {
         let l = &layers(&doc)[i];
         env.insert("in".into(), vec![num_field(l, "in").unwrap_or(0.0)]);
@@ -780,8 +782,9 @@ impl Run<'_> {
                 }
                 let list = l["effects"].as_array_mut().ok_or("\"effects\" is not an array")?;
                 list.push(json!({ "kind": kind, "params": params }));
+                let n = list.len() - 1;
                 self.changes.push(format!("added effect {kind} to {id}"));
-                list.len() - 1
+                n
             }
         };
         Ok((format!("{lp}/effects/{ei}/params/{param}"), base, format!("{id}.{kind}.{param}")))
@@ -967,7 +970,6 @@ impl Run<'_> {
 
     fn set(&mut self, spec: &Map<String, Value>) -> Result<(), String> {
         let ptr = spec.get("pointer").and_then(Value::as_str).ok_or("\"set\" needs a \"pointer\" inside the layer, e.g. /in")?;
-        let value = subst(spec.get("value").ok_or("\"set\" needs a \"value\"")?, &self.env, &self.vars)?;
         let i = self.target("\"set\"")?;
         let on = spec.get("on").and_then(Value::as_str).unwrap_or("target");
         let li = match on {
@@ -976,6 +978,7 @@ impl Run<'_> {
                 .ok_or_else(|| format!("no picture below \"{}\" is visible just before {}: a transition needs the outgoing picture under the incoming one", self.layer_id(i), self.at))?,
             other => return Err(format!("\"on\" is \"target\" or \"previous\", not \"{other}\"")),
         };
+        let value = subst(spec.get("value").ok_or("\"set\" needs a \"value\"")?, &self.env, &self.vars)?;
         let full = format!("/layers/{li}{ptr}");
         pointer::set(&mut self.doc, &full, value.clone())?;
         let id = self.layer_id(li);

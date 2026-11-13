@@ -1,0 +1,49 @@
+{
+  "format": "edits.preset/1",
+  "name": "spin",
+  "description": "The picture spins round in the frame.",
+  "tags": [
+    "move",
+    "rotate"
+  ],
+  "variables": {
+    "turns": {
+      "type": "number",
+      "default": 1,
+      "min": -16,
+      "max": 16,
+      "doc": "Full turns (negative: clockwise)."
+    },
+    "length": {
+      "type": "number",
+      "default": 1,
+      "min": 0.05,
+      "max": 16,
+      "unit": "beats",
+      "doc": "How long it takes."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "transform": "rotation",
+        "adjustment": {
+          "effect": "transform2d",
+          "param": "rotation",
+          "base": 0
+        },
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=orig",
+            "ease": "in_out"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig + vec(0, 0, 360 * $turns)"
+          }
+        ]
+      }
+    }
+  ]
+}

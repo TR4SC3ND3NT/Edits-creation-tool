@@ -4,6 +4,7 @@
 //! stderr, and every failure ends with a non-zero exit code.
 
 mod analysis;
+mod beatcmd;
 mod demo;
 mod encode;
 mod launch;
@@ -69,6 +70,20 @@ enum Command {
     },
     #[command(flatten)]
     Analysis(analysis::AnalysisCommand),
+    /// List the presets (named, parameterised flashes, punches, slides, transitions...) with their variables
+    Presets(beatcmd::PresetsArgs),
+    /// Apply a preset to a project at one or more times, as one undoable edit
+    Apply(beatcmd::ApplyArgs),
+    /// Save what a layer does over a time range as a preset in the project's presets/ folder
+    SavePreset(beatcmd::SavePresetArgs),
+    /// Beat operations: cut pictures to the beat, accent beats and onsets with a preset
+    #[command(subcommand)]
+    Beats(beatcmd::BeatsCommand),
+    /// List every transition with its parameters
+    Transitions {
+        #[arg(long)]
+        json: bool,
+    },
     /// Tune a project's effect values until its render matches a reference recipe (flashes, saturation, blur, zoom, moves)
     Fit(analysis::FitArgs),
     /// Open the preview window on a project (runs `edits-gui`; see docs/GUI.md)
@@ -94,12 +109,12 @@ struct RenderArgs {
     /// Output file (.mp4)
     #[arg(short, long)]
     output: PathBuf,
-    /// Start of the range, in project time (beats or seconds)
+    /// Start of the range: project time (beats or seconds), or b8, bar 2, 2.5s, f60, a marker
     #[arg(long, value_name = "T")]
-    from: Option<f64>,
-    /// End of the range, in project time
+    from: Option<String>,
+    /// End of the range, written the same way
     #[arg(long, value_name = "T")]
-    to: Option<f64>,
+    to: Option<String>,
     /// Render at this fraction of the project resolution
     #[arg(long, default_value_t = 1.0)]
     scale: f32,
@@ -121,12 +136,12 @@ struct RenderArgs {
 struct BenchArgs {
     /// Project file (.json)
     project: PathBuf,
-    /// Start of the range, in project time (beats or seconds)
+    /// Start of the range: project time (beats or seconds), or b8, bar 2, 2.5s, f60, a marker
     #[arg(long, value_name = "T")]
-    from: Option<f64>,
-    /// End of the range, in project time
+    from: Option<String>,
+    /// End of the range, written the same way
     #[arg(long, value_name = "T")]
-    to: Option<f64>,
+    to: Option<String>,
     /// Time only this many frames, spread evenly over the range [default: every frame]
     #[arg(long, value_name = "N")]
     count: Option<u64>,
@@ -144,9 +159,9 @@ struct BenchArgs {
 struct FrameArgs {
     /// Project file (.json)
     project: PathBuf,
-    /// Project time (beats or seconds); the frame containing it is rendered
-    #[arg(long, value_name = "T", conflicts_with = "frame")]
-    at: Option<f64>,
+    /// Project time (beats or seconds), or b8, bar 2, 4:3, 2.5s, a marker such as drop; the frame containing it is rendered
+    #[arg(long, value_name = "T", conflicts_with = "frame", allow_hyphen_values = true)]
+    at: Option<String>,
     /// Frame number, starting at 0
     #[arg(long, value_name = "N")]
     frame: Option<u64>,
@@ -164,12 +179,12 @@ struct FrameArgs {
 struct SheetArgs {
     /// Project file (.json)
     project: PathBuf,
-    /// Start of the range, in project time (beats or seconds)
+    /// Start of the range: project time (beats or seconds), or b8, bar 2, 2.5s, f60, a marker
     #[arg(long, value_name = "T")]
-    from: Option<f64>,
-    /// End of the range, in project time
+    from: Option<String>,
+    /// End of the range, written the same way
     #[arg(long, value_name = "T")]
-    to: Option<f64>,
+    to: Option<String>,
     /// How many frames, spread evenly over the range [default: 16]
     #[arg(long, value_name = "N", conflicts_with = "every_frame")]
     count: Option<u64>,
@@ -229,6 +244,14 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Analysis(cmd) => analysis::run(cmd),
+        Command::Presets(a) => beatcmd::presets(a),
+        Command::Apply(a) => beatcmd::apply(a),
+        Command::SavePreset(a) => beatcmd::save_preset(a),
+        Command::Beats(cmd) => beatcmd::beats(cmd),
+        Command::Transitions { json } => {
+            beatcmd::transitions(json);
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Fit(a) => analysis::fit(a),
         Command::Gui { args } => launch::exec("edits-gui", "EDITS_GUI_BIN", "edits-gui", &args),
         Command::Mcp { args } => launch::exec("edits-mcp", "EDITS_MCP_BIN", "edits-mcp", &args),
@@ -336,8 +359,14 @@ fn open(project: &Project, dir: &Path, adapter: Option<AdapterPolicy>, samples: 
     Ok((renderer, started.elapsed().as_secs_f64() * 1000.0))
 }
 
+/// A time written on the command line (`12`, `b12`, `bar 4`, `2.5s`, `drop`...) in project time.
+fn time_arg(p: &Project, t: &Option<String>, flag: &str) -> Result<Option<f64>> {
+    t.as_deref().map(|t| edits_core::time::TimeCtx::from_project(p).resolve(t).map_err(|e| anyhow!("{flag}: {e}"))).transpose()
+}
+
 /// Frames `first..end` covering project times `from..to` (defaults: the whole project).
-fn frame_range(p: &Project, from: Option<f64>, to: Option<f64>) -> Result<(u64, u64)> {
+fn frame_range(p: &Project, from: &Option<String>, to: &Option<String>) -> Result<(u64, u64)> {
+    let (from, to) = (time_arg(p, from, "--from")?, time_arg(p, to, "--to")?);
     let total = p.frame_count();
     let index = |t: f64| (p.to_seconds(t) * p.settings.fps - 1e-6).ceil().max(0.0) as u64;
     let first = from.map(index).unwrap_or(0);
@@ -412,7 +441,7 @@ impl Progress {
 fn render(a: RenderArgs, adapter: Option<AdapterPolicy>) -> Result<ExitCode> {
     check_scale(a.scale)?;
     let (project, dir) = load(&a.project)?;
-    let (first, end) = frame_range(&project, a.from, a.to)?;
+    let (first, end) = frame_range(&project, &a.from, &a.to)?;
     let ffmpeg = encode::probe();
     let encoder = ffmpeg.h264_encoder()?.to_string();
     let audio = match (&project.audio, a.no_audio) {
@@ -481,7 +510,8 @@ fn frame(a: FrameArgs, adapter: Option<AdapterPolicy>) -> Result<ExitCode> {
     check_scale(a.scale)?;
     let (project, dir) = load(&a.project)?;
     let total = project.frame_count();
-    let index = match (a.frame, a.at) {
+    let at = time_arg(&project, &a.at, "--at")?;
+    let index = match (a.frame, at) {
         (Some(n), _) => n,
         (None, Some(t)) => {
             if t < 0.0 {
@@ -527,7 +557,7 @@ fn cell_label(p: &Project, frame: u64) -> String {
 
 fn contact_sheet(a: SheetArgs, adapter: Option<AdapterPolicy>) -> Result<ExitCode> {
     let (project, dir) = load(&a.project)?;
-    let (first, end) = frame_range(&project, a.from, a.to)?;
+    let (first, end) = frame_range(&project, &a.from, &a.to)?;
     let frames: Vec<u64> = if a.every_frame { (first..end).collect() } else { sheet::spread(first, end, a.count.unwrap_or(16).max(1)) };
     let scale = a.scale.unwrap_or_else(|| (320.0 / project.settings.width as f32).min(1.0));
     check_scale(scale)?;
@@ -564,7 +594,7 @@ fn contact_sheet(a: SheetArgs, adapter: Option<AdapterPolicy>) -> Result<ExitCod
 fn bench(a: BenchArgs, adapter: Option<AdapterPolicy>) -> Result<ExitCode> {
     check_scale(a.scale)?;
     let (project, dir) = load(&a.project)?;
-    let (first, end) = frame_range(&project, a.from, a.to)?;
+    let (first, end) = frame_range(&project, &a.from, &a.to)?;
     let frames: Vec<u64> = match a.count {
         Some(n) => sheet::spread(first, end, n.max(1)),
         None => (first..end).collect(),

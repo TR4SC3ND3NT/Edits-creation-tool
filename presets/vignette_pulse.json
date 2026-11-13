@@ -1,0 +1,47 @@
+{
+  "format": "edits.preset/1",
+  "name": "vignette_pulse",
+  "description": "The corners darken on the hit and open up again.",
+  "tags": [
+    "hit",
+    "vignette",
+    "accent"
+  ],
+  "variables": {
+    "amount": {
+      "type": "number",
+      "default": 0.8,
+      "min": 0,
+      "max": 1,
+      "doc": "Darkening at the peak."
+    },
+    "decay": {
+      "type": "number",
+      "default": 1,
+      "min": 0.05,
+      "max": 8,
+      "unit": "beats",
+      "doc": "Time to fall back to the picture."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "effect": "vignette",
+        "param": "amount",
+        "base": 0,
+        "keys": [
+          {
+            "dt": 0,
+            "v": "$amount",
+            "ease": "out"
+          },
+          {
+            "dt": "=$decay * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}

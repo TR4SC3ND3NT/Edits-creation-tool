@@ -1,0 +1,40 @@
+{
+  "format": "edits.preset/1",
+  "name": "bw_hit",
+  "description": "The picture drops to black and white on the hit, then the colour snaps back.",
+  "tags": [
+    "hit",
+    "colour",
+    "accent"
+  ],
+  "variables": {
+    "length": {
+      "type": "number",
+      "default": 1,
+      "min": 0.05,
+      "max": 16,
+      "unit": "beats",
+      "doc": "How long it stays black and white."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "effect": "saturation",
+        "param": "amount",
+        "base": 1,
+        "keys": [
+          {
+            "dt": 0,
+            "v": 0,
+            "ease": "hold"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}

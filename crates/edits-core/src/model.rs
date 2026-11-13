@@ -171,12 +171,8 @@ pub struct Transition {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, Prop>,
     /// Easing of the progress.
-    #[serde(default, skip_serializing_if = "is_linear")]
+    #[serde(default)]
     pub ease: Ease,
-}
-
-fn is_linear(e: &Ease) -> bool {
-    *e == Ease::default()
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

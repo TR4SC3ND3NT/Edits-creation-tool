@@ -1,0 +1,63 @@
+{
+  "format": "edits.preset/1",
+  "name": "overlay_texture",
+  "description": "Lays a texture slot (grain, light leak, halftone) over the frame with a blend mode.",
+  "tags": [
+    "overlay",
+    "texture",
+    "look"
+  ],
+  "target": "project",
+  "variables": {
+    "slot": {
+      "type": "string",
+      "default": "tex",
+      "doc": "The slot holding the texture."
+    },
+    "blend": {
+      "type": "enum",
+      "default": "screen",
+      "options": {
+        "screen": {},
+        "add": {},
+        "overlay": {},
+        "multiply": {},
+        "lighten": {}
+      },
+      "doc": "How it combines with the picture."
+    },
+    "opacity": {
+      "type": "number",
+      "default": 1,
+      "min": 0,
+      "max": 1,
+      "doc": "Opacity of the texture."
+    },
+    "length": {
+      "type": "number",
+      "default": 4,
+      "min": 0.05,
+      "max": 16,
+      "unit": "beats",
+      "doc": "How long it stays."
+    }
+  },
+  "apply": [
+    {
+      "layer": {
+        "place": "top",
+        "layer": {
+          "id": "overlay",
+          "kind": "image",
+          "slot": "$slot",
+          "blend": "$blend",
+          "in": "=at",
+          "out": "=min(end, at + $length * beat)",
+          "transform": {
+            "opacity": "$opacity"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -391,7 +391,8 @@ mod tests {
         assert_eq!(c.resolve("drop+2b").unwrap(), 18.0);
         assert_eq!(c.resolve("drop-1bar").unwrap(), 12.0);
         assert_eq!(c.resolve("drop - 0.5").unwrap(), 15.5);
-        assert!((c.resolve("b4+5f").unwrap() - 4.2).abs() < 1e-9);
+        // A frame is 0.04 s, 0.08 beats at 120 BPM.
+        assert!((c.resolve("b4+5f").unwrap() - 4.4).abs() < 1e-9);
         assert_eq!(c.resolve("end").unwrap(), 32.0);
         let e = c.resolve("dorp").unwrap_err();
         assert!(e.contains("markers: drop"), "{e}");

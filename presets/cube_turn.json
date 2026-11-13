@@ -1,0 +1,73 @@
+{
+  "format": "edits.preset/1",
+  "name": "cube_turn",
+  "description": "A quarter turn of the layer around an axis (on a cube layer: the next face comes round).",
+  "tags": [
+    "3d",
+    "cube",
+    "move"
+  ],
+  "variables": {
+    "axis": {
+      "type": "enum",
+      "default": "y",
+      "options": {
+        "x": {
+          "ax": 1,
+          "ay": 0
+        },
+        "y": {
+          "ax": 0,
+          "ay": 1
+        }
+      },
+      "doc": "y turns sideways, x up and over."
+    },
+    "direction": {
+      "type": "enum",
+      "default": "forward",
+      "options": {
+        "forward": {
+          "dir": 1
+        },
+        "backward": {
+          "dir": -1
+        }
+      },
+      "doc": "Which way it turns."
+    },
+    "turns": {
+      "type": "number",
+      "default": 1,
+      "min": -8,
+      "max": 8,
+      "doc": "Quarter turns (1 = 90 degrees)."
+    },
+    "length": {
+      "type": "number",
+      "default": 0.5,
+      "min": 0.05,
+      "max": 16,
+      "unit": "beats",
+      "doc": "How long it takes."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "transform": "rotation",
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=orig",
+            "ease": "back_out"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig + vec($ax, $ay, 0) * 90 * $turns * $dir"
+          }
+        ]
+      }
+    }
+  ]
+}

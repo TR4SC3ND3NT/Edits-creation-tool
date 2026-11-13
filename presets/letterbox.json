@@ -1,0 +1,86 @@
+{
+  "format": "edits.preset/1",
+  "name": "letterbox",
+  "description": "Black cinema bars at the top and bottom of the frame.",
+  "tags": [
+    "look",
+    "frame",
+    "cinema"
+  ],
+  "target": "project",
+  "variables": {
+    "height": {
+      "type": "number",
+      "default": 0.12,
+      "min": 0.01,
+      "max": 0.45,
+      "doc": "Height of each bar, in frame heights."
+    },
+    "length": {
+      "type": "number",
+      "default": 8,
+      "min": 0.05,
+      "max": 16,
+      "unit": "beats",
+      "doc": "How long the bars stay (they stop at the end of the project)."
+    }
+  },
+  "apply": [
+    {
+      "layer": {
+        "place": "top",
+        "layer": {
+          "id": "letterbox-top",
+          "kind": "solid",
+          "color": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "in": "=at",
+          "out": "=min(end, at + $length * beat)",
+          "transform": {
+            "position": [
+              0,
+              "=-0.5 + $height / 2",
+              0
+            ],
+            "scale": [
+              1,
+              "$height"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "layer": {
+        "place": "top",
+        "layer": {
+          "id": "letterbox-bottom",
+          "kind": "solid",
+          "color": [
+            0,
+            0,
+            0,
+            1
+          ],
+          "in": "=at",
+          "out": "=min(end, at + $length * beat)",
+          "transform": {
+            "position": [
+              0,
+              "=0.5 - $height / 2",
+              0
+            ],
+            "scale": [
+              1,
+              "$height"
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

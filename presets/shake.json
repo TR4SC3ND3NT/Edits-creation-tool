@@ -1,0 +1,99 @@
+{
+  "format": "edits.preset/1",
+  "name": "shake",
+  "description": "Camera shake on the hit that dies away: the picture jitters and rolls.",
+  "tags": [
+    "hit",
+    "camera",
+    "shake",
+    "accent"
+  ],
+  "variables": {
+    "amplitude": {
+      "type": "number",
+      "default": 0.03,
+      "min": 0,
+      "max": 0.5,
+      "doc": "How far it jitters at the start, in frame heights."
+    },
+    "rotation": {
+      "type": "number",
+      "default": 2,
+      "min": 0,
+      "max": 45,
+      "doc": "How far it rolls at the start, in degrees."
+    },
+    "frequency": {
+      "type": "number",
+      "default": 14,
+      "min": 1,
+      "max": 60,
+      "doc": "Jitters per second."
+    },
+    "decay": {
+      "type": "number",
+      "default": 1,
+      "min": 0.05,
+      "max": 8,
+      "unit": "beats",
+      "doc": "Time to fall back to the picture."
+    }
+  },
+  "apply": [
+    {
+      "shake": {
+        "transform": "position",
+        "adjustment": {
+          "effect": "transform2d",
+          "param": "offset",
+          "base": [
+            0,
+            0
+          ]
+        },
+        "frequency": "=$frequency",
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=vec($amplitude, $amplitude, 0)",
+            "ease": "out"
+          },
+          {
+            "dt": "=$decay * beat",
+            "v": [
+              0,
+              0,
+              0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "shake": {
+        "transform": "rotation",
+        "adjustment": {
+          "effect": "transform2d",
+          "param": "rotation",
+          "base": 0
+        },
+        "frequency": "=$frequency * 0.7",
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=vec(0, 0, $rotation)",
+            "ease": "out"
+          },
+          {
+            "dt": "=$decay * beat",
+            "v": [
+              0,
+              0,
+              0
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -204,6 +204,8 @@ pub struct Renderer {
     pictures: HashMap<String, Picture>,
     /// Compiled custom effects by file (path, size, modification time).
     pub(crate) custom: HashMap<String, wgpu::RenderPipeline>,
+    /// Transition pipelines by kind, compiled on first use.
+    transition_pipes: HashMap<&'static str, wgpu::RenderPipeline>,
     pub(crate) scene: Option<Arc<Scene>>,
     readback: Option<Readback>,
     samples_override: Option<u32>,
@@ -363,6 +365,7 @@ impl Renderer {
             binds: HashMap::new(),
             pictures: HashMap::new(),
             custom: HashMap::new(),
+            transition_pipes: HashMap::new(),
             scene: None,
             readback: None,
             samples_override: None,
@@ -519,6 +522,37 @@ impl Renderer {
             );
         }
         Ok(pipeline)
+    }
+
+    /// The pipeline of a transition, compiled the first time it is used.
+    fn transition_pipeline(&mut self, kind: &str) -> Result<wgpu::RenderPipeline> {
+        let def = crate::transitions::def(kind).ok_or_else(|| anyhow!("unknown transition \"{kind}\" (see `edits transitions`)"))?;
+        if let Some(p) = self.transition_pipes.get(def.kind) {
+            return Ok(p.clone());
+        }
+        let device = &self.gpu.device;
+        let source = crate::transitions::source(def);
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(def.kind), source: wgpu::ShaderSource::Wgsl(source.into()) });
+        let pipeline = make_pipeline(device, &self.pipeline_layout, &module, "edits_tr_vs", "edits_tr_fs", WORK_FORMAT, None, 1, false);
+        if let Some(err) = pollster::block_on(scope.pop()) {
+            bail!("transition \"{kind}\" does not compile on this adapter: {}", err.to_string().trim());
+        }
+        self.transition_pipes.insert(def.kind, pipeline.clone());
+        Ok(pipeline)
+    }
+
+    /// One transition pass: `from` and `to` into `target`.
+    fn transition_pass(&mut self, target: &Tex, from: &Tex, to: &Tex, tr: &edits_core::ResolvedTransition) -> Result<()> {
+        let pipeline = self.transition_pipeline(tr.kind)?;
+        let def = crate::transitions::def(tr.kind).expect("checked by transition_pipeline");
+        let mut uni = Uni::zeroed();
+        crate::transitions::uniforms(def, tr, target.w as f32 / target.h as f32, bytemuck::bytes_of_mut(&mut uni));
+        let bind = self.bind(from, Some(to), Samp::Linear);
+        let offset = self.push_uniform(&uni);
+        self.name(|| format!("transition {}", tr.kind));
+        self.raw_pass(&pipeline, &target.view, None, None, Some(wgpu::Color::TRANSPARENT), &[(bind, offset, 3)]);
+        Ok(())
     }
 
     // ---- textures ------------------------------------------------------------
@@ -941,6 +975,37 @@ impl Renderer {
                 }
                 let effects: Vec<_> = layer.effects.iter().filter(|e| e.enabled).map(|e| ev.effect(e, t)).collect();
                 let steps = self.plan_effects(&layer.id, &effects, w as f32, h as f32)?;
+                if let Some(tr) = ev.transition(layer, t) {
+                    // "from" is the frame so far; "to" is the frame with this
+                    // layer on it, so the end of the transition is the plain cut.
+                    let from = self.materialise(&mut acc, background);
+                    let to = self.acquire(w, h);
+                    if matches!(layer.kind, LayerKind::Adjustment) {
+                        match self.run_effects(&from, &steps) {
+                            Some(out) => {
+                                self.compose(&to, Source::Tex(&out), &[], Sink::Over { dst: Some(&from), flat, mode: layer.blend, opacity });
+                                self.release(out);
+                            }
+                            None => self.compose(&to, Source::Tex(&from), &[], Sink::Plain),
+                        }
+                    } else {
+                        let (quads, depth) = self.layer_quads(&scene, layer, vp * geometry::model(&rl), aspect);
+                        let (head, tail) = crate::fx::split_tail(&steps);
+                        let mut content = self.draw_quads(&quads, depth);
+                        if let Some(out) = self.run_effects(&content, head) {
+                            self.release(std::mem::replace(&mut content, out));
+                        }
+                        self.compose(&to, Source::Tex(&content), &tail, Sink::Over { dst: Some(&from), flat, mode: layer.blend, opacity });
+                        self.release(content);
+                    }
+                    let out = self.acquire(w, h);
+                    self.transition_pass(&out, &from, &to, &tr).with_context(|| format!("layer \"{}\"", layer.id))?;
+                    self.release(to);
+                    if let Some(old) = acc.replace(out) {
+                        self.release(old);
+                    }
+                    continue;
+                }
                 if matches!(layer.kind, LayerKind::Adjustment) {
                     if steps.is_empty() {
                         continue;
@@ -1139,6 +1204,10 @@ fn signature(ev: &Evaluator, t: f64) -> Vec<u64> {
         out.push(u64::MAX - i as u64);
         out.extend(l.position.iter().chain(&l.scale).chain(&l.rotation).chain(&l.anchor).map(|v| v.to_bits()));
         out.push(l.opacity.to_bits());
+        if let Some(tr) = ev.transition(layer, t) {
+            out.push(tr.progress.to_bits());
+            out.extend(tr.params.values().flatten().map(|v| v.to_bits()));
+        }
         for e in layer.effects.iter().filter(|e| e.enabled) {
             if e.kind == "custom" {
                 // Custom shaders can read the time itself.
