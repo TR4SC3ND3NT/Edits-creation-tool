@@ -208,3 +208,53 @@ fn probe(a: ProbeArgs) -> Result<ExitCode> {
     }
     Ok(ExitCode::SUCCESS)
 }
+
+#[derive(Args, Clone)]
+pub struct FitArgs {
+    /// Project to improve, usually drafted from the same analysis (any pictures in its slots)
+    pub project: PathBuf,
+    /// reference_analysis.json written by `edits analyze`
+    #[arg(long, short)]
+    pub reference: PathBuf,
+    /// Only these reference shots, e.g. 3,7 (default: every shot)
+    #[arg(long, value_delimiter = ',')]
+    pub shots: Vec<usize>,
+    /// Parameter groups to fit: auto, or any of exposure, exposure_decay, saturation, threshold, blur, scale, scale_decay, position, position_decay
+    #[arg(long, value_delimiter = ',', default_value = "auto")]
+    pub params: Vec<String>,
+    /// Renders allowed per shot
+    #[arg(long, default_value_t = 24)]
+    pub budget: usize,
+    /// Render scale while fitting (default: the reference's analysis height)
+    #[arg(long)]
+    pub scale: Option<f32>,
+    /// Report what would change; write nothing
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Seed for the order in which parameters are tried
+    #[arg(long, default_value_t = 1)]
+    pub seed: u64,
+    /// Print the full report as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+pub fn fit(a: FitArgs) -> Result<ExitCode> {
+    let opts = edits_calib::fit::FitOpts {
+        shots: a.shots,
+        params: a.params,
+        budget: a.budget,
+        scale: a.scale,
+        dry_run: a.dry_run,
+        seed: a.seed,
+        actor: edits_core::edit::AGENT.to_string(),
+    };
+    eprintln!("fitting {} to {} (this renders each shot up to {} times)...", a.project.display(), a.reference.display(), opts.budget);
+    let report = edits_calib::fit::fit_file(&a.project, &a.reference, &opts)?;
+    if a.json {
+        println!("{}", edits_analyze::jsonfmt::to_string(&report)?);
+    } else {
+        print!("{}", edits_calib::fit::summary(&report));
+    }
+    Ok(ExitCode::SUCCESS)
+}

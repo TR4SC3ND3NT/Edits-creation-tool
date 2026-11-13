@@ -43,6 +43,7 @@ files, D = can overwrite or remove something.
 | `project_check(project)` | R | Errors and warnings, each with a JSON pointer and a hint |
 | `project_describe(project)` | R | Compact text outline: read this first |
 | `project_edit(project, ops, dry_run?)` | D | Apply a batch of edits as one validated step |
+| `project_fit(project, analysis, shots?, params?, budget?, dry_run?)` | D | Background job: tune effect values until the render matches a reference in signature space; one history entry |
 | `project_read(project, pointer?)` | R | The JSON, or the value at a pointer (one layer, one effect) |
 | `project_undo(project)` | D | Restore the version before the newest edit in the shared history (yours or the person's) |
 | `reference_analyze(video, out_dir, bpm?, beat_offset?, whole?)` | W | Background job: extract the recipe of a finished edit |

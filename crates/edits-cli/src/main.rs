@@ -69,6 +69,8 @@ enum Command {
     },
     #[command(flatten)]
     Analysis(analysis::AnalysisCommand),
+    /// Tune a project's effect values until its render matches a reference recipe (flashes, saturation, blur, zoom, moves)
+    Fit(analysis::FitArgs),
     /// Open the preview window on a project (runs `edits-gui`; see docs/GUI.md)
     #[command(disable_help_flag = true)]
     Gui {
@@ -227,6 +229,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Analysis(cmd) => analysis::run(cmd),
+        Command::Fit(a) => analysis::fit(a),
         Command::Gui { args } => launch::exec("edits-gui", "EDITS_GUI_BIN", "edits-gui", &args),
         Command::Mcp { args } => launch::exec("edits-mcp", "EDITS_MCP_BIN", "edits-mcp", &args),
     }

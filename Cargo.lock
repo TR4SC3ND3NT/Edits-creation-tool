@@ -772,6 +772,7 @@ dependencies = [
  "anyhow",
  "clap",
  "edits-analyze",
+ "edits-calib",
  "edits-core",
  "edits-render",
  "image",

@@ -54,6 +54,7 @@ fn main() -> Result<()> {
                 scale: value("--scale").map(|v| v.parse::<f32>()).transpose().context("--scale takes a number")?,
                 dry_run: flag("--dry-run"),
                 seed: num("--seed", 1)?,
+                ..Default::default()
             };
             let report = edits_calib::fit::fit_file(std::path::Path::new(p), std::path::Path::new(r), &opts)?;
             if let Some(out) = value("--json") {

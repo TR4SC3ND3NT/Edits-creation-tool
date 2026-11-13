@@ -245,6 +245,23 @@ pub struct CompareArgs {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct FitArgs {
+    /// Project to improve (.json), usually drafted from the same analysis; any pictures may be in its slots.
+    pub project: String,
+    /// reference_analysis.json of the reference edit.
+    pub analysis: String,
+    /// Only these reference shots (ids as in the analysis). Default: every shot.
+    pub shots: Option<Vec<u32>>,
+    /// Parameter groups: "auto" (default) or any of exposure, exposure_decay, saturation, threshold, blur, scale, scale_decay, position, position_decay.
+    pub params: Option<Vec<String>>,
+    /// Renders allowed per shot (default 24). Time grows with it: about a second per render on a CPU.
+    pub budget: Option<u32>,
+    /// Report the changes it would make without writing the project.
+    pub dry_run: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NoArgs {}
 
 // ---- results ---------------------------------------------------------------
@@ -859,6 +876,14 @@ impl EditsServer {
                         }
                         Err(_) => format!("{head} completed, but its output is not JSON:\n{}", exec::tail_chars(s.stdout.trim(), 1500)),
                     },
+                    "fit" => match serde_json::from_str::<Value>(&s.stdout) {
+                        Ok(r) => {
+                            let (text, structured) = summarize::fit_report(&r);
+                            data["fit"] = structured;
+                            format!("{head} completed in {:.1} s.\n{text}", s.elapsed_seconds)
+                        }
+                        Err(_) => format!("{head} completed, but its output is not JSON:\n{}", exec::tail_chars(s.stdout.trim(), 1500)),
+                    },
                     _ => format!("{head} completed in {:.1} s\n{}", s.elapsed_seconds, exec::tail_chars(s.stdout.trim(), 1500)),
                 }
             }
@@ -961,6 +986,40 @@ impl EditsServer {
             self.ws.show(&analysis)
         );
         Ok(Reply::data(text, json!({ "job": job, "kind": "analyze", "state": "running", "analysis": self.ws.show(&analysis) })))
+    }
+
+    async fn fit(&self, a: FitArgs) -> Out {
+        let project = self.ws.file(&a.project, "project")?;
+        let analysis = self.ws.file(&a.analysis, "analysis")?;
+        let bin = self.bin(Tool::Edits)?;
+        let mut args: Vec<OsString> = vec!["fit".into(), project.clone().into(), "--reference".into(), analysis.clone().into(), "--json".into()];
+        if let Some(shots) = a.shots.as_ref().filter(|v| !v.is_empty()) {
+            args.push(format!("--shots={}", shots.iter().map(u32::to_string).collect::<Vec<_>>().join(",")).into());
+        }
+        if let Some(params) = a.params.as_ref().filter(|v| !v.is_empty()) {
+            args.push(format!("--params={}", params.join(",")).into());
+        }
+        if let Some(b) = a.budget {
+            if b == 0 || b > 400 {
+                return Err("`budget` must be between 1 and 400 renders per shot".into());
+            }
+            args.extend(os(&["--budget", &b.to_string()]));
+        }
+        let dry = a.dry_run.unwrap_or(false);
+        if dry {
+            args.push("--dry-run".into());
+        }
+        let meta = json!({ "project": self.ws.show(&project), "analysis": self.ws.show(&analysis), "dry_run": dry });
+        let job = jobs::start(self.root(), "fit", &bin, &args, meta)?;
+        let text = format!(
+            "started fit job {job}: {} against {}{}. It renders each shot up to {} times and takes minutes on a CPU. Call job_status with this job id; the result lists the values changed and the scores before and after. {}",
+            self.ws.show(&project),
+            self.ws.show(&analysis),
+            if dry { " (dry run)" } else { "" },
+            a.budget.unwrap_or(24),
+            if dry { "Nothing is written." } else { "The project is changed only if the whole-clip score does not get worse, as one history entry (project_undo takes it back); if the project changes meanwhile, the fit is not written." }
+        );
+        Ok(Reply::data(text, json!({ "job": job, "kind": "fit", "state": "running" })))
     }
 
     async fn reference_read(&self, a: ReferenceReadArgs) -> Out {
@@ -1256,6 +1315,15 @@ impl EditsServer {
     )]
     async fn reference_compare(&self, Parameters(a): Parameters<CompareArgs>) -> CallToolResult {
         finish(self.compare(a).await)
+    }
+
+    #[tool(
+        name = "project_fit",
+        description = "Start tuning the project's effect values (flash strength and decay, saturation, threshold level, blur, zoom and move amounts and their eases) so that its render matches a reference analysis in signature space, as a background job. Key times, pictures, rotation and inversions are never changed. Works with any pictures in the slots. Poll job_status; the result lists every value changed and the scores before and after.",
+        annotations(title = "Fit project to reference (background job)", read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn project_fit(&self, Parameters(a): Parameters<FitArgs>) -> CallToolResult {
+        finish(self.fit(a).await)
     }
 
     #[tool(

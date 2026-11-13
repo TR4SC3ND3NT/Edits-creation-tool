@@ -31,7 +31,7 @@ needs is not there yet.
 | Renderer | 18 built-in effects (exposure, four kinds of blur, glow, vignette, RGB split, threshold, ...) and custom WGSL effects; motion blur; linear-light compositing; runs on a CPU rasteriser when there is no GPU |
 | `edits` CLI | `render` (H.264 MP4 with AAC audio), `frame`, `sheet`, `bench`, `describe`, `check`, `effects`, `doctor`, `demo` |
 | `edits-analyze` | `analyze` (tempo, loop, cuts, flashes, tone hits, blur, 2D motion curves, overlay, vignette), `draft`, `compare`, `probe` |
-| `edits-mcp` | 17 tools over stdio (MCP 2026-07-28, also serves older clients): project read/edit/undo/check, frame and sheet images, background render and analysis jobs, reference tools |
+| `edits-mcp` | 18 tools over stdio (MCP 2026-07-28, also serves older clients): project read/edit/undo/check, frame and sheet images, background render and analysis jobs, reference tools, automatic fit to a reference |
 | Agent files | A skill with step-by-step workflows, `CLAUDE.md`, `.mcp.json` |
 
 | In progress | |

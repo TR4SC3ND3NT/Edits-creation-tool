@@ -23,7 +23,7 @@ the shell. They can be mixed: the project file is the only state.
 | One frame | `edits frame p.json --at T -o f.png --scale 0.5`, then view `f.png` | `render_frame` (returns the image) |
 | Many frames in one image | `edits sheet p.json -o s.png`, then view `s.png` | `render_sheet` (returns the image) |
 | The video | `edits render p.json -o out.mp4` | `render_video`, then `job_status` |
-| Recipe of a reference edit | `edits analyze / draft / compare / probe` | `reference_analyze`, `reference_read`, `reference_draft`, `reference_compare`, `reference_probe` |
+| Recipe of a reference edit | `edits analyze / draft / compare / probe / fit` | `reference_analyze`, `reference_read`, `reference_draft`, `reference_compare`, `reference_probe`, `project_fit` |
 
 From a checkout the binary is `target/release/edits` after
 `cargo build --release -p edits-cli -p edits-analyze -p edits-mcp`
@@ -198,12 +198,23 @@ blur, tone hits, overlay, vignette) and replay it on other pictures.
    pictures cancel and what is compared is the recipe. This is the yardstick.
    The same clip re-encoded scores about 0.96 against itself: that is the
    noise floor, so do not chase the last few hundredths.
-8. **Fix the largest differences first**, one or two at a time, in the
-   project (a missing cut: change `in`/`out`; a weak flash: raise `stops`; a
-   slow decay: raise `rate`). Render, compare, look again. Stop when the
-   listed differences are small and the sheet looks right next to the
-   reference.
-9. **Final render** at full size: `edits render edit/project.json -o final.mp4`.
+8. **Let `fit` tune the numbers.** `edits fit edit/project.json -r analysis/reference_analysis.json`
+   (MCP: `project_fit`, a background job; poll `job_status`). It renders each
+   shot and adjusts flash strength and decay, saturation, threshold level,
+   blur and zoom or move amounts until the signatures match, with whatever
+   pictures are in the slots. It never moves key times or changes pictures,
+   rotation or inversions, writes only if the whole-clip score does not get
+   worse, and records one history entry (`project_undo` takes it back). It
+   takes minutes on a CPU; `--dry-run` reports without writing, `--shots 3,7`
+   limits it. On the reference it was built on it raised the overall score
+   from 0.69 to 0.76.
+9. **Fix what fit cannot**, largest difference first, one or two at a time:
+   a missing or extra cut (`in`/`out`), shots the analysis marked
+   `needs_agent` (cubes, 3D turns, insets: look at the reference frames and
+   build them yourself), rotations, colour grades. Render, compare, look
+   again. Stop when the listed differences are small and the sheet looks
+   right next to the reference.
+10. **Final render** at full size: `edits render edit/project.json -o final.mp4`.
 
 ## Workflow 3: a custom effect shader
 

@@ -29,6 +29,7 @@ preview of the full one.
 | [`draft`](#draft) | Recipe → project with one empty slot per picture |
 | [`compare`](#compare) | Score a video against a recipe in signature space (any pictures) |
 | [`probe`](#probe) | Per-frame signatures of a video |
+| [`fit`](#fit) | Tune a project's effect values until its render matches a reference |
 | [`gui`](#gui-and-mcp) | Open the preview window (`edits-gui`) |
 | [`mcp`](#gui-and-mcp) | Serve the MCP tools over stdio (`edits-mcp`) |
 
@@ -312,6 +313,30 @@ edits probe <video> [--json] [--height 360]
 One line per frame: mean and centre luminance, contrast, saturation, a
 sharpness index and the difference from the previous frame. Cheap (about two
 seconds for 17 seconds of video) and useful for finding flashes and cuts by eye.
+
+## fit
+
+```
+edits fit <project.json> -r <dir>/reference_analysis.json [--shots 3,7] [--params auto|exposure,blur,...] [--budget 24] [--scale S] [--dry-run] [--json]
+```
+
+Tunes the project's numbers so that its render matches the reference recipe
+in signature space, with whatever pictures are in the slots. For each shot it
+renders that shot's frames at low resolution, measures them with the same
+analysis `compare` uses, and searches the shot's parameters: flash peaks and
+`decay` rates, saturation amounts, threshold level, blur radii, scale and
+position values and their eases. It never moves key times and never changes
+pictures, rotation or inversions. The project is written only if the
+whole-clip score does not get worse, through the shared edit history (one
+entry, undoable from the window or with `project_undo`); if the file changes
+while the fit runs, nothing is written. A 17-second edit takes about six
+minutes on four CPU cores. Details and measured accuracy: [CALIBRATION.md](CALIBRATION.md).
+
+```
+$ edits fit edit/project.json -r an/reference_analysis.json --dry-run
+  shot  2 shot02     frames   25..  43: 9 params, 10 renders, objective 1.734 -> 1.576
+  shot02 exposure_decay: exposure.stops key 2 decay rate: 0.21 -> 0.394
+```
 
 ## gui and mcp
 

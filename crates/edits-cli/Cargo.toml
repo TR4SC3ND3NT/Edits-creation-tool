@@ -13,6 +13,7 @@ path = "src/main.rs"
 edits-core = { path = "../edits-core" }
 edits-render = { path = "../edits-render" }
 edits-analyze = { path = "../edits-analyze" }
+edits-calib = { path = "../edits-calib" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

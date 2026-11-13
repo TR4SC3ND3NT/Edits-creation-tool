@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 const SERVER: &str = env!("CARGO_BIN_EXE_edits-mcp");
 
-const TOOLS: [&str; 17] = [
+const TOOLS: [&str; 18] = [
     "doctor",
     "effects_list",
     "job_cancel",
@@ -29,6 +29,7 @@ const TOOLS: [&str; 17] = [
     "project_check",
     "project_describe",
     "project_edit",
+    "project_fit",
     "project_read",
     "project_undo",
     "reference_analyze",
@@ -454,4 +455,17 @@ fn recipe_of_a_reference_edit_analyze_draft_compare() {
         assert_eq!(scores[name], json!(1.0), "{name}: {said}");
     }
     assert!(cmp["structuredContent"]["comparison"]["overall"].as_f64().unwrap() > 0.8, "{said}");
+
+    // fit: a job that reports what it would change; a dry run writes nothing.
+    let before = std::fs::read_to_string(root.0.join("edit/project.json")).unwrap();
+    let (said, started) = c.ok("project_fit", json!({ "project": "edit/project.json", "analysis": "ref/analysis/reference_analysis.json", "budget": 3, "dry_run": true }));
+    assert!(said.contains("started fit job") && said.contains("Nothing is written"), "{said}");
+    let done = wait_for(&mut c, started["structuredContent"]["job"].as_str().unwrap());
+    let said = text_of(&done);
+    assert_eq!(done["structuredContent"]["state"], "completed", "{said}");
+    let fit = &done["structuredContent"]["fit"];
+    assert_eq!(fit["written"], json!(false), "{said}");
+    assert!(fit["overall_before"].is_number() && fit["changes"].is_array(), "{said}");
+    assert!(said.contains("overall ") && said.contains("NOT written"), "{said}");
+    assert_eq!(std::fs::read_to_string(root.0.join("edit/project.json")).unwrap(), before);
 }

@@ -472,3 +472,50 @@ mod tests {
         assert!(s.get("shots").is_none(), "per-shot tables are left out");
     }
 }
+
+/// The result of `edits fit --json` as a short text and a compact structure:
+/// whether the project was written, overall and per-category scores before
+/// and after, and the values that changed.
+pub fn fit_report(r: &Value) -> (String, Value) {
+    let f = |v: &Value| v.as_f64().map(|x| format!("{x:.2}")).unwrap_or_else(|| "n/a".into());
+    let written = r["written"].as_bool().unwrap_or(false);
+    let changes = r["changes"].as_array().cloned().unwrap_or_default();
+    let mut text = format!(
+        "overall {} -> {}; {} value(s) changed; {} renders; {}",
+        f(&r["overall_before"]),
+        f(&r["overall_after"]),
+        changes.len(),
+        r["renders"],
+        if written { "the project was written (one history entry; project_undo takes it back)" } else { "the project was NOT written" }
+    );
+    let (before, after) = (&r["before"], &r["after"]);
+    if let Some(cats) = before.as_object() {
+        let line: Vec<String> = cats.keys().map(|k| format!("{k} {} -> {}", f(&before[k]), f(&after[k]))).collect();
+        text += &format!("\nscores: {}", line.join(", "));
+    }
+    const SHOWN: usize = 15;
+    for c in changes.iter().take(SHOWN) {
+        text += &format!("\n  {} {}: {} -> {}", c["layer"].as_str().unwrap_or("?"), c["what"].as_str().unwrap_or("?"), f(&c["old"]), f(&c["new"]));
+    }
+    if changes.len() > SHOWN {
+        text += &format!("\n  ... and {} more", changes.len() - SHOWN);
+    }
+    for n in r["notes"].as_array().into_iter().flatten() {
+        text += &format!("\nnote: {}", n.as_str().unwrap_or(""));
+    }
+    if !written && !r["notes"].as_array().is_some_and(|n| !n.is_empty()) && changes.is_empty() {
+        text += "\nnothing to change: no parameter improved the match.";
+    }
+    let compact = json!({
+        "written": written,
+        "overall_before": r["overall_before"],
+        "overall_after": r["overall_after"],
+        "before": before,
+        "after": after,
+        "changes": changes.iter().map(|c| json!({ "layer": c["layer"], "pointer": c["pointer"], "what": c["what"], "old": c["old"], "new": c["new"] })).collect::<Vec<_>>(),
+        "renders": r["renders"],
+        "seconds": r["seconds"],
+        "notes": r["notes"],
+    });
+    (text, compact)
+}

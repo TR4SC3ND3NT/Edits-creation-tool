@@ -61,11 +61,19 @@ pub struct FitOpts {
     pub dry_run: bool,
     /// Seeds the order in which parameters are visited.
     pub seed: u64,
+    /// Who the edit is recorded as in the project's shared history
+    /// (`edits_core::edit::AGENT`, `WINDOW`, ...).
+    #[serde(default = "default_actor")]
+    pub actor: String,
+}
+
+fn default_actor() -> String {
+    edits_core::edit::AGENT.to_string()
 }
 
 impl Default for FitOpts {
     fn default() -> Self {
-        FitOpts { shots: vec![], params: vec!["auto".into()], budget: 24, scale: None, dry_run: false, seed: 1 }
+        FitOpts { shots: vec![], params: vec!["auto".into()], budget: 24, scale: None, dry_run: false, seed: 1, actor: default_actor() }
     }
 }
 
@@ -577,9 +585,27 @@ pub fn fit(project_path: &Path, reference: &Analysis, opts: &FitOpts) -> Result<
     }
     let mut written = false;
     if improved && !opts.dry_run {
-        let p = Project::from_json(&doc.to_string()).context("the fitted project does not parse")?;
-        std::fs::write(project_path, p.to_json() + "\n").with_context(|| format!("writing {}", project_path.display()))?;
-        written = true;
+        // Through the shared edit layer: validated, written atomically, kept in
+        // the project's history (undoable from the window or by the agent), and
+        // refused if someone else changed the file while the fit was running.
+        let ops: Vec<edits_core::edit::EditOp> = changes
+            .iter()
+            .map(|c| serde_json::from_value(serde_json::json!({ "op": "set", "pointer": c.pointer, "value": c.new })).expect("a set op"))
+            .collect();
+        let label = format!("fit to the reference: {:.2} -> {:.2}, {} values", before.overall, after.overall, changes.len());
+        let eo = edits_core::edit::EditOptions {
+            dry_run: false,
+            actor: &opts.actor,
+            label: Some(&label),
+            expect: Some(edits_core::edit::text_hash(&text)),
+            extra: None,
+        };
+        let outcome = edits_core::edit::apply(project_path, &ops, &eo).map_err(|e| anyhow::anyhow!("the fit was not written: {e}"))?;
+        if !outcome.ok {
+            let errs: Vec<String> = outcome.findings.iter().filter(|f| f.severity == edits_core::check::Severity::Error).map(|f| format!("{}: {}", f.path, f.message)).collect();
+            bail!("the fitted project does not pass check, so it was not written: {}", errs.join("; "));
+        }
+        written = outcome.written;
     }
     Ok(FitReport {
         schema: SCHEMA.into(),
