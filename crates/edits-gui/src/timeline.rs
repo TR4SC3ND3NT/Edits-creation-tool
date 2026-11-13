@@ -88,6 +88,8 @@ fn toolbar(app: &mut App, ui: &mut Ui, rect: Rect, tm: &crate::timemap::TimeMap,
         );
         resp.union(l).on_hover_text(help);
         ui.add_space(space::L);
+        crate::songpanel::toolbar(app, ui);
+        ui.add_space(space::L);
         let tempo = tm.bpm.map(|b| format!(" · {b} BPM")).unwrap_or_default();
         ui.label(RichText::new(format!("{layers} layer{} · {} {}{tempo} · {} fps", if layers == 1 { "" } else { "s" }, fmt_time(tm.duration), tm.unit(), tm.fps)).font(theme::small()).color(color::TEXT_FAINT));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -172,6 +174,7 @@ pub(crate) fn show(app: &mut App, ui: &mut Ui) {
     let overview_lane = lane(OVERVIEW_H + 6.0);
     let ruler = lane(RULER_H);
     let marker_lane = (!project.markers.is_empty()).then(|| lane(MARKER_H));
+    let song_lane = crate::songpanel::has_lane(app).then(|| lane(size::SONG));
     let wave_lane = project.audio.as_ref().map(|_| lane(WAVE_H));
     let rows_rect = Rect::from_min_max(pos2(area.left(), y), pos2(area.right(), area.bottom().max(y)));
     let time_clip = Rect::from_min_max(pos2(time_left, area.top()), area.right_bottom());
@@ -266,6 +269,16 @@ pub(crate) fn show(app: &mut App, ui: &mut Ui) {
         }
     }
 
+    // ---- the song's marks ----
+    let mut song_tip = None;
+    if let Some(lane) = song_lane {
+        painter.hline(area.x_range(), lane.bottom(), Stroke::new(1.0, color::LINE));
+        widgets::paint_icon(&gutter, pos2(area.left() + space::L + 7.0, lane.center().y), Icon::Music, 12.0, color::TEXT_FAINT);
+        gutter.text(pos2(area.left() + space::L + 22.0, lane.center().y), Align2::LEFT_CENTER, "Song", small.clone(), color::TEXT_FAINT);
+        let hover = ui.input(|i| i.pointer.hover_pos());
+        song_tip = crate::songpanel::lane(app, &tp, lane, &x_of, (view.start, view.end(width)), hover, tm.unit());
+    }
+
     // ---- waveform ----
     if let (Some(lane), Some(audio)) = (wave_lane, &project.audio) {
         painter.hline(area.x_range(), lane.bottom(), Stroke::new(1.0, color::LINE));
@@ -310,6 +323,9 @@ pub(crate) fn show(app: &mut App, ui: &mut Ui) {
         if let Some(p) = seek.interact_pointer_pos() {
             app.seek(tm.frame_at(view.t_at((p.x - time_left) as f64)));
         }
+    }
+    if let Some(t) = song_tip {
+        seek.on_hover_text_at_pointer(t);
     }
 
     // ---- layer rows ----
@@ -393,6 +409,18 @@ pub(crate) fn show(app: &mut App, ui: &mut Ui) {
                 tp.rect_filled(stripe, CornerRadius { nw: radius::SMALL, ne: radius::SMALL, sw: 0, se: 0 }, k.stripe.gamma_multiply(fade * if is_selected { 1.0 } else { 0.85 }));
                 if is_selected {
                     tp.rect_stroke(bar, radius::SMALL, Stroke::new(1.5, color::ACCENT), StrokeKind::Inside);
+                }
+                // A transition: a wedge rising over its length from the bar's start.
+                if let Some((kind, dur)) = &row.transition {
+                    let xe = x_of(row.start + dur).min(bar.right()).max(x0 + 4.0);
+                    let w = vec![pos2(x0, bar.bottom()), pos2(xe, bar.top() + 2.0), pos2(xe, bar.bottom())];
+                    tp.add(Shape::convex_polygon(w, color::TRANSITION.gamma_multiply(0.22 * fade), Stroke::new(1.0, color::TRANSITION.gamma_multiply(0.8 * fade))));
+                    let wedge = Rect::from_min_max(pos2(x0, bar.top()), pos2(xe, bar.bottom()));
+                    if ui.rect_contains_pointer(wedge.intersect(time_clip)) {
+                        egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), ui.scope_id().with(("transition", i)), egui::PopupAnchor::Pointer).show(|ui| {
+                            ui.label(format!("Transition in: {kind} over {} {}\nEdit it in the inspector (Transition in)", fmt_time(*dur), tm.unit()));
+                        });
+                    }
                 }
 
                 // Effect names (and the blend mode), kept in sight when the bar starts off-screen.
@@ -567,4 +595,5 @@ pub(crate) fn show(app: &mut App, ui: &mut Ui) {
         view.clamp(t0, t1, width);
     }
     app.view = Some(view);
+    app.visible = Some((view.start, view.end(width)));
 }

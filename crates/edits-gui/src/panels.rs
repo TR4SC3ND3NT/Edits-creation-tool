@@ -1,5 +1,6 @@
 //! The chrome around the preview: the top bar, the rail on the left and its
-//! drawers (Slots, History), and the menus that add layers and effects.
+//! drawers (Slots, History; Presets is in `presetpanel`), and the menus that
+//! add layers and effects.
 //! Each change they make goes through `App::commit` (or `App::edit_live`
 //! for a value being dragged).
 
@@ -118,7 +119,6 @@ pub(crate) fn rail(app: &mut App, ui: &mut Ui) {
                 app.run(Cmd::Drawer(d));
             }
         }
-        // Room for more drawers (presets) here.
     });
     ui.scope_builder(egui::UiBuilder::new().max_rect(full.shrink2(vec2(0.0, space::M))).layout(Layout::bottom_up(Align::Center)), |ui| {
         ui.spacing_mut().item_spacing.y = space::XS;
@@ -161,6 +161,7 @@ pub(crate) fn drawer(app: &mut App, ui: &mut Ui, d: Drawer) {
     egui::Frame::new().inner_margin(egui::Margin { left: space::L as i8, right: space::L as i8, top: space::M as i8, bottom: 0 }).show(ui, |ui| match d {
         Drawer::Slots => slots(app, ui),
         Drawer::History => history(app, ui),
+        Drawer::Presets => crate::presetpanel::drawer(app, ui),
     });
 }
 

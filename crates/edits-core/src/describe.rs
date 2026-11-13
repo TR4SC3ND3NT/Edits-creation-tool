@@ -67,13 +67,12 @@ pub fn describe(p: &Project) -> String {
             }
         }
         for e in &l.effects {
-            let params: Vec<String> = e
-                .params
-                .iter()
-                .map(|(k, v)| match prop_summary(v) {
+            let options = e.options.iter().map(|(k, v)| format!("{k}={v}"));
+            let params: Vec<String> = options
+                .chain(e.params.iter().map(|(k, v)| match prop_summary(v) {
                     Some(sum) => format!("{k} {sum}"),
                     None => format!("{k}={}", const_text(v)),
-                })
+                }))
                 .collect();
             let _ = writeln!(o, "      fx {}{} {}", e.kind, if e.enabled { "" } else { " (off)" }, params.join("; "));
         }
@@ -119,4 +118,19 @@ fn prop_summary(p: &Prop) -> Option<String> {
         });
     }
     Some(parts.join(", "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effects_show_their_options_and_values() {
+        let p = Project::from_json(
+            r#"{"format":"edits.project/1","settings":{"width":64,"height":64,"fps":25,"duration":4},
+                "layers":[{"id":"fx","kind":"adjustment","effects":[{"kind":"halftone","options":{"mode":"cmyk"},"params":{"size":2}}]}]}"#,
+        )
+        .unwrap();
+        assert!(describe(&p).contains("fx halftone mode=cmyk; size=2"), "{}", describe(&p));
+    }
 }

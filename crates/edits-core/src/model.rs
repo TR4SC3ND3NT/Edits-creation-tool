@@ -234,6 +234,11 @@ pub struct Effect {
     pub kind: String,
     #[serde(default)]
     pub params: BTreeMap<String, Prop>,
+    /// Choices that are not numbers and cannot be animated, such as
+    /// `{ "shape": "hex" }`. The registry lists each effect's options and
+    /// their values; a missing option takes its first value.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub options: BTreeMap<String, String>,
     /// For `kind: "custom"`: path to a WGSL fragment file, relative to the project.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,

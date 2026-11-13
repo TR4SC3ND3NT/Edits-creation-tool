@@ -702,12 +702,18 @@ impl EditsServer {
                 found
             }
         };
-        let mut text = String::from("An effect is { \"kind\", \"params\": { ... } } in a layer's \"effects\"; every parameter can be keyframed.\n");
+        let mut text = String::from("An effect is { \"kind\", \"params\": { ... }, \"options\": { ... } } in a layer's \"effects\"; every parameter can be keyframed, options cannot. Units: %h = percent of frame height, pos = [x, y] composition units, deg, color = linear RGB.\n");
         for e in &chosen {
-            text.push_str(&format!("{}: {}\n", e["kind"].as_str().unwrap_or("?"), e["doc"].as_str().unwrap_or("")));
+            text.push_str(&format!("{} ({}): {}\n", e["kind"].as_str().unwrap_or("?"), e["category"].as_str().unwrap_or(""), e["doc"].as_str().unwrap_or("")));
             for p in e["params"].as_array().into_iter().flatten() {
                 let doc = p["doc"].as_str().filter(|d| !d.is_empty()).map(|d| format!("  {d}")).unwrap_or_default();
-                text.push_str(&format!("    {} = {}{doc}\n", p["name"].as_str().unwrap_or("?"), jsonfmt::inline(&p["default"])));
+                let unit = p["unit"].as_str().filter(|u| !u.is_empty()).map(|u| format!(" {u}")).unwrap_or_default();
+                let range = p["range"].as_array().map(|r| format!(" [{}..{}]", r[0].as_f64().map(|v| v.to_string()).unwrap_or_default(), r[1].as_f64().map(|v| v.to_string()).unwrap_or_default())).unwrap_or_default();
+                text.push_str(&format!("    {} = {}{unit}{range}{doc}\n", p["name"].as_str().unwrap_or("?"), jsonfmt::inline(&p["default"])));
+            }
+            for o in e["options"].as_array().into_iter().flatten() {
+                let values: Vec<&str> = o["values"].as_array().into_iter().flatten().filter_map(|v| v.as_str()).collect();
+                text.push_str(&format!("    option {} = {}  {}\n", o["name"].as_str().unwrap_or("?"), values.join(" | "), o["doc"].as_str().unwrap_or("")));
             }
         }
         if a.kind.is_none() {

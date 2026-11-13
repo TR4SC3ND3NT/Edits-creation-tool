@@ -53,6 +53,8 @@ pub struct Row {
     pub blend: Option<String>,
     /// Sorted by time.
     pub marks: Vec<KeyMark>,
+    /// The transition the layer comes in with: (kind, duration).
+    pub transition: Option<(String, f64)>,
 }
 
 /// The key times of an animatable value, in file order. The keys of a
@@ -145,6 +147,7 @@ pub fn rows(p: &Project) -> Vec<Row> {
             effects: Vec::new(),
             blend: None,
             marks: cam,
+            transition: None,
         });
     }
     for (i, l) in p.layers.iter().enumerate().rev() {
@@ -158,6 +161,7 @@ pub fn rows(p: &Project) -> Vec<Row> {
             effects: l.effects.iter().map(|e| if e.enabled { e.kind.clone() } else { format!("{} (off)", e.kind) }).collect(),
             blend: (l.blend != Blend::Normal).then(|| blend_text(l.blend)),
             marks: layer_marks(l),
+            transition: l.transition.as_ref().map(|t| (t.kind.clone(), t.duration)),
         });
     }
     out

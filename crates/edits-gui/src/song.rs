@@ -406,11 +406,6 @@ mod tests {
         assert!(some.iter().all(|x| matches!(x, Mark::Downbeat(_) | Mark::Snare(..))));
         // Only what is in view.
         assert_eq!(visible(&m, &on, 1.5, 3.5), vec![Mark::Snare(3.0, 0.7)]);
-        for l in Layer::ALL {
-            on.flip(l);
-        }
-        on.flip(Layer::Kicks);
-        on.flip(Layer::Sections);
         on.flip(Layer::Downbeats);
         on.flip(Layer::Snares);
         assert!(!on.any());

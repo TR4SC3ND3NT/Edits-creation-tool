@@ -42,6 +42,8 @@ pub mod toasts;
 mod app;
 mod inspector;
 mod panels;
+mod presetpanel;
+mod songpanel;
 mod timeline;
 mod widgets;
 

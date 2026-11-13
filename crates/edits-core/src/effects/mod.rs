@@ -1,67 +1,265 @@
 //! The built-in effect registry: the single source of truth for effect kinds,
-//! their parameters and defaults. The renderer implements exactly these.
+//! their parameters, options and defaults. The renderer implements exactly
+//! these.
 //!
-//! Spatial parameters marked "% of height" are percent of the composition
-//! height. Colours are linear RGB in 0..1. Angles are degrees.
+//! The registry is split by category, one file each, so that work on
+//! different kinds of effect touches different files: `color`, `blur`,
+//! `light`, `distort`, `stylize`, `time` and `generate`. [`EFFECTS`] is all of
+//! them in that order, followed by `custom`.
+//!
+//! Units (see [`Unit`]): spatial parameters are percent of the composition
+//! height (`%h`), positions are composition units (`pos`: height = 1, origin
+//! at the centre, y down), colours are linear RGB in 0..1, angles are degrees.
+
+use serde::Serialize;
+
+mod blur;
+mod color;
+mod distort;
+mod generate;
+mod light;
+mod stylize;
+mod time;
+
+/// What a number means, which decides how many components it has and how
+/// the renderer scales it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum Unit {
+    /// A plain number: an amount, a mix, a threshold.
+    #[serde(rename = "")]
+    Number,
+    /// Percent of the composition height: 2 is 21.6 pixels at 1080 high.
+    #[serde(rename = "%h")]
+    PercentHeight,
+    /// Degrees; positive turns clockwise on screen.
+    #[serde(rename = "deg")]
+    Degrees,
+    /// A point `[x, y]` in composition units (height = 1, origin at the centre, y down).
+    #[serde(rename = "pos")]
+    Position,
+    /// Linear RGB `[r, g, b]`, 0..1 (more is allowed and stays bright).
+    #[serde(rename = "color")]
+    Color,
+    /// A multiplier (1 = unchanged).
+    #[serde(rename = "x")]
+    Factor,
+    /// A length of time in the project's time base (beats or seconds), or a rate per such unit.
+    #[serde(rename = "time")]
+    Time,
+    /// A whole number (rounded).
+    #[serde(rename = "count")]
+    Count,
+    /// Photographic stops (powers of two).
+    #[serde(rename = "stops")]
+    Stops,
+    /// Output pixels at 1080 high (scaled with the frame).
+    #[serde(rename = "px1080")]
+    Pixels1080,
+}
+
+impl Unit {
+    /// The short name used in the registry's JSON (`""`, `"%h"`, `"deg"`, ...).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Unit::Number => "",
+            Unit::PercentHeight => "%h",
+            Unit::Degrees => "deg",
+            Unit::Position => "pos",
+            Unit::Color => "color",
+            Unit::Factor => "x",
+            Unit::Time => "time",
+            Unit::Count => "count",
+            Unit::Stops => "stops",
+            Unit::Pixels1080 => "px1080",
+        }
+    }
+
+    /// Components a value of this unit has, when the unit fixes it.
+    pub fn arity(self) -> Option<usize> {
+        match self {
+            Unit::Position => Some(2),
+            Unit::Color => Some(3),
+            _ => None,
+        }
+    }
+}
 
 pub struct ParamSpec {
     pub name: &'static str,
     pub default: &'static [f64],
     pub doc: &'static str,
+    pub unit: Unit,
+    /// The values the renderer uses: outside `[min, max]` a value is clamped
+    /// (`edits check` warns). Either bound may be infinite.
+    pub range: Option<(f64, f64)>,
+}
+
+/// A choice that is not a number and cannot be animated, such as a wave's
+/// shape. Set in an effect's `"options"`; the first value is the default.
+pub struct OptionSpec {
+    pub name: &'static str,
+    pub values: &'static [&'static str],
+    pub doc: &'static str,
+}
+
+impl OptionSpec {
+    pub fn default(&self) -> &'static str {
+        self.values[0]
+    }
+}
+
+/// What an effect's `"source"` names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceKind {
+    /// The effect takes no source.
+    None,
+    /// A WGSL file (the `custom` effect).
+    Shader,
 }
 
 pub struct EffectSpec {
     pub kind: &'static str,
+    /// `color`, `blur`, `light`, `distort`, `stylize`, `time`, `generate` or `custom`.
+    pub category: &'static str,
     pub doc: &'static str,
     pub params: &'static [ParamSpec],
+    pub options: &'static [OptionSpec],
+    pub source: SourceKind,
+    /// The picture changes with time even when no value does (a glitch that
+    /// jumps a few times per beat), so every motion blur sample is rendered.
+    pub reads_time: bool,
+    /// Where the effect's maths comes from and under which licence; empty when it is ours.
+    pub credit: &'static str,
 }
 
+impl EffectSpec {
+    pub fn param(&self, name: &str) -> Option<&'static ParamSpec> {
+        self.params.iter().find(|p| p.name == name)
+    }
+    pub fn option(&self, name: &str) -> Option<&'static OptionSpec> {
+        self.options.iter().find(|o| o.name == name)
+    }
+}
+
+/// A parameter: `p!(name, default, unit, doc)` or `p!(name, default, unit, min, max, doc)`.
+/// `unit` is one of `num`, `pct`, `deg`, `pos`, `color`, `x`, `time`, `count`, `stops`, `px1080`.
 macro_rules! p {
-    ($n:literal, $d:expr, $doc:literal) => {
-        ParamSpec { name: $n, default: &$d, doc: $doc }
+    ($n:literal, $d:expr, $u:ident, $doc:literal) => {
+        $crate::effects::ParamSpec { name: $n, default: &$d, doc: $doc, unit: $crate::effects::unit!($u), range: None }
+    };
+    ($n:literal, $d:expr, $u:ident, $lo:expr, $hi:expr, $doc:literal) => {
+        $crate::effects::ParamSpec { name: $n, default: &$d, doc: $doc, unit: $crate::effects::unit!($u), range: Some(($lo, $hi)) }
     };
 }
+macro_rules! unit {
+    (num) => {
+        $crate::effects::Unit::Number
+    };
+    (pct) => {
+        $crate::effects::Unit::PercentHeight
+    };
+    (deg) => {
+        $crate::effects::Unit::Degrees
+    };
+    (pos) => {
+        $crate::effects::Unit::Position
+    };
+    (color) => {
+        $crate::effects::Unit::Color
+    };
+    (x) => {
+        $crate::effects::Unit::Factor
+    };
+    (time) => {
+        $crate::effects::Unit::Time
+    };
+    (count) => {
+        $crate::effects::Unit::Count
+    };
+    (stops) => {
+        $crate::effects::Unit::Stops
+    };
+    (px1080) => {
+        $crate::effects::Unit::Pixels1080
+    };
+}
+/// An option: `opt!(name, [values...], doc)`; the first value is the default.
+macro_rules! opt {
+    ($n:literal, [$($v:literal),+ $(,)?], $doc:literal) => {
+        $crate::effects::OptionSpec { name: $n, values: &[$($v),+], doc: $doc }
+    };
+}
+/// An effect with no options, no source, not reading the clock and no credit:
+/// `fx!(category, kind, doc, [params])`. More fields can follow as `field: value`.
+macro_rules! fx {
+    ($cat:literal, $kind:literal, $doc:literal, [$($p:expr),* $(,)?] $(, $f:ident: $v:expr)* $(,)?) => {
+        $crate::effects::EffectSpec {
+            $($f: $v,)*
+            ..$crate::effects::EffectSpec {
+                kind: $kind,
+                category: $cat,
+                doc: $doc,
+                params: &[$($p),*],
+                options: &[],
+                source: $crate::effects::SourceKind::None,
+                reads_time: false,
+                credit: "",
+            }
+        }
+    };
+}
+pub(crate) use {fx, opt, p, unit};
 
-pub const EFFECTS: &[EffectSpec] = &[
-    EffectSpec { kind: "exposure", doc: "Multiply by 2^stops. Black stays black, so a large value gives the white flash where only dark ink survives.",
-        params: &[p!("stops", [0.0], "Exposure change in stops; 4 is a strong flash.")] },
-    EffectSpec { kind: "fade", doc: "Mix the whole image toward a colour.",
-        params: &[p!("amount", [0.0], "0 = unchanged, 1 = solid colour."), p!("color", [1.0, 1.0, 1.0], "Target colour.")] },
-    EffectSpec { kind: "brightness_contrast", doc: "Add brightness, then scale contrast about mid grey.",
-        params: &[p!("brightness", [0.0], "-1..1 added to the image."), p!("contrast", [0.0], "-1..1; positive increases contrast.")] },
-    EffectSpec { kind: "saturation", doc: "Scale colour saturation.",
-        params: &[p!("amount", [1.0], "0 = black and white, 1 = unchanged, 2 = double.")] },
-    EffectSpec { kind: "hue", doc: "Rotate hue.",
-        params: &[p!("degrees", [0.0], "Hue rotation in degrees.")] },
-    EffectSpec { kind: "invert", doc: "Colour negative.",
-        params: &[p!("amount", [1.0], "0 = unchanged, 1 = fully inverted.")] },
-    EffectSpec { kind: "threshold", doc: "Two-tone ink look: luminance above `level` becomes white, below becomes black.",
-        params: &[p!("level", [0.5], "Luminance cut, 0..1."), p!("softness", [0.02], "Width of the transition."), p!("amount", [1.0], "Mix with the original.")] },
-    EffectSpec { kind: "posterize", doc: "Quantise each channel to a few levels.",
-        params: &[p!("levels", [4.0], "Number of levels per channel (2 or more).")] },
-    EffectSpec { kind: "tint", doc: "Recolour by luminance toward a colour.",
-        params: &[p!("color", [1.0, 1.0, 1.0], "Tint colour."), p!("amount", [1.0], "Mix with the original.")] },
-    EffectSpec { kind: "gaussian_blur", doc: "Soft defocus.",
-        params: &[p!("radius", [1.0], "Blur sigma, % of height.")] },
-    EffectSpec { kind: "directional_blur", doc: "Blur along a line, like a fast slide.",
-        params: &[p!("angle", [0.0], "Direction in degrees; 0 is horizontal."), p!("length", [2.0], "Streak length, % of height.")] },
-    EffectSpec { kind: "zoom_blur", doc: "Blur along rays from a centre, like a fast push-in.",
-        params: &[p!("strength", [0.1], "Streak length as a fraction of the distance from the centre."), p!("center", [0.0, 0.0], "Centre in composition units.")] },
-    EffectSpec { kind: "spin_blur", doc: "Blur along arcs about a centre.",
-        params: &[p!("angle", [5.0], "Arc swept, degrees."), p!("center", [0.0, 0.0], "Centre in composition units.")] },
-    EffectSpec { kind: "glow", doc: "Bloom: blur the bright parts and add them back.",
-        params: &[p!("threshold", [0.7], "Luminance above which pixels glow."), p!("radius", [3.0], "Glow sigma, % of height."), p!("intensity", [1.0], "Strength of the added glow."), p!("color", [1.0, 1.0, 1.0], "Tint of the glow.")] },
-    EffectSpec { kind: "vignette", doc: "Darken toward the corners.",
-        params: &[p!("amount", [0.5], "0 = none, 1 = corners black."), p!("radius", [0.75], "Where darkening starts, as a fraction of the half-diagonal."), p!("softness", [0.5], "Width of the falloff.")] },
-    EffectSpec { kind: "rgb_split", doc: "Chromatic aberration: shift red and blue apart.",
-        params: &[p!("amount", [0.5], "Shift, % of height."), p!("angle", [0.0], "Direction in degrees.")] },
-    EffectSpec { kind: "transform2d", doc: "Scale, rotate and move the image in the frame (a camera punch on an adjustment layer).",
-        params: &[p!("scale", [1.0], "Zoom factor about the centre."), p!("rotation", [0.0], "Degrees."), p!("offset", [0.0, 0.0], "Shift in composition units."), p!("mirror", [1.0], "1 = mirror at the frame edges, 0 = leave transparent.")] },
-    EffectSpec { kind: "grain", doc: "Film grain, deterministic per frame.",
-        params: &[p!("amount", [0.05], "Grain strength."), p!("size", [1.0], "Grain size, in output pixels at 1080.")] },
-    EffectSpec { kind: "custom", doc: "A WGSL fragment supplied by `source`. Parameters p0..p7 are passed through as numbers.",
-        params: &[p!("p0", [0.0], ""), p!("p1", [0.0], ""), p!("p2", [0.0], ""), p!("p3", [0.0], ""), p!("p4", [0.0], ""), p!("p5", [0.0], ""), p!("p6", [0.0], ""), p!("p7", [0.0], "")] },
-];
+const CUSTOM: &[EffectSpec] = &[fx!("custom", "custom", "A WGSL fragment supplied by `source` (see docs/EFFECTS.md). Parameters p0..p15 are passed through as numbers.", [
+    p!("p0", [0.0], num, ""), p!("p1", [0.0], num, ""), p!("p2", [0.0], num, ""), p!("p3", [0.0], num, ""),
+    p!("p4", [0.0], num, ""), p!("p5", [0.0], num, ""), p!("p6", [0.0], num, ""), p!("p7", [0.0], num, ""),
+    p!("p8", [0.0], num, ""), p!("p9", [0.0], num, ""), p!("p10", [0.0], num, ""), p!("p11", [0.0], num, ""),
+    p!("p12", [0.0], num, ""), p!("p13", [0.0], num, ""), p!("p14", [0.0], num, ""), p!("p15", [0.0], num, ""),
+], source: SourceKind::Shader, reads_time: true)];
+
+const PARTS: &[&[EffectSpec]] = &[color::EFFECTS, blur::EFFECTS, light::EFFECTS, distort::EFFECTS, stylize::EFFECTS, time::EFFECTS, generate::EFFECTS, CUSTOM];
+
+const fn total(parts: &[&[EffectSpec]]) -> usize {
+    let mut n = 0;
+    let mut i = 0;
+    while i < parts.len() {
+        n += parts[i].len();
+        i += 1;
+    }
+    n
+}
+
+const COUNT: usize = total(PARTS);
+
+const fn concat(parts: &[&[EffectSpec]]) -> [EffectSpec; COUNT] {
+    let mut out = [const { fx!("", "", "", []) }; COUNT];
+    let (mut i, mut k) = (0, 0);
+    while i < parts.len() {
+        let mut j = 0;
+        while j < parts[i].len() {
+            let e = &parts[i][j];
+            out[k] = EffectSpec {
+                kind: e.kind,
+                category: e.category,
+                doc: e.doc,
+                params: e.params,
+                options: e.options,
+                source: e.source,
+                reads_time: e.reads_time,
+                credit: e.credit,
+            };
+            k += 1;
+            j += 1;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Every effect, by category (colour, blur, light, distort, stylize, time,
+/// generate), then `custom`.
+pub const EFFECTS: &[EffectSpec] = &concat(PARTS);
 
 pub fn spec(kind: &str) -> Option<&'static EffectSpec> {
     EFFECTS.iter().find(|e| e.kind == kind)
@@ -159,4 +357,34 @@ pub const TRANSITIONS: &[TransitionSpec] = &[
 
 pub fn transition(kind: &str) -> Option<&'static TransitionSpec> {
     TRANSITIONS.iter().find(|t| t.kind == kind)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_registry_is_consistent() {
+        let mut kinds: Vec<&str> = EFFECTS.iter().map(|e| e.kind).collect();
+        let n = kinds.len();
+        kinds.sort_unstable();
+        kinds.dedup();
+        assert_eq!(kinds.len(), n, "effect kinds are unique");
+        for e in EFFECTS {
+            assert!(!e.doc.is_empty() && !e.category.is_empty(), "{}", e.kind);
+            for p in e.params {
+                if let Some(n) = p.unit.arity() {
+                    assert_eq!(p.default.len(), n, "{}.{}: a {:?} has {n} components", e.kind, p.name, p.unit);
+                }
+                if let Some((lo, hi)) = p.range {
+                    assert!(lo <= hi && p.default.iter().all(|v| (lo..=hi).contains(v)), "{}.{}: the default is outside its range", e.kind, p.name);
+                }
+            }
+            for o in e.options {
+                assert!(!o.values.is_empty(), "{}.{}", e.kind, o.name);
+            }
+        }
+        assert_eq!(EFFECTS.last().map(|e| e.kind), Some("custom"));
+        assert_eq!(spec("glow").map(|e| e.category), Some("light"));
+    }
 }

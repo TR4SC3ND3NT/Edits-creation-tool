@@ -2,6 +2,7 @@
 //! place in the document and, where possible, the fix.
 
 use crate::model::*;
+use crate::effects::{ParamSpec, SourceKind};
 use crate::{ease, effects};
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -101,20 +102,42 @@ pub fn check(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> {
                 }
                 Some(spec) => {
                     for (k, v) in &e.params {
-                        if !spec.params.iter().any(|p| p.name == k) {
-                            let names: Vec<&str> = spec.params.iter().map(|p| p.name).collect();
-                            err(format!("{ep}.params.{k}"), format!("\"{}\" has no parameter \"{k}\"", e.kind), Some(&format!("parameters: {}", names.join(", "))));
+                        let pp = format!("{ep}.params.{k}");
+                        match spec.param(k) {
+                            None => {
+                                let names: Vec<&str> = spec.params.iter().map(|p| p.name).collect();
+                                err(pp.clone(), format!("\"{}\" has no parameter \"{k}\"", e.kind), Some(&format!("parameters: {}", names.join(", "))));
+                            }
+                            Some(ps) => check_param_values(ps, v, &pp, &mut err, &mut warn),
                         }
-                        check_prop(v, &format!("{ep}.params.{k}"), &mut err);
+                        check_prop(v, &pp, &mut err);
                     }
-                    if e.kind == "custom" && e.source.is_none() {
-                        err(ep.clone(), "a custom effect needs \"source\"".into(), Some("path to a WGSL file relative to the project"));
+                    for (k, v) in &e.options {
+                        let op = format!("{ep}.options.{k}");
+                        match spec.option(k) {
+                            None if spec.options.is_empty() => err(op, format!("\"{}\" has no options", e.kind), Some("remove \"options\"")),
+                            None => {
+                                let names: Vec<&str> = spec.options.iter().map(|o| o.name).collect();
+                                err(op, format!("\"{}\" has no option \"{k}\"", e.kind), Some(&format!("options: {}", names.join(", "))));
+                            }
+                            Some(o) if !o.values.contains(&v.as_str()) => {
+                                err(op, format!("\"{v}\" is not a value of {}'s option \"{k}\"", e.kind), Some(&format!("one of: {} (default {})", o.values.join(", "), o.default())));
+                            }
+                            Some(_) => {}
+                        }
                     }
-                }
-            }
-            if let (Some(src), Some(dir)) = (&e.source, base_dir) {
-                if !dir.join(src).is_file() {
-                    err(format!("{ep}.source"), format!("shader file not found: {src}"), None);
+                    match (spec.source, &e.source) {
+                        (SourceKind::Shader, None) => err(ep.clone(), format!("a {} effect needs \"source\"", e.kind), Some("path to a WGSL file relative to the project")),
+                        (SourceKind::None, Some(_)) => err(format!("{ep}.source"), format!("\"{}\" takes no \"source\"", e.kind), Some("remove \"source\"")),
+                        (SourceKind::Shader, Some(src)) => {
+                            if let Some(dir) = base_dir {
+                                if !dir.join(src).is_file() {
+                                    err(format!("{ep}.source"), format!("shader file not found: {src}"), Some("paths are relative to the project file"));
+                                }
+                            }
+                        }
+                        (SourceKind::None, None) => {}
+                    }
                 }
             }
         }
@@ -206,6 +229,43 @@ fn check_prop(prop: &Prop, path: &str, err: &mut impl FnMut(String, String, Opti
     }
 }
 
+/// Every value a property can take as written: the constant, the keys and the base.
+fn written_values(prop: &Prop) -> Vec<Vec<f64>> {
+    match prop {
+        Prop::Const(v) => vec![v.to_vec()],
+        Prop::Anim(a) => a.keys.iter().map(|k| k.v.to_vec()).chain(a.base.iter().map(Value::to_vec)).collect(),
+    }
+}
+
+/// A parameter's values against its unit (a colour has three numbers, a
+/// position two) and its range (values outside are clamped: a warning).
+fn check_param_values(spec: &ParamSpec, prop: &Prop, path: &str, err: &mut impl FnMut(String, String, Option<&str>), warn: &mut Vec<Finding>) {
+    let values = written_values(prop);
+    if let Some(n) = spec.unit.arity() {
+        if let Some(bad) = values.iter().find(|v| v.len() != n && v.len() != 1) {
+            let (what, hint) = match spec.unit {
+                effects::Unit::Color => ("a linear RGB colour", "give [r, g, b] in 0..1, or one number for a grey"),
+                _ => ("a position in composition units", "give [x, y] (height = 1, origin at the centre, y down), or one number for both"),
+            };
+            err(path.into(), format!("{} is {what} with {n} numbers, not {}", spec.name, bad.len()), Some(hint));
+            return;
+        }
+    }
+    if let Some((lo, hi)) = spec.range {
+        if let Some(v) = values.iter().flatten().find(|v| !(lo..=hi).contains(*v)) {
+            let unit = spec.unit.as_str();
+            let unit = if unit.is_empty() { String::new() } else { format!(" ({unit})") };
+            let bound = |b: f64| if b.is_infinite() { "any".to_string() } else { format!("{b}") };
+            warn.push(Finding {
+                severity: Severity::Warning,
+                path: path.into(),
+                message: format!("{v} is outside {}'s range {}..{}{unit}; the renderer clamps it", spec.name, bound(lo), bound(hi)),
+                hint: None,
+            });
+        }
+    }
+}
+
 pub fn has_errors(findings: &[Finding]) -> bool {
     findings.iter().any(|f| f.severity == Severity::Error)
 }
@@ -235,5 +295,39 @@ mod tests {
         assert!(has("unknown effect \"nope\""));
         assert!(f.iter().any(|x| x.severity == Severity::Warning && x.message.contains("not used")));
         assert!(has_errors(&f));
+    }
+
+    #[test]
+    fn options_units_ranges_and_sources_are_checked() {
+        let p = Project::from_json(
+            r#"{"format":"edits.project/1",
+                "settings":{"width":64,"height":64,"fps":25,"duration":4},
+                "layers":[{"id":"fx","kind":"adjustment","effects":[
+                  {"kind":"pixelate","options":{"shape":"star"}},
+                  {"kind":"pixelate","options":{"shap":"hex"}},
+                  {"kind":"twirl","options":{"shape":"hex"}},
+                  {"kind":"fade","params":{"color":[1,0]}},
+                  {"kind":"twirl","params":{"center":{"keys":[{"t":0,"v":[0,0,0]}]}}},
+                  {"kind":"bulge","params":{"amount":3}},
+                  {"kind":"halftone","source":"x.cube"},
+                  {"kind":"custom","source":"missing.wgsl"},
+                  {"kind":"custom"},
+                  {"kind":"halftone","options":{"mode":"cmyk","shape":"line"},"params":{"size":2,"center":0}}
+                ]}]}"#,
+        )
+        .unwrap();
+        let f = check(&p, Some(Path::new("/nonexistent-dir")));
+        let at = |i: usize| -> Vec<&Finding> { f.iter().filter(|x| x.path.starts_with(&format!("layers[0:\"fx\"].effects[{i}]"))).collect() };
+        let says = |i: usize, needle: &str, sev: Severity| at(i).iter().any(|x| x.message.contains(needle) && x.severity == sev);
+        assert!(says(0, "\"star\" is not a value", Severity::Error) && at(0)[0].hint.as_deref().unwrap().contains("square, hex, triangle, polar"), "{f:#?}");
+        assert!(says(1, "has no option \"shap\"", Severity::Error) && at(1)[0].hint.as_deref().unwrap().contains("shape"));
+        assert!(says(2, "has no options", Severity::Error));
+        assert!(says(3, "linear RGB colour with 3 numbers, not 2", Severity::Error));
+        assert!(says(4, "position in composition units with 2 numbers, not 3", Severity::Error));
+        assert!(says(5, "outside amount's range -1..1", Severity::Warning));
+        assert!(says(6, "takes no \"source\"", Severity::Error));
+        assert!(says(7, "shader file not found", Severity::Error));
+        assert!(says(8, "needs \"source\"", Severity::Error));
+        assert!(says(9, "has no parameter \"center\"", Severity::Error) && at(9).len() == 1, "{:#?}", at(9));
     }
 }

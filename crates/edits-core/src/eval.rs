@@ -34,6 +34,8 @@ pub struct ResolvedEffect {
     pub source: Option<String>,
     /// Every parameter of the effect's spec, with defaults filled in.
     pub params: BTreeMap<String, Vec<f64>>,
+    /// Every option of the effect's spec, with defaults filled in.
+    pub options: BTreeMap<String, String>,
 }
 #[derive(Clone, Debug)]
 pub struct ResolvedTransition {
@@ -50,6 +52,10 @@ impl ResolvedEffect {
     }
     pub fn vec(&self, name: &str, n: usize) -> Vec<f64> {
         pad(self.params.get(name).cloned().unwrap_or_default(), n)
+    }
+    /// An option's value (its default when not set), or `""` for an option the effect does not have.
+    pub fn option(&self, name: &str) -> &str {
+        self.options.get(name).map(String::as_str).unwrap_or("")
     }
 }
 
@@ -168,9 +174,14 @@ impl<'a> Evaluator<'a> {
 
     pub fn effect(&self, e: &Effect, t: f64) -> ResolvedEffect {
         let mut params = BTreeMap::new();
+        let mut options = BTreeMap::new();
         if let Some(spec) = effects::spec(&e.kind) {
             for p in spec.params {
                 params.insert(p.name.to_string(), p.default.to_vec());
+            }
+            for o in spec.options {
+                let v = e.options.get(o.name).filter(|v| o.values.contains(&v.as_str())).map(String::as_str).unwrap_or(o.default());
+                options.insert(o.name.to_string(), v.to_string());
             }
         }
         for (k, v) in &e.params {
@@ -179,7 +190,7 @@ impl<'a> Evaluator<'a> {
             let want = params.get(k).map(|d| d.len()).unwrap_or(val.len());
             params.insert(k.clone(), pad(val, want.max(1)));
         }
-        ResolvedEffect { kind: e.kind.clone(), source: e.source.clone(), params }
+        ResolvedEffect { kind: e.kind.clone(), source: e.source.clone(), params, options }
     }
 
     /// The transition into `layer` running at `t`, if any: its progress
@@ -292,5 +303,11 @@ mod tests {
         assert_eq!(r.num("radius"), 5.0);
         assert_eq!(r.num("threshold"), 0.7);
         assert_eq!(r.vec("color", 3), vec![1.0, 1.0, 1.0]);
+        // Options: the default when missing or not one of the allowed values.
+        let fx: Effect = serde_json::from_str(r#"{"kind":"halftone","options":{"mode":"cmyk"}}"#).unwrap();
+        let r = e.effect(&fx, 0.0);
+        assert_eq!((r.option("mode"), r.option("shape"), r.option("nope")), ("cmyk", "dot", ""));
+        let fx: Effect = serde_json::from_str(r#"{"kind":"halftone","options":{"mode":"sepia"}}"#).unwrap();
+        assert_eq!(e.effect(&fx, 0.0).option("mode"), "mono");
     }
 }

@@ -65,6 +65,15 @@ pub mod color {
     /// The waveform, and its part left of the playhead.
     pub const WAVE: Color32 = Color32::from_rgb(0x4A, 0x4A, 0x4A);
     pub const WAVE_PLAYED: Color32 = Color32::from_rgb(0x8E, 0x8E, 0x8E);
+    /// The song's marks on the timeline: kick onsets (orange), snare onsets
+    /// (pink), downbeats (a light grey line), sections (alternating bands).
+    pub const SONG_KICK: Color32 = Color32::from_rgb(0xF7, 0x6B, 0x15);
+    pub const SONG_SNARE: Color32 = Color32::from_rgb(0xE9, 0x3D, 0x82);
+    pub const SONG_BEAT: Color32 = Color32::from_rgb(0x6F, 0x6F, 0x6F);
+    pub const SONG_SECTION: Color32 = Color32::from_rgb(0x1C, 0x1C, 0x1C);
+    pub const SONG_SECTION_ALT: Color32 = Color32::from_rgb(0x24, 0x24, 0x24);
+    /// A transition's wedge at the start of a layer's bar.
+    pub const TRANSITION: Color32 = ACCENT_TEXT;
     /// Modal backdrop.
     pub const BACKDROP: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 150);
 }
@@ -141,6 +150,8 @@ pub mod size {
     pub const RULER: f32 = 22.0;
     pub const MARKERS: f32 = 16.0;
     pub const WAVE: f32 = 40.0;
+    /// The lane of the song's marks.
+    pub const SONG: f32 = 26.0;
     pub const TRACK: f32 = 28.0;
     pub const TRACK_HEADER: f32 = 168.0;
     pub const PALETTE_WIDTH: f32 = 580.0;

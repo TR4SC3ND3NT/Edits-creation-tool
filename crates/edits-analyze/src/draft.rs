@@ -244,7 +244,7 @@ fn shot_layer(shot: &Shot, clock: &Clock, shift: usize, repeat: usize, aspect: f
             }
         }
         if !params.is_empty() {
-            effects.push(Effect { kind: kind.into(), params, source: None, enabled: true });
+            effects.push(Effect { kind: kind.into(), params, options: Default::default(), source: None, enabled: true });
         }
     }
     let suffix = if repeat == 0 { String::new() } else { format!("_r{}", repeat + 1) };
@@ -410,7 +410,7 @@ pub fn draft(a: &Analysis, opts: &DraftOpts) -> Project {
             end: Some(content.1),
             transform: Transform::default(),
             blend: Blend::Normal,
-            effects: vec![Effect { kind: "vignette".into(), params, source: None, enabled: true }],
+            effects: vec![Effect { kind: "vignette".into(), params, options: Default::default(), source: None, enabled: true }],
             enabled: static_on, transition: None,
         });
     }

@@ -2,15 +2,15 @@
 //!
 //! A custom effect is a WGSL file that defines
 //! `fn effect(uv: vec2<f32>) -> vec4<f32>`; the renderer appends the rest
-//! (`shaders/custom.wgsl`: the `fx` inputs, `src()`, `src_mirror()` and the
-//! entry points) and compiles the whole. [`check_custom_effect`] does the same
+//! (`shaders/fx/prelude.wgsl` and `shaders/custom.wgsl`: the `fx` inputs,
+//! `src()`, `src_mirror()`, the `fx_*` helpers and the entry points) and compiles the whole. [`check_custom_effect`] does the same
 //! with naga, the WGSL compiler wgpu uses, and reports problems with line
 //! and column numbers in the file as written.
 
 use serde::Serialize;
 
-/// The code appended to a custom effect.
-pub const CUSTOM_CONTRACT: &str = include_str!("shaders/custom.wgsl");
+/// The code appended to a custom effect (and to every built-in one).
+pub const CUSTOM_CONTRACT: &str = concat!(include_str!("shaders/fx/prelude.wgsl"), include_str!("shaders/custom.wgsl"));
 
 #[derive(Serialize, Clone, Debug)]
 pub struct ShaderIssue {
@@ -29,7 +29,7 @@ pub struct ShaderIssue {
 pub struct ShaderReport {
     pub ok: bool,
     pub issues: Vec<ShaderIssue>,
-    /// The parameters the shader reads (`fx.p0` .. `fx.p7`).
+    /// The parameters the shader reads (`fx.p0` .. `fx.p15`).
     pub params: Vec<String>,
     /// Whether it reads the time (`fx.time`, `fx.beats`, `fx.frame`), so it changes on every frame.
     pub animated: bool,
@@ -49,11 +49,16 @@ fn chain(e: &dyn std::error::Error) -> String {
     s
 }
 
+/// Whether `text` mentions `name` as a whole word (`fx.p1` but not `fx.p10`).
+fn reads(text: &str, name: &str) -> bool {
+    text.match_indices(name).any(|(i, _)| !text[i + name.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
+}
+
 /// Check a custom effect the way the renderer will compile it.
 pub fn check_custom_effect(text: &str) -> ShaderReport {
     let combined = format!("{text}\n{CUSTOM_CONTRACT}");
     let own_lines = text.lines().count() as u32;
-    let params: Vec<String> = (0..8).map(|i| format!("p{i}")).filter(|p| text.contains(&format!("fx.{p}"))).collect();
+    let params: Vec<String> = (0..16).map(|i| format!("p{i}")).filter(|p| reads(text, &format!("fx.{p}"))).collect();
     let animated = ["fx.time", "fx.beats", "fx.frame"].iter().any(|k| text.contains(k));
     let issue = |loc: Option<naga::SourceLocation>, message: String| -> ShaderIssue {
         match loc {
@@ -67,7 +72,7 @@ pub fn check_custom_effect(text: &str) -> ShaderReport {
                 line: None,
                 column: None,
                 code: None,
-                message: format!("{message} (in the code the renderer appends: the file must define `fn effect(uv: vec2<f32>) -> vec4<f32>` and must not declare `fx`, `src`, `src_texture`, `edits_vs` or `edits_fs` itself)"),
+                message: format!("{message} (in the code the renderer appends: the file must define `fn effect(uv: vec2<f32>) -> vec4<f32>` and must not declare `fx`, `src`, `src_mirror`, `src_texture`, `src_sampler`, anything starting with `fx_` or `edits_`, or `EditsFx` itself)"),
             },
             None => ShaderIssue { line: None, column: None, code: None, message },
         }
@@ -118,6 +123,14 @@ mod tests {
             assert!(r.ok, "{:?}", r.issues);
             assert!(r.params.contains(&"p0".to_string()));
         }
+    }
+
+    #[test]
+    fn sixteen_parameters_and_the_helpers_are_available() {
+        let r = check_custom_effect("fn effect(uv: vec2<f32>) -> vec4<f32> {\n    let n = fx_noise(fx_to_comp(uv) * 10.0, fx.p15) + fx_hash(1u, 2u, 3u);\n    return vec4<f32>(fx_lut(src(fx_to_uv(fx_to_comp(uv))).rgb) * fx.p10, fx_aux(uv).a * n);\n}\n");
+        assert!(r.ok, "{:?}", r.issues);
+        assert_eq!(r.params, ["p10", "p15"]);
+        assert!(!r.animated);
     }
 
     #[test]

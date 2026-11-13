@@ -66,6 +66,13 @@ fn effects_lists_the_registry() {
     assert_eq!(radius["default"], 3.0);
     assert!(radius["doc"].as_str().unwrap().contains("% of height"));
     assert_eq!(glow["params"].as_array().unwrap().iter().find(|p| p["name"] == "color").unwrap()["default"], serde_json::json!([1.0, 1.0, 1.0]));
+    assert_eq!((glow["category"].as_str(), radius["unit"].as_str()), (Some("light"), Some("%h")));
+    assert_eq!(radius["range"], serde_json::json!([0.0, null]));
+    let pixelate = list.iter().find(|e| e["kind"] == "pixelate").unwrap();
+    assert_eq!(pixelate["options"][0]["values"], serde_json::json!(["square", "hex", "triangle", "polar"]));
+    assert_eq!(pixelate["options"][0]["default"], "square");
+    assert!(pixelate["credit"].as_str().unwrap().contains("BSD-3-Clause"));
+    assert_eq!(list.iter().find(|e| e["kind"] == "custom").unwrap()["source"], "shader");
     let text = String::from_utf8(edits(&["effects"]).stdout).unwrap();
     for e in edits_core::effects::EFFECTS {
         assert!(text.contains(&format!("{}:", e.kind)), "{} is missing", e.kind);

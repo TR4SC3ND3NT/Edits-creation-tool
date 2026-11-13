@@ -147,7 +147,7 @@ pub fn first_frame(p: &Project, t: f64) -> usize {
 }
 
 fn effect(kind: &str, params: Vec<(&str, Prop)>) -> Effect {
-    Effect { kind: kind.into(), params: params.into_iter().map(|(k, v)| (k.to_string(), v)).collect(), source: None, enabled: true }
+    Effect { kind: kind.into(), params: params.into_iter().map(|(k, v)| (k.to_string(), v)).collect(), options: Default::default(), source: None, enabled: true }
 }
 
 /// Smallest uniform scale multiplier that keeps the frame covered by the

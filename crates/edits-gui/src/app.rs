@@ -19,7 +19,10 @@ use crate::timemap::{TimeMap, View};
 use crate::toasts::{self, Toasts};
 use crate::widgets::{self, tip, Icon};
 use crate::worker::{ProjectMsg, Worker, WorkerEvent};
-use crate::{inspector, panels, timeline, Options};
+use crate::presets::{self, AtChoice, TargetChoice};
+use crate::song::{self, AccentForm, CutForm};
+use crate::uictx::{self, Note, UiFile};
+use crate::{inspector, panels, songpanel, timeline, transitions, Options};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, ColorImage, FontId, Key, Modifiers, Rect, RichText, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui};
 use edits_core::edit::{self as core_edit, EditOp, EditOptions, HistoryList};
 use edits_core::Project;
@@ -45,15 +48,17 @@ const STATUS_FOR: Duration = Duration::from_secs(8);
 pub(crate) enum Drawer {
     Slots,
     History,
+    Presets,
 }
 
 impl Drawer {
-    pub const ALL: [Drawer; 2] = [Drawer::Slots, Drawer::History];
+    pub const ALL: [Drawer; 3] = [Drawer::Slots, Drawer::History, Drawer::Presets];
 
     pub fn title(self) -> &'static str {
         match self {
             Drawer::Slots => "Slots",
             Drawer::History => "History",
+            Drawer::Presets => "Presets",
         }
     }
 
@@ -61,6 +66,7 @@ impl Drawer {
         match self {
             Drawer::Slots => Icon::Images,
             Drawer::History => Icon::History,
+            Drawer::Presets => Icon::WandSparkles,
         }
     }
 
@@ -68,6 +74,7 @@ impl Drawer {
         match self {
             Drawer::Slots => "Ctrl+1",
             Drawer::History => "Ctrl+2",
+            Drawer::Presets => "Ctrl+3",
         }
     }
 
@@ -75,6 +82,7 @@ impl Drawer {
         match self {
             Drawer::Slots => "Slots: the pictures of the edit",
             Drawer::History => "History: your edits and the agent's",
+            Drawer::Presets => "Presets: flashes, punches, moves and transitions",
         }
     }
 }
@@ -110,6 +118,17 @@ pub(crate) enum Cmd {
     Shortcuts,
     Palette,
     Quit,
+    /// Open the Presets drawer on this preset.
+    OpenPreset(String),
+    AddTransition(String, &'static str),
+    RemoveTransition(String),
+    AnalyseSong,
+    SongMarks(song::Layer),
+    CutDialog,
+    AccentDialog,
+    SyncSong,
+    NoteDialog,
+    ClearNote,
 }
 
 /// A change being made with one widget (a drag, or typing into a value): it
@@ -270,6 +289,56 @@ pub(crate) struct App {
     /// Text being typed: the name of a new slot, slot paths.
     pub new_slot: String,
     pub slot_text: HashMap<String, String>,
+
+    // ---- the agent, presets, song ----
+    /// `.edits/ui.json`: what the agent can see of the window.
+    pub ui_file: UiFile,
+    /// The person's note for the agent, and the text being typed into the note dialog.
+    pub note: Option<Note>,
+    pub note_dialog: Option<String>,
+    /// The part of the timeline in view (project time), as drawn last.
+    pub visible: Option<(f64, f64)>,
+    /// The preset library, read when the drawer first opens.
+    pub presets: Option<presets::Library>,
+    pub pre: PresetUi,
+    /// A preset previewed on the stage: (what was asked, its label).
+    pub preview: Option<(u64, String)>,
+    /// The drawer asked for the preview this frame.
+    pub preview_seen: bool,
+    pub song: SongUi,
+    pub cut_form: Option<CutForm>,
+    pub accent_form: Option<AccentForm>,
+}
+
+/// The Presets drawer's state.
+pub(crate) struct PresetUi {
+    pub query: String,
+    /// The preset whose card is open.
+    pub open: Option<String>,
+    pub values: serde_json::Map<String, serde_json::Value>,
+    pub target: TargetChoice,
+    pub at: AtChoice,
+    /// Show the preset on the stage before applying it.
+    pub preview: bool,
+    /// Why the preview (and so the apply) would fail.
+    pub error: Option<String>,
+}
+
+impl Default for PresetUi {
+    fn default() -> Self {
+        PresetUi { query: String::new(), open: None, values: Default::default(), target: TargetChoice::Selected, at: AtChoice::Playhead, preview: true, error: None }
+    }
+}
+
+/// The song analysis of the project's audio.
+#[derive(Default)]
+pub(crate) struct SongUi {
+    pub job: Option<song::Job>,
+    pub analysis: Option<serde_json::Value>,
+    pub info: Option<edits_core::song::SongInfo>,
+    pub marks: Option<song::Marks>,
+    pub toggles: song::Toggles,
+    pub error: Option<String>,
 }
 
 impl App {
@@ -291,6 +360,7 @@ impl App {
         let budget = options.cache_mb.unwrap_or(384).max(16) * 1024 * 1024;
         let scale = options.scale.unwrap_or(Scale::Half);
         let shot = options.screenshot.clone().map(|path| Shot { path, phase: ShotPhase::Loading, delayed: false });
+        let path_for_ui = path.clone();
         let mut app = Self {
             base: reload::base_dir(&path),
             export: ExportUi { path: export::default_output(&path).display().to_string(), ..Default::default() },
@@ -349,6 +419,17 @@ impl App {
             files_hovering: false,
             new_slot: String::new(),
             slot_text: HashMap::new(),
+            ui_file: UiFile::new(&path_for_ui),
+            note: None,
+            note_dialog: None,
+            visible: None,
+            presets: None,
+            pre: PresetUi::default(),
+            preview: None,
+            preview_seen: false,
+            song: SongUi::default(),
+            cut_form: None,
+            accent_form: None,
         };
         app.take_report(first, Origin::First);
         if let Some(p) = app.project() {
@@ -366,6 +447,7 @@ impl App {
         if app.options.play {
             app.start_playing(app.playhead);
         }
+        app.load_saved_song();
         app
     }
 
@@ -387,6 +469,7 @@ impl App {
                 }
                 // The new version replaces any preview of an unfinished change.
                 self.ghost = None;
+                self.preview = None;
                 let Some(project) = self.state.current.clone() else { return };
                 let tm = TimeMap::of(&project);
                 let span_changed = self.tm.is_none_or(|old| old.start_time() != tm.start_time() || old.end_time() != tm.end_time());
@@ -407,6 +490,8 @@ impl App {
                 let wake = ctx.clone();
                 self.audio.set_file(project.audio.as_ref().map(|a| self.base.join(&a.path)), move || wake.request_repaint());
                 self.drop_stale_selection();
+                // Tempo or audio offset may have changed: the song's marks move with them.
+                self.refresh_song_marks();
                 if self.playing.is_some() {
                     // Length, frame rate or audio offset may have changed: start the clock again from here.
                     self.start_playing(self.playhead);
@@ -501,33 +586,61 @@ impl App {
 
     fn commit_with(&mut self, ops: Vec<EditOp>, label: String, base: Option<u64>) {
         self.pending = None;
+        self.preview = None;
         let had_ghost = self.ghost.take().is_some();
-        let written = if ops.is_empty() || !self.can_edit() {
-            false
+        let result = if ops.is_empty() || !self.can_edit() {
+            None
         } else {
             let opts = EditOptions { actor: core_edit::WINDOW, label: Some(&label), expect: base, ..Default::default() };
-            match core_edit::apply(&self.path, &ops, &opts) {
-                Ok(out) if out.ok && out.written => {
-                    self.say(label.clone());
-                    true
-                }
-                Ok(out) if out.ok => false,
-                Ok(out) => {
-                    let errors: Vec<String> = out.findings.iter().filter(|f| f.severity == edits_core::check::Severity::Error).map(core_edit::finding_line).collect();
-                    let first = errors.first().cloned().unwrap_or_default();
-                    self.fail(format!("Not applied ({label}): {first}"), errors.join("\n"));
-                    false
-                }
-                Err(e) if e == core_edit::STALE => {
-                    self.fail("Not applied: the project changed on disk (the agent wrote it?) while you were editing. The window has caught up; do it again.", e);
-                    // Catch up now instead of waiting for the file watcher.
-                    self.take_report(reload::load(&self.path), Origin::Disk);
-                    return;
-                }
-                Err(e) => {
-                    self.fail(format!("Not applied: {}", shorten(&e, 120)), e);
-                    false
-                }
+            Some(core_edit::apply(&self.path, &ops, &opts))
+        };
+        self.after_write(result, &label, had_ghost);
+    }
+
+    /// Write the document `change` makes of the file's, as one step in the
+    /// shared history: how presets, transitions and beat operations are
+    /// written (`edits_core::edit::apply_with`, as `edits apply` does).
+    /// Returns whether the file was written.
+    pub fn commit_change(&mut self, label: String, change: &dyn Fn(&serde_json::Value) -> Result<serde_json::Value, String>) -> bool {
+        self.finish_pending();
+        self.preview = None;
+        let had_ghost = self.ghost.take().is_some();
+        let result = if self.can_edit() {
+            let opts = EditOptions { actor: core_edit::WINDOW, label: Some(&label), expect: self.state.text_hash, ..Default::default() };
+            Some(core_edit::apply_with(&self.path, &opts, change))
+        } else {
+            None
+        };
+        self.after_write(result, &label, had_ghost)
+    }
+
+    /// Say what a write did (or why not), and read the file back.
+    fn after_write(&mut self, result: Option<Result<core_edit::EditOutcome, String>>, label: &str, had_ghost: bool) -> bool {
+        let written = match result {
+            None => false,
+            Some(Ok(out)) if out.ok && out.written => {
+                self.say(label.to_string());
+                true
+            }
+            Some(Ok(out)) if out.ok => {
+                self.say(format!("No change ({label})"));
+                false
+            }
+            Some(Ok(out)) => {
+                let errors: Vec<String> = out.findings.iter().filter(|f| f.severity == edits_core::check::Severity::Error).map(core_edit::finding_line).collect();
+                let first = errors.first().cloned().unwrap_or_default();
+                self.fail(format!("Not applied ({label}): {first}"), errors.join("\n"));
+                false
+            }
+            Some(Err(e)) if e == core_edit::STALE => {
+                self.fail("Not applied: the project changed on disk (the agent wrote it?) while you were editing. The window has caught up; do it again.", e);
+                // Catch up now instead of waiting for the file watcher.
+                self.take_report(reload::load(&self.path), Origin::Disk);
+                return false;
+            }
+            Some(Err(e)) => {
+                self.fail(format!("Not applied: {}", shorten(&e, 120)), e);
+                false
             }
         };
         if written {
@@ -536,6 +649,7 @@ impl App {
             // Back to the file's version.
             self.send_current();
         }
+        written
     }
 
     fn send_current(&mut self) {
@@ -587,6 +701,7 @@ impl App {
         let Some(doc) = self.state.doc.clone() else { return };
         let Ok(changed) = core_edit::apply_ops(&doc, ops) else { return };
         let Ok(project) = serde_json::from_value::<Project>(changed) else { return };
+        self.preview = None;
         self.ghost_serial += 1;
         let revision = GHOST_BASE + self.ghost_serial;
         let project = Arc::new(project);
@@ -687,6 +802,290 @@ impl App {
         self.commit(vec![editing::set_field(id, "enabled", serde_json::json!(!enabled))], format!("{} {id}", if enabled { "disable" } else { "enable" }));
     }
 
+    // ---- presets ------------------------------------------------------------------
+
+    /// The preset library (read once, when first needed; `reload_presets` reads it again).
+    pub fn library(&mut self) -> &presets::Library {
+        let dir = self.base.clone();
+        self.presets.get_or_insert_with(|| presets::Library::load(Some(&dir)))
+    }
+
+    pub fn reload_presets(&mut self) {
+        self.presets = None;
+        self.library();
+    }
+
+    /// Open a preset's card in the drawer with its default values.
+    pub fn open_preset(&mut self, name: &str) {
+        let Some(p) = self.library().get(name).cloned() else {
+            self.fail(format!("No preset \"{name}\""), "");
+            return;
+        };
+        self.drawer = Some(Drawer::Presets);
+        self.pre.values = presets::defaults(&p);
+        self.pre.at = presets::default_at(&p);
+        self.pre.target = TargetChoice::Selected;
+        self.pre.error = None;
+        self.pre.open = Some(p.name);
+    }
+
+    /// The song analysis as the edit operations read it (for its bars and markers).
+    pub fn song_info(&self) -> Option<&edits_core::song::SongInfo> {
+        self.song.info.as_ref()
+    }
+
+    /// The open preset with its values applied to the file's version, at the playhead (or its target's cut).
+    fn preset_change(&mut self) -> Option<(edits_core::preset::Preset, edits_core::preset::Target, f64)> {
+        let name = self.pre.open.clone()?;
+        let p = self.library().get(&name).cloned()?;
+        let doc = self.state.doc.clone()?;
+        let tm = self.tm?;
+        let target = presets::target(&p, self.pre.target, self.selected_layer().as_deref());
+        let at = presets::at_time(&doc, self.pre.at, &target, tm.frame_time(self.playhead));
+        Some((p, target, at))
+    }
+
+    /// Show the open preset on the stage without writing anything (called by the drawer every frame it wants it).
+    pub fn preview_preset(&mut self) {
+        self.preview_seen = true;
+        if self.pending.is_some() || self.drag.is_some() || self.state.rejected {
+            return;
+        }
+        let Some((p, target, at)) = self.preset_change() else { return };
+        let Some(doc) = self.state.doc.clone() else { return };
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        use std::hash::{Hash, Hasher};
+        (&p.name, serde_json::Value::Object(self.pre.values.clone()).to_string(), presets::target_text(&target), at.to_bits(), self.state.text_hash).hash(&mut h);
+        let sig = h.finish();
+        if self.preview.as_ref().is_some_and(|(s, _)| *s == sig) {
+            return;
+        }
+        let tc = presets::time_ctx(&doc, self.song_info());
+        let result = presets::apply(&doc, &p, &target, at, &self.pre.values, &tc).and_then(|mut d| {
+            edits_core::time::resolve_doc(&mut d, None)?;
+            serde_json::from_value::<Project>(d).map_err(|e| e.to_string())
+        });
+        match result {
+            Ok(project) => {
+                self.pre.error = None;
+                self.ghost_serial += 1;
+                let revision = GHOST_BASE + self.ghost_serial;
+                let project = Arc::new(project);
+                self.worker.set_project(ProjectMsg { revision, project: project.clone(), base_dir: self.base.clone() });
+                self.posted = None;
+                self.ghost = Some(Ghost { revision, project });
+                self.preview = Some((sig, format!("{} at {} on {}", p.name, editing::tidy(at), presets::target_text(&target))));
+            }
+            Err(e) => {
+                self.pre.error = Some(e);
+                self.end_preview();
+                // Remember it failed for these values, so it is not computed again every frame.
+                self.preview = Some((sig, String::new()));
+            }
+        }
+    }
+
+    /// Back to the file's version after a preview.
+    fn end_preview(&mut self) {
+        if self.preview.take().is_some() && self.pending.is_none() && self.ghost.take().is_some() {
+            self.send_current();
+        }
+    }
+
+    /// Apply the open preset: one edit, as `edits apply` would make it.
+    pub fn apply_preset(&mut self) {
+        let Some((p, target, at)) = self.preset_change() else { return };
+        let values = self.pre.values.clone();
+        let song = self.song.info.clone();
+        let label = presets::label(&p, at, &target);
+        let ok = self.commit_change(label, &|d| {
+            let tc = presets::time_ctx(d, song.as_ref());
+            presets::apply(d, &p, &target, at, &values, &tc)
+        });
+        if ok {
+            // A layer the preset made (accents) or the one it changed: show it.
+            if let edits_core::preset::Target::Layer(id) = &target {
+                self.selected = Some(Selected::Layer(id.clone()));
+            }
+        }
+    }
+
+    // ---- transitions --------------------------------------------------------------
+
+    pub fn add_transition(&mut self, id: &str, kind: &'static str) {
+        let id = id.to_string();
+        self.commit_change(format!("transition {kind} into {id}"), &|d| transitions::add(d, &id, kind, &presets::time_ctx(d, None)));
+    }
+
+    pub fn remove_transition(&mut self, id: &str) {
+        self.commit(vec![transitions::remove_op(id)], format!("remove the transition into {id}"));
+    }
+
+    // ---- song ------------------------------------------------------------------------
+
+    /// The project's audio file, if it has one.
+    pub fn audio_file(&self) -> Option<PathBuf> {
+        self.project().and_then(|p| p.audio.as_ref()).map(|a| self.base.join(&a.path))
+    }
+
+    fn load_saved_song(&mut self) {
+        let Some(audio) = self.audio_file() else { return };
+        if let Some(v) = song::load_saved(&self.path, &audio) {
+            self.set_analysis(v);
+        }
+    }
+
+    fn set_analysis(&mut self, v: serde_json::Value) {
+        self.song.info = edits_core::song::SongInfo::from_value(&v).ok();
+        self.song.analysis = Some(v);
+        self.refresh_song_marks();
+    }
+
+    /// The marks of the analysis in the project's time (they move with its tempo and audio offset).
+    fn refresh_song_marks(&mut self) {
+        let (Some(v), Some(doc)) = (&self.song.analysis, &self.state.doc) else { return };
+        let tc = edits_core::time::TimeCtx::from_doc(doc);
+        let offset = doc.pointer("/audio/offset").and_then(serde_json::Value::as_f64).unwrap_or(0.0);
+        match song::marks(v, &tc, offset) {
+            Ok(m) => {
+                self.song.marks = Some(m);
+                self.song.error = None;
+            }
+            Err(e) => self.song.error = Some(e),
+        }
+    }
+
+    pub fn analyse_song(&mut self) {
+        if self.song.job.is_some() {
+            return;
+        }
+        let Some(audio) = self.audio_file() else {
+            self.fail("No audio: this project has no audio file to analyse (set \"audio\" in the project, or ask the agent).", "");
+            return;
+        };
+        let wake = self.ctx.clone();
+        self.song.error = None;
+        self.song.job = Some(song::Job::start(&self.path, &audio, move || wake.request_repaint()));
+        self.say(format!("Analysing {}…", audio.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+    }
+
+    fn poll_song(&mut self) {
+        let Some(result) = self.song.job.as_ref().and_then(song::Job::poll) else { return };
+        self.song.job = None;
+        match result {
+            Ok(v) => {
+                self.set_analysis(v);
+                let body = self.song.marks.as_ref().map(song::summary).unwrap_or_default();
+                self.toasts.push(Instant::now(), toasts::Kind::Ok, "Song analysed", format!("{body} · saved in .edits/song.audio.json"), None);
+                self.say(format!("Song analysed: {body}"));
+            }
+            Err(e) => {
+                self.song.error = Some(e.clone());
+                self.fail(format!("Song analysis failed: {}", shorten(&e, 100)), e);
+            }
+        }
+    }
+
+    /// Write the song's tempo, beat offset and markers into the project (`edits audio --project`).
+    pub fn sync_song(&mut self) {
+        let Some(info) = self.song.info.clone() else {
+            self.fail("Analyse the song first (Analyse song in the timeline toolbar).", "");
+            return;
+        };
+        self.commit_change("tempo and markers from a song analysis".into(), &|d| edits_core::beatops::sync(d, &info, None).map(|(d, _)| d));
+    }
+
+    pub fn open_cut(&mut self) {
+        let Some(p) = self.project() else { return };
+        self.cut_form = Some(CutForm::new(p.slots.keys().cloned()));
+    }
+
+    pub fn open_accent(&mut self, preset: Option<&str>) {
+        let name = preset.map(str::to_string).or_else(|| self.pre.open.clone().filter(|n| !n.starts_with("transition:"))).unwrap_or_else(|| "flash".into());
+        let Some(p) = self.library().get(&name).cloned() else { return };
+        self.accent_form = Some(AccentForm::new(&p));
+    }
+
+    pub fn run_cut(&mut self) {
+        let Some(form) = self.cut_form.clone() else { return };
+        let Some(doc) = self.state.doc.clone() else { return };
+        let label = match form.plan(&doc, self.song_info()) {
+            Ok((_, _, label)) => label,
+            Err(e) => {
+                self.fail(format!("Not cut: {e}"), "");
+                return;
+            }
+        };
+        let song = self.song.info.clone();
+        if self.commit_change(label, &|d| form.apply(d, song.as_ref()).map(|(d, _)| d)) {
+            self.cut_form = None;
+        }
+    }
+
+    pub fn run_accent(&mut self) {
+        let Some(form) = self.accent_form.clone() else { return };
+        let Some(p) = self.library().get(&form.preset).cloned() else { return };
+        let Some(doc) = self.state.doc.clone() else { return };
+        let selected = self.selected_layer();
+        let song = self.song.info.clone();
+        let label = match form.apply(&doc, &p, selected.as_deref(), song.as_ref()) {
+            Ok((_, label)) => label,
+            Err(e) => {
+                self.fail(format!("Not applied: {e}"), "");
+                return;
+            }
+        };
+        if self.commit_change(label, &|d| form.apply(d, &p, selected.as_deref(), song.as_ref()).map(|(d, _)| d)) {
+            self.accent_form = None;
+        }
+    }
+
+    // ---- the agent's view ------------------------------------------------------------
+
+    /// What `.edits/ui.json` says now.
+    pub fn ui_context(&self) -> Option<edits_core::ui::UiContext> {
+        let tm = self.tm?;
+        let p = self.project()?;
+        let file = self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let layer = self.selected_layer();
+        let prop = self.selected_prop.as_ref().filter(|_| self.picked_by_hand);
+        let t = tm.frame_time(self.playhead);
+        let key = prop.and_then(|r| {
+            let l = layer.as_ref().and_then(|id| p.layers.iter().find(|l| &l.id == id));
+            editing::key_index_at(r.get(p, l), t)
+        });
+        let inputs = uictx::Inputs {
+            project_file: &file,
+            t,
+            seconds: tm.frame_seconds(self.playhead),
+            frame: self.playhead,
+            playing: self.playing.is_some(),
+            layer: layer.as_deref(),
+            camera: self.selected == Some(Selected::Camera),
+            prop,
+            key,
+            visible: self.visible,
+            looping: self.looping.then(|| (tm.start_time(), tm.end_time())),
+            note: self.note.as_ref(),
+        };
+        Some(uictx::context(&inputs))
+    }
+
+    fn share_context(&mut self, ctx: &egui::Context) {
+        if let Some(c) = self.ui_context() {
+            let again = self.ui_file.update(Instant::now(), &c);
+            ctx.request_repaint_after(again);
+        }
+    }
+
+    pub fn set_note(&mut self, text: &str) {
+        self.note = Note::new(text, std::time::SystemTime::now());
+        match &self.note {
+            Some(_) => self.say("Note saved for the agent: it reads it with ui_context (ask it to look)"),
+            None => self.say("Note to the agent cleared"),
+        }
+    }
+
     // ---- transport ---------------------------------------------------------------
 
     fn start_playing(&mut self, frame: u64) {
@@ -775,6 +1174,9 @@ impl App {
         }
         if pressed(Modifiers::COMMAND, Key::Num2) {
             self.run(Cmd::Drawer(Drawer::History));
+        }
+        if pressed(Modifiers::COMMAND, Key::Num3) {
+            self.run(Cmd::Drawer(Drawer::Presets));
         }
         if pressed(Modifiers::SHIFT, Key::Questionmark) || pressed(Modifiers::NONE, Key::Questionmark) {
             self.shortcuts_open = !self.shortcuts_open;
@@ -869,6 +1271,16 @@ impl App {
             Cmd::Shortcuts => self.shortcuts_open = !self.shortcuts_open,
             Cmd::Palette => self.palette.open(),
             Cmd::Quit => self.ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Cmd::OpenPreset(name) => self.open_preset(&name),
+            Cmd::AddTransition(id, kind) => self.add_transition(&id, kind),
+            Cmd::RemoveTransition(id) => self.remove_transition(&id),
+            Cmd::AnalyseSong => self.analyse_song(),
+            Cmd::SongMarks(l) => self.song.toggles.flip(l),
+            Cmd::CutDialog => self.open_cut(),
+            Cmd::AccentDialog => self.open_accent(None),
+            Cmd::SyncSong => self.sync_song(),
+            Cmd::NoteDialog => self.note_dialog = Some(self.note.as_ref().map(|n| n.text.clone()).unwrap_or_default()),
+            Cmd::ClearNote => self.set_note(""),
         }
     }
 
@@ -908,6 +1320,13 @@ impl App {
                 for spec in editing::addable_effects() {
                     c.push(C::new("Add effect", Icon::Sparkles, format!("Add {} to {id}", spec.kind), Cmd::AddEffect(id.clone(), spec.kind)));
                 }
+                if l.transition.is_some() {
+                    c.push(C::new("Transition", Icon::Trash2, format!("Remove the transition into {id}"), Cmd::RemoveTransition(id.clone())));
+                }
+                for t in transitions::specs() {
+                    let verb = if l.transition.as_ref().is_some_and(|x| x.kind == t.kind) { "Add again" } else { "Add" };
+                    c.push(C::new("Transition", Icon::ArrowRightLeft, format!("{verb} transition {} into {id}", t.kind), Cmd::AddTransition(id.clone(), t.kind)));
+                }
             }
             for l in p.layers.iter().rev() {
                 c.push(C::new("Select", widgets::kind_icon(&rows::kind_text(&l.kind)), format!("Select {}", l.id), Cmd::Select(Some(Selected::Layer(l.id.clone())))));
@@ -921,6 +1340,30 @@ impl App {
                     c.push(C::new("Go to", Icon::Flag, format!("Go to marker {}", m.label), Cmd::Seek(tm.first_frame_from(m.t))));
                 }
             }
+        }
+        if let Some(lib) = &self.presets {
+            for p in lib.presets.iter().filter(|p| !presets::is_transition(p)) {
+                c.push(C::new("Preset", Icon::WandSparkles, format!("Apply preset {}…", p.name), Cmd::OpenPreset(p.name.clone())));
+            }
+        }
+        if self.project().is_some_and(|p| p.audio.is_some()) {
+            let analysed = self.song.analysis.is_some();
+            c.push(C::new("Song", Icon::AudioLines, if analysed { "Analyse the song again" } else { "Analyse song" }, Cmd::AnalyseSong));
+            if analysed {
+                for l in song::Layer::ALL {
+                    let verb = if self.song.toggles.get(l) { "Hide" } else { "Show" };
+                    c.push(C::new("Song", Icon::Music, format!("{verb} the song's {} on the timeline", l.name()), Cmd::SongMarks(l)));
+                }
+                c.push(C::new("Song", Icon::Gauge, "Write the song's tempo and markers into the project", Cmd::SyncSong));
+            }
+        }
+        if self.project().is_some() {
+            c.push(C::new("Song", Icon::Scissors, "Cut on beats…", Cmd::CutDialog));
+            c.push(C::new("Song", Icon::Zap, "Accent on beats or onsets…", Cmd::AccentDialog));
+        }
+        c.push(C::new("Agent", Icon::MessageSquareText, if self.note.is_some() { "Change the note to the agent…" } else { "Tell the agent…" }, Cmd::NoteDialog));
+        if self.note.is_some() {
+            c.push(C::new("Agent", Icon::X, "Clear the note to the agent", Cmd::ClearNote));
         }
         for d in Drawer::ALL {
             let verb = if self.drawer == Some(d) { "Hide" } else { "Show" };
@@ -962,6 +1405,10 @@ impl App {
         }
         while let Ok(event) = self.worker_events.try_recv() {
             self.on_worker(event);
+        }
+        self.poll_song();
+        if self.song.job.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(250));
         }
         if self.audio.poll() {
             // The sound arrived while playing: join in at the right place.
@@ -1276,7 +1723,108 @@ impl App {
                     ui.label(small("Opening the graphics adapter…".into(), color::TEXT_FAINT));
                 }
             }
+            gap(ui);
+            self.agent_chip(ui);
         });
+    }
+
+    /// What the agent can see of the window (`.edits/ui.json`), and the note; a click writes the note.
+    fn agent_chip(&mut self, ui: &mut Ui) {
+        let tm = self.tm;
+        let what = match (&self.selected, tm) {
+            (Some(Selected::Layer(id)), Some(tm)) => format!("{} · {} {}", shorten(id, 14), if tm.uses_beats() { "B" } else { "s" }, editing::tidy((tm.frame_time(self.playhead) * 100.0).round() / 100.0)),
+            (Some(Selected::Camera), _) => "camera".to_string(),
+            (None, Some(tm)) => format!("playhead {} {}", if tm.uses_beats() { "B" } else { "s" }, editing::tidy((tm.frame_time(self.playhead) * 100.0).round() / 100.0)),
+            _ => "nothing yet".to_string(),
+        };
+        let (fg, icon) = if self.ui_file.error.is_some() { (color::WARN, Icon::EyeOff) } else { (color::AGENT, Icon::Eye) };
+        let text = format!("Agent sees {what}");
+        let galley = ui.painter().layout_no_wrap(text.clone(), theme::small(), color::TEXT_MUTED);
+        let note_w = if self.note.is_some() { 18.0 } else { 0.0 };
+        let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 26.0 + note_w, 18.0), Sense::click());
+        if resp.hovered() {
+            ui.painter().rect_filled(rect, radius::SMALL, color::CONTROL);
+        }
+        widgets::paint_icon(ui.painter(), pos2(rect.left() + 9.0, rect.center().y), icon, 12.0, fg);
+        ui.painter().galley(pos2(rect.left() + 20.0, rect.center().y - galley.size().y / 2.0), galley, color::TEXT_MUTED);
+        if self.note.is_some() {
+            widgets::paint_icon(ui.painter(), pos2(rect.right() - 10.0, rect.center().y), Icon::MessageSquareText, 12.0, color::ACCENT_TEXT);
+        }
+        let mut tip = match &self.ui_file.error {
+            Some(e) => format!("The agent cannot see the window: {e}"),
+            None => format!(
+                "The agent can see what is selected, the playhead, the timeline's view and the loop: the window writes them to {} and the agent reads them with the MCP tool ui_context.",
+                self.ui_file.path().display()
+            ),
+        };
+        match &self.note {
+            Some(n) => tip.push_str(&format!("\n\nYour note: \"{}\"", shorten(&n.text, 120))),
+            None => tip.push_str("\n\nClick to leave the agent a note (or Ctrl+K, Tell the agent…)."),
+        }
+        if resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            self.run(Cmd::NoteDialog);
+        }
+    }
+
+    /// "Tell the agent…": a note that goes into `ui.json` with the selection.
+    fn note_window(&mut self, ctx: &egui::Context) {
+        let Some(mut text) = self.note_dialog.take() else { return };
+        let modal = egui::Modal::new(egui::Id::unique("edits-note")).backdrop_color(color::BACKDROP).frame(
+            egui::Frame::new()
+                .fill(color::RAISED)
+                .stroke(Stroke::new(1.0, color::CONTROL_HOVER))
+                .corner_radius(egui::CornerRadius::same(radius::LARGE))
+                .inner_margin(egui::Margin::same(20))
+                .shadow(egui::Shadow { offset: [0, 12], blur: 32, spread: 0, color: Color32::from_black_alpha(160) }),
+        );
+        let (mut save, mut close, mut clear) = (false, false, false);
+        let context = match (self.selected_layer(), self.tm) {
+            (Some(id), Some(tm)) => format!("layer {id} selected, playhead at {} {}", editing::tidy(tm.frame_time(self.playhead)), tm.unit()),
+            (None, Some(tm)) => format!("no layer selected, playhead at {} {}", editing::tidy(tm.frame_time(self.playhead)), tm.unit()),
+            _ => "the playhead".to_string(),
+        };
+        let resp = modal.show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.spacing_mut().item_spacing.y = space::M;
+            ui.horizontal(|ui| {
+                ui.label(widgets::icon(Icon::MessageSquareText).color(color::AGENT));
+                ui.label(RichText::new("Tell the agent").font(FontId::new(text::HEADLINE, theme::strong())).color(color::TEXT));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if tip(widgets::small_icon_button(ui, Icon::X), "Close", &["Esc"]).clicked() {
+                        close = true;
+                    }
+                });
+            });
+            ui.label(RichText::new(format!("The agent reads this note with ui_context, together with what you are looking at ({context}). It is not sent as a message: tell the agent in your chat to look, e.g. \"see my note in the window\".")).color(color::TEXT_MUTED));
+            let r = ui.add(egui::TextEdit::multiline(&mut text).hint_text("make this hit stronger").desired_rows(4).desired_width(f32::INFINITY).margin(egui::Margin::symmetric(8, 6)));
+            if !r.has_focus() && !r.lost_focus() && ui.memory(|m| m.focused().is_none()) {
+                r.request_focus();
+            }
+            if r.has_focus() && ui.input(|i| i.modifiers.command && i.key_pressed(Key::Enter)) {
+                save = true;
+            }
+            if let Some(n) = &self.note {
+                ui.label(RichText::new(format!("Saved at {} UTC", n.at.get(9..15).map(|t| format!("{}:{}:{}", &t[0..2], &t[2..4], &t[4..6])).unwrap_or_default())).font(theme::small()).color(color::TEXT_FAINT));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if tip(widgets::button(ui, Some(Icon::Send), "Save note", true), "Save the note for the agent", &["Ctrl", "Enter"]).clicked() {
+                    save = true;
+                }
+                if widgets::button(ui, None, "Cancel", false).clicked() {
+                    close = true;
+                }
+                if self.note.is_some() && widgets::button(ui, Some(Icon::Trash2), "Clear", false).clicked() {
+                    clear = true;
+                }
+            });
+        });
+        if save {
+            self.set_note(&text);
+        } else if clear {
+            self.set_note("");
+        } else if !(close || resp.should_close()) {
+            self.note_dialog = Some(text);
+        }
     }
 
     fn preview(&mut self, ui: &mut Ui, area: Rect) {
@@ -1311,8 +1859,12 @@ impl App {
                 if shown.blur != wanted.blur && self.playing.is_none() {
                     notes.push(if wanted.blur { "rendering motion blur…".to_string() } else { "rendering without motion blur…".to_string() });
                 }
-                if !notes.is_empty() {
+                if !notes.is_empty() && self.preview.is_none() {
                     widgets::chip(&painter, rect.left_bottom() + vec2(space::M, -space::M), Align2::LEFT_BOTTOM, &notes.join(" · "), Color32::from_black_alpha(180), color::TEXT_MUTED);
+                }
+                if let Some((_, label)) = self.preview.as_ref().filter(|(_, l)| !l.is_empty() && self.ghost.is_some()) {
+                    let text = if shown.revision == wanted.revision { format!("Preview: {label} · not applied") } else { format!("Preview: {label} · rendering…") };
+                    widgets::chip(&painter, rect.left_top() + vec2(space::M, space::M), Align2::LEFT_TOP, &text, color::ACCENT_BG, color::ACCENT_TEXT);
                 }
             }
             _ => {
@@ -1655,7 +2207,7 @@ const SHORTCUTS: [(&str, &[(&str, &str)]); 6] = [
     ("Playback", &[("Space", "Play or pause"), ("← / →", "One frame back / forward"), ("Shift+← / Shift+→", "One beat back / forward"), ("Home / End", "First / last frame"), ("L", "Loop on or off")]),
     ("Edit", &[("Ctrl+Z", "Undo (yours or the agent's)"), ("Ctrl+Shift+Z / Ctrl+Y", "Redo"), ("Ctrl+D", "Duplicate the selected layer"), ("Delete", "Delete the selected layer")]),
     ("Timeline", &[("Ctrl+Wheel", "Zoom about the pointer"), ("Shift+Wheel", "Scroll sideways"), ("Alt", "While dragging: snap to frames")]),
-    ("Window", &[("Ctrl+K / Ctrl+Shift+P", "Command palette"), ("Ctrl+1", "Slots"), ("Ctrl+2", "History"), ("Ctrl+E", "Export video"), ("?", "This sheet")]),
+    ("Window", &[("Ctrl+K / Ctrl+Shift+P", "Command palette"), ("Ctrl+1", "Slots"), ("Ctrl+2", "History"), ("Ctrl+3", "Presets"), ("Ctrl+E", "Export video"), ("?", "This sheet")]),
     ("Selection", &[("Esc", "Deselect, then close the drawer")]),
     ("Values", &[("Drag", "Change a value"), ("Click", "Type a value; Enter finishes")]),
 ];
@@ -1683,6 +2235,7 @@ impl eframe::App for App {
         self.keys(&ctx);
         self.tick(&ctx);
         self.announce_export();
+        self.preview_seen = false;
 
         let bar = |fill: Color32, x: i8| egui::Frame::new().fill(fill).inner_margin(egui::Margin::symmetric(x, 0));
         egui::Panel::top("top-bar").exact_size(size::TOP_BAR).resizable(false).frame(bar(color::BG, space::L as i8)).show(ui, |ui| panels::top_bar(self, ui));
@@ -1700,6 +2253,11 @@ impl eframe::App for App {
 
         self.export_window(&ctx);
         self.shortcuts_window(&ctx);
+        songpanel::dialogs(self, &ctx);
+        self.note_window(&ctx);
+        if !self.preview_seen {
+            self.end_preview();
+        }
         if self.palette.open {
             let commands = self.commands();
             if let Some(cmd) = palette::show(&ctx, &mut self.palette, &commands) {
@@ -1719,6 +2277,12 @@ impl eframe::App for App {
             // "12 s ago" in the History list, and the status message fading out.
             ctx.request_repaint_after(Duration::from_secs(1));
         }
+        self.share_context(&ctx);
         self.screenshot_step(&ctx);
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // The agent must not think the window is still open.
+        self.ui_file.remove();
     }
 }

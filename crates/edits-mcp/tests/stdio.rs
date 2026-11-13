@@ -382,6 +382,9 @@ fn the_initialize_handshake_of_older_clients_still_works() {
     assert!(text.contains("stops = 0"), "{text}");
     assert_eq!(effects["structuredContent"]["effects"][0]["kind"], "exposure");
     assert!(c.err("effects_list", json!({ "kind": "nope" })).contains("effects: exposure, fade"));
+    let (text, effects) = c.ok("effects_list", json!({ "kind": "halftone" }));
+    assert!(text.contains("size = 1.2 %h") && text.contains("option mode = mono | rgb | cmyk"), "{text}");
+    assert_eq!(effects["structuredContent"]["effects"][0]["options"][1]["name"], "shape");
     let (text, check) = c.ok("project_check", json!({ "project": "demo/project.json" }));
     assert!(text.contains("0 error(s), 0 warning(s)"), "{text}");
     assert_eq!(check["structuredContent"]["ok"], json!(true));

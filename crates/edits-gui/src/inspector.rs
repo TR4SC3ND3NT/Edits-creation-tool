@@ -10,6 +10,7 @@
 use crate::app::{App, Cmd, Selected};
 use crate::editing::{self, base_value, ease_choices, ease_from_choice, ease_name, key_at_or_before, key_index_at, keys_of, set_prop, tidy, with_ease, with_key_here, with_value, without_key, PropRef};
 use crate::panels;
+use crate::transitions;
 use crate::reload::Problem;
 use crate::rows::{blend_text, prop_key_times};
 use crate::theme::{self, color, kind_colors, radius, size, space, text};
@@ -618,6 +619,10 @@ fn layer(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, l: &Layer,
     });
     widgets::section_rule(ui);
 
+    // ---- Transition in ----
+    transition_section(app, ui, &cx, l, &base_l, unit);
+    widgets::section_rule(ui);
+
     // ---- Transform ----
     widgets::section(ui, "transform", "Transform", true, |_| {}, |ui| {
         let list: Vec<(PropRef, &'static str)> = editing::TRANSFORM_PROPS.iter().map(|n| (PropRef::Transform(n), transform_doc(n))).collect();
@@ -704,6 +709,151 @@ fn layer(app: &mut App, ui: &mut Ui, base: &Project, shown: &Project, l: &Layer,
     );
     if let Some(kind) = add {
         app.run(Cmd::AddEffect(id.clone(), kind));
+    }
+}
+
+/// How the layer comes in: its transition's kind, length, ease and
+/// parameters, every one editable; `+` adds one (the `transition:<kind>`
+/// preset, which keeps the picture it comes from), the bin removes it.
+fn transition_section(app: &mut App, ui: &mut Ui, cx: &Cx, l: &Layer, base_l: &Layer, unit: &'static str) {
+    let id = l.id.clone();
+    let title = match &l.transition {
+        Some(t) => format!("Transition in · {}", t.kind),
+        None => "Transition in".to_string(),
+    };
+    let mut add: Option<&'static str> = None;
+    let mut remove = false;
+    widgets::section(
+        ui,
+        "transition",
+        &title,
+        true,
+        |ui| {
+            if base_l.transition.is_some() {
+                if tip(widgets::danger_icon_button(ui, Icon::Trash2), "Remove the transition: the layer cuts in again", &[]).clicked() {
+                    remove = true;
+                }
+            } else {
+                let r = tip(widgets::small_icon_button(ui, Icon::Plus), "Add a transition into this layer at its in", &[]);
+                egui::Popup::menu(&r).frame(widgets::popover_frame()).show(|ui| {
+                    ui.set_width(240.0);
+                    ui.label(widgets::eyebrow("Transition in"));
+                    egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                        for t in transitions::specs() {
+                            if widgets::menu_item(ui, Some(Icon::ArrowRightLeft), t.kind, Some(&format!("{} b", num(t.duration)))).on_hover_text(t.doc).clicked() {
+                                add = Some(t.kind);
+                                ui.close();
+                            }
+                        }
+                    });
+                });
+            }
+        },
+        |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            let (Some(shown_t), Some(base_t)) = (&l.transition, &base_l.transition) else {
+                ui.label(faint("None: the layer cuts in at its in. The + above adds one; the picture it comes from stays until it ends."));
+                return;
+            };
+            let doc = app.state.doc.clone();
+            let tc = doc.as_deref().map(edits_core::time::TimeCtx::from_doc);
+            field_row(ui, "Kind", "The transition. Hover a name in the list for what it looks like.", |ui| {
+                widgets::combo("transition-kind", RichText::new(&base_t.kind).font(theme::mono()), 150.0).show_ui(ui, |ui| {
+                    egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                        for t in transitions::specs() {
+                            if ui.selectable_label(t.kind == base_t.kind, t.kind).on_hover_text(t.doc).clicked() && t.kind != base_t.kind {
+                                if let Some(d) = &doc {
+                                    app.commit(transitions::kind_ops(d, &id, t.kind), format!("transition into {id}: {}", t.kind));
+                                }
+                            }
+                        }
+                    });
+                });
+            });
+            if let Some(spec) = effects::transition(&shown_t.kind) {
+                ui.label(faint(spec.doc));
+            }
+            field_row(ui, "Duration", &format!("Length in {unit}, from the layer's in. The picture it comes from is kept until it ends."), |ui| {
+                let mut v = shown_t.duration;
+                let resp = stable_drag(ui, (&id, "transition-duration"), 86.0, egui::DragValue::new(&mut v).speed(0.01).range(0.01..=64.0).max_decimals(4).custom_formatter(|v, _| num(v)));
+                if resp.changed() {
+                    if let (Some(d), Some(tc)) = (&doc, &tc) {
+                        app.edit_live(resp.id, transitions::duration_ops(d, &id, v, tc), format!("transition into {id}: {}", transitions::describe(&base_t.kind, v, unit)));
+                    }
+                }
+                if resp.dragged() || resp.has_focus() {
+                    app.keep_live(resp.id);
+                }
+                ui.label(faint(unit));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(RichText::new(format!("ends {}", num(l.start + shown_t.duration))).font(theme::mono_small()).color(color::TEXT_FAINT));
+                });
+            });
+            field_row(ui, "Ease", "How the progress moves from 0 to 1", |ui| {
+                let current = ease_name(&base_t.ease);
+                widgets::combo("transition-ease", RichText::new(&current).font(theme::mono()), 116.0).show_ui(ui, |ui| {
+                    for name in ease_choices() {
+                        if ui.selectable_label(current == name, name).clicked() && current != name {
+                            app.commit(vec![transitions::ease_op(&id, &ease_from_choice(name, &base_t.ease))], format!("ease of the transition into {id}: {name}"));
+                        }
+                    }
+                });
+            });
+            let Some(spec) = effects::transition(&base_t.kind) else { return };
+            let ev = Evaluator::new(cx.shown);
+            for p in spec.params {
+                let value = shown_t.params.get(p.name).map(|v| edits_core::eval::pad(ev.prop(v, l.start), p.default.len())).unwrap_or_else(|| p.default.to_vec());
+                let animated = matches!(base_t.params.get(p.name), Some(Prop::Anim(_)));
+                let hover = format!("{}\nDefault {}{}", p.doc, vector(p.default), if animated { "\nKeyframed in the file: edit its keys there (or ask the agent)." } else { "" });
+                field_row(ui, p.name, &hover, |ui| {
+                    ui.spacing_mut().item_spacing.x = 3.0;
+                    if animated {
+                        ui.label(RichText::new(format!("{} · keyed", vector(&value))).font(theme::mono()).color(color::TEXT_FAINT));
+                        return;
+                    }
+                    if p.color {
+                        let mut rgb = [value[0] as f32, value.get(1).copied().unwrap_or(0.0) as f32, value.get(2).copied().unwrap_or(0.0) as f32];
+                        let r = egui::color_picker::color_edit_button_rgb(ui, &mut rgb);
+                        if r.changed() {
+                            let mut nv = value.clone();
+                            for (c, x) in rgb.iter().enumerate() {
+                                nv[c] = tidy(*x as f64);
+                            }
+                            app.commit(vec![transitions::param_op(&id, p.name, &nv)], format!("{} of the transition into {id} = {}", p.name, vector(&nv)));
+                        }
+                        ui.label(RichText::new(vector(&value)).font(theme::mono_small()).color(color::TEXT_FAINT));
+                        return;
+                    }
+                    let n = value.len().max(1) as f32;
+                    let each = ((ui.available_width() - UNIT - 3.0 * (n - 1.0)) / n).clamp(40.0, 96.0);
+                    for c in 0..value.len() {
+                        let mut v = value[c];
+                        let mut dv = egui::DragValue::new(&mut v).speed(p.max.zip(p.min).map_or(0.01, |(hi, lo)| (hi - lo) / 200.0)).max_decimals(4).custom_formatter(|v, _| num(v));
+                        if let (Some(lo), Some(hi)) = (p.min, p.max) {
+                            dv = dv.range(lo..=hi);
+                        }
+                        let resp = stable_drag(ui, (&id, "transition", p.name, c), each, dv);
+                        if resp.changed() {
+                            let mut nv = value.clone();
+                            nv[c] = tidy(v);
+                            app.edit_live(resp.id, vec![transitions::param_op(&id, p.name, &nv)], format!("{} of the transition into {id} = {}", p.name, vector(&nv)));
+                        }
+                        if resp.dragged() || resp.has_focus() {
+                            app.keep_live(resp.id);
+                        }
+                    }
+                });
+            }
+            if spec.params.is_empty() {
+                ui.label(faint("No parameters."));
+            }
+        },
+    );
+    if remove {
+        app.run(Cmd::RemoveTransition(id.clone()));
+    }
+    if let Some(kind) = add {
+        app.run(Cmd::AddTransition(id, kind));
     }
 }
 

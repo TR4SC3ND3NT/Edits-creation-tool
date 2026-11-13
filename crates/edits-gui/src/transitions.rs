@@ -183,7 +183,7 @@ mod tests {
         // Ease and a parameter.
         let d5 = apply_ops(&d, &[ease_op("b", &Ease::Name("in_out".into())), param_op("b", "blur", &[0.75]), param_op("b", "direction", &[1.0, 0.0])]).unwrap();
         let t = d5.pointer("/layers/2/transition").unwrap();
-        assert_eq!((t["ease"].clone(), t["params"]["blur"].clone(), t["params"]["direction"].clone()), (json!("in_out"), json!(0.75), json!([1.0, 0.0])));
+        assert_eq!((t["ease"].clone(), t["params"]["blur"].clone(), t["params"]["direction"].clone()), (json!("in_out"), json!(0.75), json!([1, 0])));
         // Remove.
         let d6 = apply_ops(&d, &[remove_op("b")]).unwrap();
         assert!(d6.pointer("/layers/2/transition").is_none());

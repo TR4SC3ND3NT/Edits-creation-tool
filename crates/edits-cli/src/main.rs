@@ -329,6 +329,11 @@ fn check_project(path: &Path, as_json: bool) -> Result<ExitCode> {
 }
 
 fn list_effects(as_json: bool) {
+    let range = |r: Option<(f64, f64)>| match r {
+        // JSON has no infinity: an open end is null.
+        Some((lo, hi)) => json!([if lo.is_finite() { json!(lo) } else { json!(null) }, if hi.is_finite() { json!(hi) } else { json!(null) }]),
+        None => json!(null),
+    };
     if as_json {
         let list: Vec<_> = effects::EFFECTS
             .iter()
@@ -336,19 +341,41 @@ fn list_effects(as_json: bool) {
                 let params: Vec<_> = e
                     .params
                     .iter()
-                    .map(|p| json!({ "name": p.name, "default": if p.default.len() == 1 { json!(p.default[0]) } else { json!(p.default) }, "doc": p.doc }))
+                    .map(|p| {
+                        json!({ "name": p.name, "default": if p.default.len() == 1 { json!(p.default[0]) } else { json!(p.default) },
+                                "unit": p.unit.as_str(), "range": range(p.range), "doc": p.doc })
+                    })
                     .collect();
-                json!({ "kind": e.kind, "doc": e.doc, "params": params })
+                let options: Vec<_> = e.options.iter().map(|o| json!({ "name": o.name, "values": o.values, "default": o.default(), "doc": o.doc })).collect();
+                json!({ "kind": e.kind, "category": e.category, "doc": e.doc, "params": params, "options": options,
+                        "source": e.source, "reads_time": e.reads_time, "credit": e.credit })
             })
             .collect();
         print_json(&json!(list));
         return;
     }
+    let mut category = "";
     for e in effects::EFFECTS {
+        if e.category != category {
+            category = e.category;
+            println!("-- {category} --");
+        }
         println!("{}: {}", e.kind, e.doc);
         for p in e.params {
             let default = if p.default.len() == 1 { format!("{}", p.default[0]) } else { format!("{:?}", p.default) };
-            println!("    {:<12} default {:<16} {}", p.name, default, p.doc);
+            let unit = p.unit.as_str();
+            let bounds = p.range.map(|(lo, hi)| {
+                let b = |v: f64| if v.is_finite() { format!("{v}") } else { String::new() };
+                format!(" {}..{}", b(lo), b(hi))
+            });
+            let unit = format!("{unit}{}", bounds.unwrap_or_default());
+            println!("    {:<12} default {:<16} {:<10} {}", p.name, default, unit.trim(), p.doc);
+        }
+        for o in e.options {
+            println!("    option {:<5} {} (default {}): {}", o.name, o.values.join(" | "), o.default(), o.doc);
+        }
+        if !e.credit.is_empty() {
+            println!("    from {}", e.credit);
         }
     }
     let kinds: Vec<&str> = effects::TRANSITIONS.iter().map(|t| t.kind).collect();
