@@ -595,11 +595,20 @@ impl EditsServer {
             edit::undo_file(&project)?
         };
         let mut text = format!("restored {} from {}: {} change(s)", self.ws.show(&project), self.ws.show(&u.restored), u.changes.len());
+        // The history is shared with the window: say whose edit this was.
+        let who = match u.entry.actor.as_str() {
+            edit::AGENT => "an agent's edit".to_string(),
+            "window" => "an edit made by the person in the edits-gui window".to_string(),
+            other => format!("an edit by {other}"),
+        };
+        if !u.entry.summary.is_empty() {
+            text.push_str(&format!("\nundid {who}: {}", u.entry.summary));
+        }
         for c in u.changes.iter().take(40) {
             text.push_str(&format!("\n{}", edit::change_line(c)));
         }
         text.push_str(&format!("\n{} older version(s) remain; the version that was replaced is kept at {}", u.remaining, self.ws.show(&u.kept)));
-        let structured = json!({ "restored": self.ws.show(&u.restored), "changes": u.changes, "remaining": u.remaining, "replaced_version": self.ws.show(&u.kept) });
+        let structured = json!({ "restored": self.ws.show(&u.restored), "changes": u.changes, "remaining": u.remaining, "replaced_version": self.ws.show(&u.kept), "undone_edit": { "actor": u.entry.actor, "summary": u.entry.summary } });
         Ok(Reply::data(text, structured))
     }
 
@@ -997,7 +1006,7 @@ impl EditsServer {
         if output.is_dir() {
             return Err(format!("output: {} is a folder; give a file name ending in .json", self.ws.show(&output)));
         }
-        let backup = if output.is_file() { Some(edit::backup(&output).map_err(|e| format!("cannot back up the existing {}: {e}", self.ws.show(&output)))?) } else { None };
+        let backup = if output.is_file() { Some(edit::backup(&output, "reference_draft replaced the project with a new draft").map_err(|e| format!("cannot back up the existing {}: {e}", self.ws.show(&output)))?) } else { None };
         let mut args: Vec<OsString> = vec!["draft".into(), analysis.clone().into(), "-o".into(), output.clone().into()];
         for (flag, on) in [("--proxies", a.proxies), ("--single-loop", a.single_loop), ("--no-snap", a.no_snap)] {
             if on.unwrap_or(false) {

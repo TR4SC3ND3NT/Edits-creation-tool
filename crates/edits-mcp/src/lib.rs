@@ -21,11 +21,12 @@ pub mod edit;
 pub mod exec;
 pub mod images;
 pub mod jobs;
-pub mod jsonfmt;
 pub mod paths;
-pub mod pointer;
 pub mod server;
 pub mod summarize;
+
+// Moved to `edits_core` (shared with the window); kept at their old paths.
+pub use edits_core::{jsonfmt, pointer};
 
 use std::path::PathBuf;
 use std::time::Duration;

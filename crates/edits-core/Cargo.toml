@@ -9,3 +9,8 @@ license.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
+# Only for the JSON schema of `edit::EditOp` that the MCP server publishes.
+schemars = { version = "1", optional = true }
+
+[features]
+schema = ["dep:schemars"]

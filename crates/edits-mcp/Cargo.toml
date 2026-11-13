@@ -14,7 +14,7 @@ name = "edits-mcp"
 path = "src/main.rs"
 
 [dependencies]
-edits-core = { path = "../edits-core" }
+edits-core = { path = "../edits-core", features = ["schema"] }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

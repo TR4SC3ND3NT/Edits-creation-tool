@@ -1,4 +1,4 @@
-//! The one way this crate writes JSON: readable, compact and stable.
+//! The one way project files are written: readable, compact and stable.
 //!
 //! - Keys are written in a fixed order: the order a person reads a project in
 //!   (`id`, `kind`, ... `transform`, `effects`), then everything else by name.
