@@ -1,10 +1,12 @@
 //! The desktop window of the edits engine.
 //!
-//! It shows a project while something else edits it: a preview rendered by
-//! `edits-render` on a worker thread, a transport, a timeline, an inspector
-//! of resolved values, and live reload of the project file. It does not edit
-//! the project; the JSON file is the only thing that is ever changed, and
-//! not by this crate.
+//! It shows a project while something else edits it, and edits it too: a
+//! preview rendered by `edits-render` on a worker thread, a transport, a
+//! timeline (drag layers, edges and keys), an inspector of values (drag or
+//! type them), slots, a history, and live reload of the project file. The
+//! JSON file stays the only source of truth: every change the window makes
+//! goes through `edits_core::edit` (validated, written atomically, backed up
+//! in the history it shares with the agent's MCP server) and is read back.
 //!
 //! ```no_run
 //! # fn main() -> anyhow::Result<()> {
@@ -13,13 +15,14 @@
 //! ```
 //!
 //! The modules without a window in them (`timemap`, `clock`, `cache`,
-//! `rows`, `reload`, `export`, the mailbox of `worker`, the peaks of
-//! `audio`) hold the logic and are unit tested; `app`, `timeline` and
-//! `inspector` only draw.
+//! `rows`, `reload`, `export`, `editing`, the mailbox of `worker`, the peaks
+//! of `audio`) hold the logic and are unit tested; `app`, `timeline`,
+//! `inspector` and `panels` draw and turn input into calls of that logic.
 
 pub mod audio;
 pub mod cache;
 pub mod clock;
+pub mod editing;
 pub mod export;
 pub mod reload;
 pub mod rows;
@@ -28,6 +31,7 @@ pub mod worker;
 
 mod app;
 mod inspector;
+mod panels;
 mod timeline;
 
 pub use cache::Scale;
@@ -81,7 +85,11 @@ usage: edits-gui <project.json> [options]
   -h, --help                this text
 
 keys: Space play/pause · Left/Right one frame · Shift+Left/Right one beat ·
-      Home start · End last frame · L loop · Ctrl+wheel zoom the timeline
+      Home start · End last frame · L loop · Ctrl+wheel zoom the timeline ·
+      Ctrl+Z undo · Ctrl+Shift+Z or Ctrl+Y redo (the history is shared with the agent)
+
+Every edit made in the window is checked, written to the project file and
+kept in <project dir>/.edits/history/, like the agent's edits (docs/GUI.md).
 ";
 
 /// What the command line asked for.

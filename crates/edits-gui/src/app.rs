@@ -1,19 +1,26 @@
 //! The window: state, the per-frame logic that ties the clock, the cache and
-//! the render thread together, and the transport, preview and status bar.
-//! The timeline and the inspector are drawn by their own modules.
+//! the render thread together, the transport, preview, menus and status bar,
+//! and the plumbing of editing: every change goes through
+//! `edits_core::edit::apply` (validated, written atomically, backed up in the
+//! history the agent shares), then the file is read back at once so the
+//! window's own write never looks like someone else's.
+//! The timeline, the inspector and the side panels are drawn by their own modules.
 
 use crate::audio::{AudioEngine, AudioStatus};
 use crate::cache::{FrameCache, FrameKey, Scale};
 use crate::clock::{lead_frames, newest_ready, next_request, PlayClock, RenderAverage};
+use crate::editing::{self, NewLayer, PropRef, TimeDrag};
 use crate::export::{self, Export};
 use crate::reload::{self, Applied, LoadReport, ProjectState, WatchHandle};
 use crate::rows::{self, Row};
 use crate::timemap::{fmt_seconds, TimeMap, View};
 use crate::worker::{ProjectMsg, Worker, WorkerEvent};
-use crate::{inspector, timeline, Options};
+use crate::{inspector, panels, timeline, Options};
 use eframe::egui::{self, Align2, Color32, ColorImage, FontId, Key, Modifiers, Rect, RichText, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui};
+use edits_core::edit::{self as core_edit, EditOp, EditOptions, HistoryList};
 use edits_core::Project;
 use edits_render::{AdapterInfo, RenderOptions};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
@@ -36,6 +43,55 @@ pub(crate) mod pal {
 const FLASH: Duration = Duration::from_millis(2500);
 /// Screenshot mode gives up after this long (plus the asked delay).
 const SHOT_TIMEOUT: Duration = Duration::from_secs(180);
+/// Previews of a change still being made (a value being dragged) get
+/// revisions from here up, far from the file's own.
+const GHOST_BASE: u64 = 1 << 40;
+/// How long a message stays in the status bar (an error: twice as long).
+const STATUS_FOR: Duration = Duration::from_secs(8);
+
+/// Which page the right-hand panel shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Tab {
+    Inspector,
+    Slots,
+}
+
+/// A change being made with one widget (a drag, or typing into a value): it
+/// is previewed as it goes and written as one edit when the widget lets go.
+struct Pending {
+    id: egui::Id,
+    ops: Vec<EditOp>,
+    label: String,
+    /// The version of the file the ops were prepared against.
+    base: Option<u64>,
+    /// The widget said this frame that it is still at work.
+    seen: bool,
+}
+
+/// The project with a pending change applied, as the renderer previews it.
+struct Ghost {
+    revision: u64,
+    project: Arc<Project>,
+}
+
+/// The last thing the window did, or why it did not.
+pub(crate) struct Status {
+    pub text: String,
+    pub detail: String,
+    pub error: bool,
+    pub at: Instant,
+}
+
+/// Where a version of the project came from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    /// The file as the window opened it.
+    First,
+    /// The window's own write (an edit, undo or redo): no "reloaded" flash.
+    Own,
+    /// Someone else changed the file.
+    Disk,
+}
 
 /// What the inspector shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,6 +136,7 @@ struct Shot {
 }
 
 pub(crate) struct App {
+    ctx: egui::Context,
     pub path: PathBuf,
     pub base: PathBuf,
     options: Options,
@@ -126,6 +183,25 @@ pub(crate) struct App {
     outcome: Arc<Mutex<Option<Result<(), String>>>>,
     /// Height the timeline panel opens with: enough for every row of the first project.
     timeline_height: f32,
+
+    // ---- editing ----
+    /// The property double-clicking a timeline row keys, and the key strip shows.
+    pub selected_prop: Option<PropRef>,
+    pending: Option<Pending>,
+    ghost: Option<Ghost>,
+    ghost_serial: u64,
+    /// A drag on the timeline, and the version of the file it started on.
+    pub drag: Option<(TimeDrag, Option<u64>)>,
+    /// The shared history (the window's and the agent's edits), as on disk.
+    pub history: HistoryList,
+    pub status: Option<Status>,
+    pub tab: Tab,
+    /// Files dropped on the window this frame, and whether some are being dragged over it.
+    pub dropped: Vec<PathBuf>,
+    pub files_hovering: bool,
+    /// Text being typed: the name of a new slot, slot paths.
+    pub new_slot: String,
+    pub slot_text: HashMap<String, String>,
 }
 
 impl App {
@@ -185,8 +261,21 @@ impl App {
             outcome,
             options,
             timeline_height: 240.0,
+            ctx: ctx.clone(),
+            selected_prop: Some(PropRef::Transform("scale")),
+            pending: None,
+            ghost: None,
+            ghost_serial: 0,
+            drag: None,
+            history: HistoryList::default(),
+            status: None,
+            tab: Tab::Inspector,
+            dropped: Vec::new(),
+            files_hovering: false,
+            new_slot: String::new(),
+            slot_text: HashMap::new(),
         };
-        app.take_report(first, &ctx, true);
+        app.take_report(first, Origin::First);
         if let Some(p) = app.project() {
             // Every row visible if the window allows it, but the preview keeps most of the height.
             let window = app.options.size.map_or(860.0, |(_, h)| h as f32);
@@ -211,9 +300,18 @@ impl App {
 
     // ---- reload ----------------------------------------------------------------
 
-    fn take_report(&mut self, report: LoadReport, ctx: &egui::Context, first: bool) {
+    fn take_report(&mut self, report: LoadReport, origin: Origin) {
+        let ctx = self.ctx.clone();
+        self.history = core_edit::history_list(&self.path);
         match self.state.apply(report) {
             Applied::Swapped => {
+                if origin == Origin::Disk && (self.pending.is_some() || self.drag.is_some()) {
+                    self.pending = None;
+                    self.drag = None;
+                    self.fail("The project changed on disk while you were editing: your unfinished change was dropped.", "");
+                }
+                // The new version replaces any preview of an unfinished change.
+                self.ghost = None;
                 let Some(project) = self.state.current.clone() else { return };
                 let tm = TimeMap::of(&project);
                 let span_changed = self.tm.is_none_or(|old| old.start_time() != tm.start_time() || old.end_time() != tm.end_time());
@@ -238,7 +336,7 @@ impl App {
                     // Length, frame rate or audio offset may have changed: start the clock again from here.
                     self.start_playing(self.playhead);
                 }
-                if !first {
+                if origin == Origin::Disk {
                     self.reloaded_at = Some(Instant::now());
                 }
             }
@@ -255,6 +353,246 @@ impl App {
         if !keep {
             self.selected = None;
         }
+    }
+
+    // ---- editing -----------------------------------------------------------------
+
+    /// The project the panels show: with a pending change applied, while there is one.
+    pub fn shown_project(&self) -> Option<Arc<Project>> {
+        self.ghost.as_ref().map(|g| g.project.clone()).or_else(|| self.state.current.clone())
+    }
+
+    /// A message in the status bar.
+    pub fn say(&mut self, text: impl Into<String>) {
+        // The bundled fonts have no arrow in every style; the core's change lines use one.
+        self.status = Some(Status { text: text.into().replace('→', "->"), detail: String::new(), error: false, at: Instant::now() });
+    }
+
+    /// An error in the status bar; `detail` goes into its tooltip.
+    pub fn fail(&mut self, text: impl Into<String>, detail: impl Into<String>) {
+        self.status = Some(Status { text: text.into().replace('→', "->"), detail: detail.into().replace('→', "->"), error: true, at: Instant::now() });
+    }
+
+    /// Edits are prepared against the version on screen; when the file on
+    /// disk is broken, that version is not what is on disk.
+    fn can_edit(&mut self) -> bool {
+        if self.state.rejected {
+            self.fail("The file on disk has errors, so the window does not change it: fix them, or Undo (Ctrl+Z).", "");
+            return false;
+        }
+        self.state.current.is_some()
+    }
+
+    /// Write `ops` now, as one step in the shared history.
+    pub fn commit(&mut self, ops: Vec<EditOp>, label: impl Into<String>) {
+        let base = self.state.text_hash;
+        self.commit_with(ops, label.into(), base);
+    }
+
+    /// Write `ops`, prepared against the version of the file whose hash is `base`.
+    pub fn commit_against(&mut self, ops: Vec<EditOp>, label: String, base: Option<u64>) {
+        self.commit_with(ops, label, base);
+    }
+
+    /// Double-click on a timeline row: a key of the picked property at `t`.
+    pub fn key_at(&mut self, id: &str, t: f64) {
+        let Some(p) = self.project().cloned() else { return };
+        let Some(l) = p.layers.iter().find(|l| l.id == id) else { return };
+        let Some(r) = self.selected_prop.clone().filter(|r| r.fits(l)) else {
+            self.fail("Pick a property first (click its name in the inspector), then double-click a row to key it there.", "");
+            return;
+        };
+        match editing::with_key_here(&p, r.get(&p, Some(l)), &r.default_value(), t) {
+            Some(new) => self.commit(vec![editing::set_prop(id, &r, &new)], format!("key {} of {id} at {}", r.label(), editing::tidy(t))),
+            None => self.say(format!("{} of {id} already has a key at {}", r.label(), editing::tidy(t))),
+        }
+    }
+
+    fn commit_with(&mut self, ops: Vec<EditOp>, label: String, base: Option<u64>) {
+        self.pending = None;
+        let had_ghost = self.ghost.take().is_some();
+        let written = if ops.is_empty() || !self.can_edit() {
+            false
+        } else {
+            let opts = EditOptions { actor: core_edit::WINDOW, label: Some(&label), expect: base, ..Default::default() };
+            match core_edit::apply(&self.path, &ops, &opts) {
+                Ok(out) if out.ok && out.written => {
+                    self.say(label.clone());
+                    true
+                }
+                Ok(out) if out.ok => false,
+                Ok(out) => {
+                    let errors: Vec<String> = out.findings.iter().filter(|f| f.severity == edits_core::check::Severity::Error).map(core_edit::finding_line).collect();
+                    let first = errors.first().cloned().unwrap_or_default();
+                    self.fail(format!("Not applied ({label}): {first}"), errors.join("\n"));
+                    false
+                }
+                Err(e) if e == core_edit::STALE => {
+                    self.fail("Not applied: the project changed on disk (the agent wrote it?) while you were editing. The window has caught up; do it again.", e);
+                    // Catch up now instead of waiting for the file watcher.
+                    self.take_report(reload::load(&self.path), Origin::Disk);
+                    return;
+                }
+                Err(e) => {
+                    self.fail(format!("Not applied: {}", shorten(&e, 120)), e);
+                    false
+                }
+            }
+        };
+        if written {
+            self.take_report(reload::load(&self.path), Origin::Own);
+        } else if had_ghost {
+            // Back to the file's version.
+            self.send_current();
+        }
+    }
+
+    fn send_current(&mut self) {
+        if let Some(project) = self.state.current.clone() {
+            self.worker.set_project(ProjectMsg { revision: self.state.revision, project, base_dir: self.base.clone() });
+            self.posted = None;
+        }
+    }
+
+    /// A widget changed a value and is still at work (dragging, typing):
+    /// preview `ops`, and write them when it lets go.
+    pub fn edit_live(&mut self, id: egui::Id, ops: Vec<EditOp>, label: impl Into<String>) {
+        if self.pending.as_ref().is_some_and(|p| p.id != id) {
+            self.finish_pending();
+        }
+        if self.state.rejected {
+            self.can_edit();
+            return;
+        }
+        let base = self.pending.as_ref().map_or(self.state.text_hash, |p| p.base);
+        self.preview_ops(&ops);
+        self.pending = Some(Pending { id, ops, label: label.into(), base, seen: true });
+    }
+
+    /// The widget with this id is still being dragged or typed into.
+    pub fn keep_live(&mut self, id: egui::Id) {
+        if let Some(p) = self.pending.as_mut().filter(|p| p.id == id) {
+            p.seen = true;
+        }
+    }
+
+    /// The pending change, if its widget let go this frame: one edit.
+    fn finish_gestures(&mut self) {
+        match &mut self.pending {
+            Some(p) if p.seen => p.seen = false,
+            Some(_) => self.finish_pending(),
+            None => {}
+        }
+    }
+
+    fn finish_pending(&mut self) {
+        if let Some(p) = self.pending.take() {
+            self.commit_with(p.ops, p.label, p.base);
+        }
+    }
+
+    /// Show the project with `ops` applied without writing anything.
+    fn preview_ops(&mut self, ops: &[EditOp]) {
+        let Some(doc) = self.state.doc.clone() else { return };
+        let Ok(changed) = core_edit::apply_ops(&doc, ops) else { return };
+        let Ok(project) = serde_json::from_value::<Project>(changed) else { return };
+        self.ghost_serial += 1;
+        let revision = GHOST_BASE + self.ghost_serial;
+        let project = Arc::new(project);
+        self.worker.set_project(ProjectMsg { revision, project: project.clone(), base_dir: self.base.clone() });
+        self.posted = None;
+        self.ghost = Some(Ghost { revision, project });
+    }
+
+    /// Ctrl+Z: put back the version before the newest entry of the shared
+    /// history, whoever made it.
+    pub fn undo(&mut self) {
+        self.finish_pending();
+        match core_edit::undo(&self.path) {
+            Ok(u) => {
+                self.take_report(reload::load(&self.path), Origin::Own);
+                self.say(format!("Undid {}: {}", who(&u.entry.actor), u.entry.summary));
+            }
+            Err(e) => self.fail(shorten(&e, 120), e),
+        }
+    }
+
+    /// Ctrl+Shift+Z / Ctrl+Y: bring back what the last undo took.
+    pub fn redo(&mut self) {
+        self.finish_pending();
+        match core_edit::redo(&self.path) {
+            Ok(u) => {
+                self.take_report(reload::load(&self.path), Origin::Own);
+                self.say(format!("Redid {}: {}", who(&u.entry.actor), u.entry.summary));
+            }
+            Err(e) => self.fail(shorten(&e, 120), e),
+        }
+    }
+
+    /// The project time of the playhead, snapped to whole beats in a beats project.
+    fn new_layer_time(&self) -> f64 {
+        let Some(tm) = self.tm else { return 0.0 };
+        let t = tm.frame_time(self.playhead);
+        if tm.uses_beats() {
+            t.floor().max(0.0)
+        } else {
+            editing::snap(&tm, t, true).max(0.0)
+        }
+    }
+
+    /// Add a layer at the playhead, above the selected one (or on top), and select it.
+    pub fn add_layer(&mut self, kind: NewLayer) {
+        let (Some(p), Some(tm)) = (self.project().cloned(), self.tm) else { return };
+        let layer = editing::new_layer(&p, &kind, self.new_layer_time(), editing::new_layer_length(&tm));
+        let id = layer.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let above = match &self.selected {
+            Some(Selected::Layer(sel)) if p.layers.iter().any(|l| &l.id == sel) => Some(sel.clone()),
+            _ => None,
+        };
+        let what = match kind {
+            NewLayer::Image(_) => "image",
+            NewLayer::Solid => "solid",
+            NewLayer::Adjustment => "adjustment",
+            NewLayer::Cube(_) => "cube",
+        };
+        self.commit(vec![EditOp::insert_layer(layer, above, None)], format!("add {what} layer {id}"));
+        if self.project().is_some_and(|p| p.layers.iter().any(|l| l.id == id)) {
+            self.selected = Some(Selected::Layer(id));
+        }
+    }
+
+    /// The selected layer's id, if a layer is selected.
+    pub fn selected_layer(&self) -> Option<String> {
+        match &self.selected {
+            Some(Selected::Layer(id)) => Some(id.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn delete_layer(&mut self, id: &str) {
+        self.commit(vec![EditOp::remove_layer(id)], format!("delete layer {id}"));
+    }
+
+    pub fn duplicate_layer(&mut self, id: &str) {
+        let Some(p) = self.project().cloned() else { return };
+        if let Some((ops, new_id)) = editing::duplicate_ops(&p, self.state.doc.as_deref(), id) {
+            self.commit(ops, format!("duplicate {id} as {new_id}"));
+            self.selected = Some(Selected::Layer(new_id));
+            self.drop_stale_selection();
+        }
+    }
+
+    pub fn move_layer(&mut self, id: &str, up: bool) {
+        let Some(p) = self.project().cloned() else { return };
+        match editing::move_layer_ops(&p, self.state.doc.as_deref(), id, up) {
+            Some(ops) => self.commit(ops, format!("move {id} {}", if up { "up" } else { "down" })),
+            None => self.say(format!("{id} is already at the {}", if up { "top" } else { "bottom" })),
+        }
+    }
+
+    pub fn toggle_layer(&mut self, id: &str) {
+        let Some(enabled) = self.project().and_then(|p| p.layers.iter().find(|l| l.id == id)).map(|l| l.enabled) else { return };
+        self.commit(vec![editing::set_field(id, "enabled", serde_json::json!(!enabled))], format!("{} {id}", if enabled { "disable" } else { "enable" }));
     }
 
     // ---- transport ---------------------------------------------------------------
@@ -318,11 +656,18 @@ impl App {
     }
 
     fn keys(&mut self, ctx: &egui::Context) {
-        let Some(tm) = self.tm else { return };
         if ctx.egui_wants_keyboard_input() {
             return;
         }
         let pressed = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
+        // With Shift first: Ctrl+Z also matches when Shift is held.
+        if pressed(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || pressed(Modifiers::COMMAND, Key::Y) {
+            self.redo();
+        }
+        if pressed(Modifiers::COMMAND, Key::Z) {
+            self.undo();
+        }
+        let Some(tm) = self.tm else { return };
         // Counted, so that key repeat on a slow frame still moves one step per press.
         let presses = |m: Modifiers, k: Key| ctx.input_mut(|i| i.count_and_consume_key(m, k)) as u64;
         if pressed(Modifiers::NONE, Key::Space) {
@@ -360,12 +705,17 @@ impl App {
     }
 
     fn key(&self, frame: u64) -> FrameKey {
-        FrameKey { revision: self.state.revision, frame, scale: self.scale, blur: self.blur_wanted() }
+        FrameKey { revision: self.live_revision(), frame, scale: self.scale, blur: self.blur_wanted() }
+    }
+
+    /// The revision the preview shows: a pending change's, or the file's.
+    fn live_revision(&self) -> u64 {
+        self.ghost.as_ref().map_or(self.state.revision, |g| g.revision)
     }
 
     fn tick(&mut self, ctx: &egui::Context) {
         while let Ok(report) = self.reports.try_recv() {
-            self.take_report(report, ctx, false);
+            self.take_report(report, Origin::Disk);
         }
         while let Ok(event) = self.worker_events.try_recv() {
             self.on_worker(event);
@@ -404,7 +754,7 @@ impl App {
     }
 
     fn on_worker(&mut self, event: WorkerEvent) {
-        let current = self.state.revision;
+        let current = self.live_revision();
         match event {
             WorkerEvent::Adapter(info) => self.adapter = Some(info),
             WorkerEvent::NoAdapter(e) => self.no_adapter = Some(e),
@@ -572,6 +922,13 @@ impl App {
                 ui.label(format!("revision {}", self.state.revision)).on_hover_text("Counts the versions of the project file that were loaded; it goes up when a change lands");
             }
             ui.separator();
+            if let Some(st) = self.status.as_ref().filter(|st| st.at.elapsed() < if st.error { STATUS_FOR * 2 } else { STATUS_FOR }) {
+                let color = if st.error { pal::BAD } else { pal::GOOD };
+                let r = ui.colored_label(color, shorten(&st.text, 110));
+                let tip = if st.detail.is_empty() { st.text.clone() } else { format!("{}\n\n{}", st.text, st.detail) };
+                r.on_hover_text(tip);
+                ui.separator();
+            }
             match (&self.adapter, &self.no_adapter) {
                 (Some(a), _) => {
                     let (kind, color) = if a.software { ("software rasteriser", pal::WARN) } else { ("hardware GPU", pal::GOOD) };
@@ -642,7 +999,7 @@ impl App {
                 // Say so when the picture is not exactly what the transport reads.
                 let mut notes = Vec::new();
                 if shown.revision != wanted.revision {
-                    notes.push(format!("revision {} (rendering revision {})", shown.revision, wanted.revision));
+                    notes.push(format!("revision {} (rendering revision {})", revision_name(shown.revision), revision_name(wanted.revision)));
                 }
                 if shown.frame != wanted.frame {
                     notes.push(format!("showing frame {}", shown.frame));
@@ -683,6 +1040,10 @@ impl App {
             painter.rect_stroke(rect.expand(2.0), 2.0, Stroke::new(3.0, pal::GOOD.gamma_multiply(fade)), StrokeKind::Outside);
             chip(&painter, rect.right_top() + egui::vec2(-8.0, 8.0), Align2::RIGHT_TOP, "reloaded", pal::GOOD.gamma_multiply(0.35 + 0.5 * fade), Color32::WHITE);
         }
+    }
+
+    pub fn open_export(&mut self) {
+        self.export.open = true;
     }
 
     fn export_window(&mut self, ctx: &egui::Context) {
@@ -813,6 +1174,25 @@ impl App {
     }
 }
 
+/// Whose edit an entry of the history was, for a message.
+fn who(actor: &str) -> String {
+    match actor {
+        core_edit::AGENT => "the agent's edit".to_string(),
+        core_edit::WINDOW => "your edit".to_string(),
+        "" | "unknown" => "an edit".to_string(),
+        other => format!("{other}'s edit"),
+    }
+}
+
+/// How a revision is named on screen: the preview of a change still being made has none yet.
+fn revision_name(r: u64) -> String {
+    if r >= GHOST_BASE {
+        "of the change being made".to_string()
+    } else {
+        r.to_string()
+    }
+}
+
 fn save_png(path: &std::path::Path, image: &ColorImage) -> Result<(), String> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
@@ -893,17 +1273,35 @@ pub(crate) fn shorten(text: &str, max: usize) -> String {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        let (dropped, hovering) = ctx.input(|i| (i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect::<Vec<_>>(), !i.raw.hovered_files.is_empty()));
+        self.dropped = dropped;
+        self.files_hovering = hovering;
+        if hovering {
+            // A picture dragged over the window goes on a slot: show them.
+            self.tab = Tab::Slots;
+        }
         self.keys(&ctx);
         self.tick(&ctx);
 
+        egui::Panel::top("menu").show(ui, |ui| panels::menu_bar(self, ui));
         egui::Panel::top("transport").show(ui, |ui| self.transport(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         let tallest = (ctx.content_rect().height() * 0.6).max(140.0);
         egui::Panel::bottom("timeline").resizable(true).default_size(self.timeline_height).size_range(130.0..=tallest).show(ui, |ui| timeline::show(self, ui));
-        egui::Panel::right("inspector").resizable(true).default_size(330.0).min_size(220.0).show(ui, |ui| inspector::show(self, ui));
+        egui::Panel::right("inspector").resizable(true).default_size(400.0).min_size(260.0).show(ui, |ui| inspector::show(self, ui));
         egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::from_gray(18))).show(ui, |ui| self.preview(ui));
 
         self.export_window(&ctx);
+        // A widget that let go of its value this frame: its change becomes one edit.
+        self.finish_gestures();
+        if !self.dropped.is_empty() {
+            self.say("Drop pictures on a slot in the Slots tab (or type the path there).");
+            self.dropped.clear();
+        }
+        if !self.history.undo.is_empty() || self.status.is_some() {
+            // "12 s ago" in the History list, and the status message fading out.
+            ctx.request_repaint_after(Duration::from_secs(1));
+        }
         self.screenshot_step(&ctx);
     }
 }

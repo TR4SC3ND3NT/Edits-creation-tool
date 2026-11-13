@@ -36,13 +36,14 @@ pub fn check(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> {
         err("format".into(), format!("unknown format \"{}\"", p.format), Some("use \"edits.project/1\""));
     }
     let s = &p.settings;
-    if s.width == 0 || s.height == 0 || s.width % 2 != 0 || s.height % 2 != 0 {
+    if s.width == 0 || s.height == 0 || !s.width.is_multiple_of(2) || !s.height.is_multiple_of(2) {
         err("settings".into(), format!("width and height must be positive even numbers, got {}x{}", s.width, s.height), None);
     }
-    if !(s.fps > 0.0) {
+    // NaN is not positive either.
+    if s.fps.is_nan() || s.fps <= 0.0 {
         err("settings.fps".into(), "fps must be positive".into(), None);
     }
-    if !(s.duration > 0.0) {
+    if s.duration.is_nan() || s.duration <= 0.0 {
         err("settings.duration".into(), "duration must be positive".into(), None);
     }
     if s.time_base == TimeBase::Beats && !s.bpm.is_some_and(|b| b > 0.0) {

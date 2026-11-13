@@ -1,12 +1,19 @@
 //! The timeline panel: a ruler, the project's markers, the waveform, one row
 //! per layer with its span, effects and keyframes, and the playhead.
 //! Everything is painted by hand; the arithmetic is in `timemap` and `rows`.
+//!
+//! Editing: drag a bar to move the layer (with its keys), drag its left or
+//! right edge to change `in` or `out`, drag a keyframe marker to move the
+//! keys at that time, double-click a row to key the picked property there.
+//! Times snap to quarter beats (Alt: frames). A drag is drawn as a ghost and
+//! written as one edit when the button is released (`editing::TimeDrag`).
 
 use crate::app::{pal, App, Selected};
 use crate::audio::peak_range;
+use crate::editing::{self, DragKind, DragResult, Snap, TimeDrag};
 use crate::rows::{group_marks, Row};
 use crate::timemap::{ruler_ticks, TickLevel, View};
-use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, FontId, Layout, Painter, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, UiBuilder};
+use eframe::egui::{self, pos2, vec2, Align, Align2, Color32, CursorIcon, FontId, Layout, Painter, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, UiBuilder};
 
 const GUTTER: f32 = 190.0;
 const RULER_H: f32 = 22.0;
@@ -67,6 +74,12 @@ pub(crate) fn show(app: &mut App, ui: &mut Ui) {
         ui.strong("Timeline");
         let tempo = tm.bpm.map(|b| format!(" · {b} BPM")).unwrap_or_default();
         ui.weak(format!("{} layers · {} {unit} · {} frames at {} fps{tempo}", project.layers.len(), fmt_time(tm.duration), tm.frames, tm.fps));
+        ui.menu_button("+ Layer", |ui| crate::panels::add_layer_entries(app, ui)).response.on_hover_text("Add a layer at the playhead, above the selected one");
+        let alt = ui.input(|i| i.modifiers.alt);
+        ui.weak(Snap::of(&tm, alt).label()).on_hover_text(
+            "Drag a bar to move a layer (its keys move with it), its left or right edge to change in or out, a key marker to move the keys at that time.\n\
+             Double-click a row to add a key of the property picked in the inspector.\nOne edit per drag, written when you let go; Ctrl+Z undoes it.",
+        );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if ui.button("Fit").on_hover_text("Show the whole project").clicked() {
                 app.view_fit = true;
@@ -232,9 +245,18 @@ pub(crate) fn show(app: &mut App, ui: &mut Ui) {
 
     // ---- layer rows ----
     let rows = app.rows.clone();
+    // A click on a row's background toggles its selection; a click or drag on its bar selects it.
     let mut picked: Option<Selected> = None;
+    let mut chosen: Option<Selected> = None;
     let selected = app.selected.clone();
     let tolerance = 3.0 / view.px_per_unit;
+    let alt = ui.input(|i| i.modifiers.alt);
+    let pointer_t = |p: Pos2| view.t_at((p.x - time_left) as f64);
+    let current = app.drag.as_ref().map(|(d, _)| d.clone());
+    let mut started: Option<TimeDrag> = None;
+    let mut moved_to: Option<f64> = None;
+    let mut released = false;
+    let mut keyed: Option<(String, f64)> = None;
     ui.scope_builder(UiBuilder::new().max_rect(rows_rect), |ui| {
         egui::ScrollArea::vertical().id_salt("timeline-rows").auto_shrink([false, false]).show(ui, |ui| {
             let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), rows.len() as f32 * ROW_H), Sense::hover());
@@ -243,7 +265,8 @@ pub(crate) fn show(app: &mut App, ui: &mut Ui) {
             let tp = ui.painter().with_clip_rect(clip.intersect(time_clip));
             for (i, row) in rows.iter().enumerate() {
                 let r = Rect::from_min_size(pos2(rect.left(), rect.top() + i as f32 * ROW_H), vec2(rect.width(), ROW_H));
-                if !clip.intersects(r) {
+                let dragging_me = current.as_ref().is_some_and(|d| d.layer == row.id && row.layer.is_some());
+                if !clip.intersects(r) && !dragging_me {
                     continue;
                 }
                 let me = selection_of(row);
@@ -270,7 +293,9 @@ pub(crate) fn show(app: &mut App, ui: &mut Ui) {
                 let bar = Rect::from_min_max(pos2(x0, r.top() + 3.0), pos2(x1.max(x0 + 2.0), r.bottom() - 3.0));
                 let base = kind_color(&row.kind);
                 let fill = base.gamma_multiply(if row.enabled { 0.5 } else { 0.18 });
-                tp.rect(bar, 3.0, fill, Stroke::new(1.0, base.gamma_multiply(if row.enabled { 1.0 } else { 0.5 })), StrokeKind::Inside);
+                let ghosted = dragging_me && current.as_ref().is_some_and(|d| !matches!(d.kind, DragKind::Keys { .. }));
+                let fade = if ghosted { 0.45 } else { 1.0 };
+                tp.rect(bar, 3.0, fill.gamma_multiply(fade), Stroke::new(1.0, base.gamma_multiply(if row.enabled { fade } else { 0.5 * fade })), StrokeKind::Inside);
 
                 // Effect names (and the blend mode), kept in sight when the bar starts off-screen.
                 let mut parts: Vec<String> = Vec::new();
@@ -302,21 +327,130 @@ pub(crate) fn show(app: &mut App, ui: &mut Ui) {
                 }
 
                 if resp.clicked() {
-                    picked = Some(me);
+                    picked = Some(me.clone());
+                }
+                if resp.double_clicked() && row.layer.is_some() {
+                    if let Some(p) = resp.interact_pointer_pos().filter(|p| p.x >= time_left) {
+                        keyed = Some((row.id.clone(), pointer_t(p)));
+                    }
                 }
                 // Hovering a keyframe says which properties it belongs to.
                 if let Some(p) = resp.hover_pos() {
                     let near = groups.iter().filter(|g| (x_of(g.t) - p.x).abs() <= 6.0).min_by(|a, b| (x_of(a.t) - p.x).abs().total_cmp(&(x_of(b.t) - p.x).abs()));
                     if let (Some(g), true) = (near, p.x >= time_left) {
-                        resp.on_hover_text_at_pointer(format!("{} {}  (frame {})\n{}", if tm.uses_beats() { "beat" } else { "second" }, fmt_time(g.t), tm.frame_at(g.t), g.what.join("\n")));
+                        resp.on_hover_text_at_pointer(format!("{} {}  (frame {})\n{}\ndrag to move these keys", if tm.uses_beats() { "beat" } else { "second" }, fmt_time(g.t), tm.frame_at(g.t), g.what.join("\n")));
+                    }
+                }
+
+                // ---- editing: the bar, its edges and its key markers (the camera row only shows) ----
+                if row.layer.is_none() {
+                    continue;
+                }
+                let visible = bar.intersect(time_clip);
+                let mut handles: Vec<(egui::Response, DragKind)> = Vec::new();
+                if visible.width() > 0.0 {
+                    let body = ui.interact(visible, ui.scope_id().with(("bar", i)), Sense::click_and_drag()).on_hover_cursor(CursorIcon::Grab);
+                    if body.clicked() {
+                        chosen = Some(me.clone());
+                    }
+                    if body.double_clicked() {
+                        if let Some(p) = body.interact_pointer_pos() {
+                            keyed = Some((row.id.clone(), pointer_t(p)));
+                        }
+                    }
+                    handles.push((body, DragKind::Move));
+                }
+                for g in &groups {
+                    let x = x_of(g.t);
+                    let hit = Rect::from_center_size(pos2(x, key_y), vec2(11.0, 11.0));
+                    if !time_clip.contains(hit.center()) {
+                        continue;
+                    }
+                    let k = ui.interact(hit, ui.scope_id().with(("key", i, g.t.to_bits())), Sense::drag()).on_hover_cursor(CursorIcon::ResizeHorizontal);
+                    let tip = format!("{} {}  (frame {})\n{}\ndrag to move these keys", if tm.uses_beats() { "beat" } else { "second" }, fmt_time(g.t), tm.frame_at(g.t), g.what.join("\n"));
+                    let k = k.on_hover_text_at_pointer(tip);
+                    handles.push((k, DragKind::Keys { from: g.t }));
+                }
+                // The edges sit on the upper part of the bar, so a key at the very start stays draggable.
+                for (x, kind) in [(x0, DragKind::TrimIn), (x1, DragKind::TrimOut)] {
+                    let edge = Rect::from_min_max(pos2(x - 4.0, bar.top()), pos2(x + 4.0, bar.center().y + 1.0));
+                    if !time_clip.intersects(edge) {
+                        continue;
+                    }
+                    let tip = if kind == DragKind::TrimIn { "drag: change in" } else { "drag: change out" };
+                    let e = ui.interact(edge, ui.scope_id().with(("edge", i, kind == DragKind::TrimIn)), Sense::drag()).on_hover_cursor(CursorIcon::ResizeHorizontal).on_hover_text_at_pointer(tip);
+                    handles.push((e, kind));
+                }
+                for (h, kind) in handles {
+                    if h.drag_started() {
+                        let press = ui.input(|inp| inp.pointer.press_origin()).or(h.interact_pointer_pos());
+                        if let Some(p) = press {
+                            started = Some(TimeDrag::new(row.id.clone(), kind.clone(), pointer_t(p), alt));
+                            chosen = Some(me.clone());
+                        }
+                    }
+                    if h.dragged() {
+                        if let Some(p) = h.interact_pointer_pos() {
+                            moved_to = Some(pointer_t(p));
+                        }
+                    }
+                    if h.drag_stopped() {
+                        released = true;
+                    }
+                }
+
+                // The ghost: where the drag puts things if released now.
+                if let (true, Some(d)) = (dragging_me, &current) {
+                    match d.result(&project, &tm) {
+                        Some(DragResult::Span { start, end }) => {
+                            let g = Rect::from_min_max(pos2(x_of(start), bar.top() - 1.0), pos2(x_of(end).max(x_of(start) + 2.0), bar.bottom() + 1.0));
+                            tp.rect(g, 3.0, Color32::from_white_alpha(28), Stroke::new(1.5, Color32::WHITE), StrokeKind::Inside);
+                            // The times next to the edge that moves, outside the bar's own text.
+                            let label = format!("{} .. {}", fmt_time(start), fmt_time(end));
+                            let (at, align) = if d.kind == DragKind::TrimIn { (pos2(g.left() + 4.0, g.bottom() - 2.0), Align2::LEFT_BOTTOM) } else { (pos2(g.right() - 4.0, g.bottom() - 2.0), Align2::RIGHT_BOTTOM) };
+                            let r = tp.text(at, align, &label, small.clone(), Color32::WHITE);
+                            tp.rect_filled(r.expand(1.0), 2.0, Color32::from_black_alpha(140));
+                            tp.text(at, align, label, small.clone(), Color32::WHITE);
+                        }
+                        Some(DragResult::Key { to }) => {
+                            if let DragKind::Keys { from } = d.kind {
+                                let (a, b) = (x_of(from), x_of(to));
+                                tp.line_segment([pos2(a, key_y), pos2(b, key_y)], Stroke::new(1.0, Color32::WHITE));
+                                let pts = vec![pos2(b, key_y - 5.5), pos2(b + 5.5, key_y), pos2(b, key_y + 5.5), pos2(b - 5.5, key_y)];
+                                tp.add(Shape::convex_polygon(pts, Color32::from_white_alpha(60), Stroke::new(1.5, Color32::WHITE)));
+                                tp.text(pos2(b + 7.0, bar.top() + 1.0), Align2::LEFT_TOP, fmt_time(to), small.clone(), Color32::WHITE);
+                            }
+                        }
+                        None => {}
                     }
                 }
             }
         });
     });
-    if let Some(p) = picked {
+    if let Some(p) = chosen {
+        app.selected = Some(p);
+    } else if let Some(p) = picked {
         // A second click on the selected row lets go of it.
         app.selected = if app.selected.as_ref() == Some(&p) { None } else { Some(p) };
+    }
+    if let Some(d) = started {
+        app.drag = Some((d, app.state.text_hash));
+    }
+    if let (Some(t), Some((d, _))) = (moved_to, app.drag.as_mut()) {
+        d.update(t, alt);
+    }
+    // Released (or the button is up and the widget was not drawn to say so): one edit.
+    let button_up = !ui.input(|i| i.pointer.any_down());
+    if released || (button_up && app.drag.is_some()) {
+        if let Some((mut d, base)) = app.drag.take() {
+            d.alt = alt;
+            let (ops, label) = d.ops(&project, &tm);
+            app.commit_against(ops, label, base);
+        }
+    }
+    if let Some((id, t)) = keyed {
+        app.selected = Some(Selected::Layer(id.clone()));
+        app.key_at(&id, editing::snap(&tm, t, alt));
     }
 
     // ---- playhead ----

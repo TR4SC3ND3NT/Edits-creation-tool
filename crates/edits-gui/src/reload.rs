@@ -44,6 +44,12 @@ pub struct LoadReport {
     pub fingerprint: u64,
     /// The project file and every file it refers to.
     pub files: Vec<PathBuf>,
+    /// The file as JSON, when it is JSON: edits copy layers from it, so keys
+    /// the model does not know survive.
+    pub doc: Option<Arc<serde_json::Value>>,
+    /// [`edits_core::edit::text_hash`] of the file's text: an edit made in
+    /// the window is refused when the file is no longer this text.
+    pub text_hash: u64,
 }
 
 impl LoadReport {
@@ -141,7 +147,8 @@ pub fn load(project_path: &Path) -> LoadReport {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut h);
     stamp(&files[1..]).hash(&mut h);
-    LoadReport { project, problems, fingerprint: h.finish(), files }
+    let doc = project.as_ref().and_then(|_| serde_json::from_str(&text).ok()).map(Arc::new);
+    LoadReport { project, problems, fingerprint: h.finish(), files, doc, text_hash: edits_core::edit::text_hash(&text) }
 }
 
 // ---- what the window shows ---------------------------------------------------
@@ -171,6 +178,11 @@ pub struct ProjectState {
     pub rejected: bool,
     /// Fingerprint of the version in `current`.
     fingerprint: Option<u64>,
+    /// The JSON of the version in `current`.
+    pub doc: Option<Arc<serde_json::Value>>,
+    /// [`edits_core::edit::text_hash`] of the version in `current`: what the
+    /// window's edits are prepared against.
+    pub text_hash: Option<u64>,
 }
 
 impl ProjectState {
@@ -187,6 +199,8 @@ impl ProjectState {
         }
         self.current = report.project.map(Arc::new);
         self.fingerprint = Some(report.fingerprint);
+        self.doc = report.doc;
+        self.text_hash = Some(report.text_hash);
         self.revision += 1;
         Applied::Swapped
     }
@@ -366,7 +380,8 @@ mod tests {
 
     fn report(text: &str, fingerprint: u64) -> LoadReport {
         let (project, problems) = parse(text, None);
-        LoadReport { project, problems, fingerprint, files: Vec::new() }
+        let doc = serde_json::from_str(text).ok().map(Arc::new);
+        LoadReport { project, problems, fingerprint, files: Vec::new(), doc, text_hash: edits_core::edit::text_hash(text) }
     }
 
     fn ms(n: u64) -> Duration {
