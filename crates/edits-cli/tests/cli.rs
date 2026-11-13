@@ -269,6 +269,57 @@ fn render_mixes_the_sound_of_video_layers() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Seconds of the first sound stream of `file`.
+fn audio_seconds(file: &str) -> f64 {
+    let out = Command::new("ffprobe").args(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=duration", "-of", "csv=p=0", file]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or_else(|_| panic!("no audio duration: {}", String::from_utf8_lossy(&out.stdout)))
+}
+
+#[test]
+fn render_mixes_sound_effects() {
+    let d = doctor();
+    if d["ok"] != true || d["encoders"]["aac"].as_array().is_none_or(|a| a.is_empty()) {
+        eprintln!("skipping: no graphics adapter, or no ffmpeg with H.264 and AAC encoders");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("edits-cli-sfx-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // Two one-second tones: an "impact" and a "riser".
+    for (name, freq) in [("hit.wav", 440), ("riser.wav", 880)] {
+        let made = Command::new("ffmpeg").args(["-v", "error", "-y", "-f", "lavfi", "-i", &format!("sine=frequency={freq}:duration=1")]).arg(dir.join(name)).status().unwrap();
+        assert!(made.success());
+    }
+    let project = dir.join("project.json");
+    // The hit plays 0.5 s of its file at 0.25 s; the riser starts at 1.5 s and is cut by the end of the project.
+    std::fs::write(
+        &project,
+        r#"{"format":"edits.project/1","settings":{"width":32,"height":32,"fps":24,"duration":2},
+            "layers":[{"id":"bg","kind":"solid","color":[0.2,0.2,0.2,1]}],
+            "audio_clips":[{"id":"hit","path":"hit.wav","at":0.25,"trim_in":0.25,"trim_out":0.75,"fade_out":0.1},
+                           {"id":"riser","path":"riser.wav","at":1.5,"volume":0.5,"fade_in":0.05}]}"#,
+    )
+    .unwrap();
+    let mp4 = dir.join("out.mp4");
+    let v = json(&edits(&["render", project.to_str().unwrap(), "-o", mp4.to_str().unwrap(), "-q"]));
+    assert_eq!((v["audio"].as_bool(), v["audio_clips"].as_u64(), v["frames"].as_u64()), (Some(true), Some(2), Some(48)), "{v}");
+    let mp4 = mp4.to_str().unwrap();
+    let seconds = audio_seconds(mp4);
+    assert!((seconds - 2.0).abs() < 0.05, "the sound lasts {seconds} s, the project 2 s");
+    // Silence, the hit (lavfi's sine peaks at -18 dB), silence, the riser at half volume (-24 dB).
+    assert!(max_volume(mp4, 0.0, 0.2) < -60.0);
+    let hit = max_volume(mp4, 0.3, 0.6);
+    assert!((-21.0..-15.0).contains(&hit), "{hit} dB");
+    assert!(max_volume(mp4, 0.85, 1.45) < -60.0);
+    let riser = max_volume(mp4, 1.6, 1.9);
+    assert!((-27.0..-21.0).contains(&riser), "{riser} dB");
+    // A range after the hit leaves it out.
+    let part = dir.join("part.mp4");
+    let v = json(&edits(&["render", project.to_str().unwrap(), "-o", part.to_str().unwrap(), "--from", "1", "-q"]));
+    assert_eq!((v["audio_clips"].as_u64(), v["frames"].as_u64()), (Some(1), Some(24)), "{v}");
+    assert!((audio_seconds(part.to_str().unwrap()) - 1.0).abs() < 0.05);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// analyze → draft → compare through the `edits` command, on a short render of
 /// the demo: the recipe of a video compared with that same video scores 1.
 #[test]

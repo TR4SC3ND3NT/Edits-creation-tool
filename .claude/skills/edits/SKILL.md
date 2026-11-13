@@ -238,6 +238,17 @@ picture and motion for two frames at 24 fps, the choppy anime look. `edits
 check` flags a missing clip, a negative speed and a bad trim; see
 `docs/FORMAT.md` (Video layers).
 
+**Sound effects.** Whooshes, impacts and risers on cuts go in the top-level
+`audio_clips` list, mixed over the song at render without lowering it:
+`{ "id": "whoosh1", "path": "sfx/whoosh.wav", "at": "drop-0.25s", "trim_in": 0, "trim_out": 0.6, "volume": 0.7, "fade_in": 0, "fade_out": 0.1 }`.
+Set it with `project_edit` (`{"op": "set", "pointer": "/audio_clips", "value": [...]}`,
+or `/audio_clips/-` to append to an existing list); `at` takes text times like a layer's `in`
+and is stored as a number. `volume` is a linear gain (0.5 is about -6 dB);
+`trim_*` and `fade_*` are seconds of the sound file. `edits check` flags a
+missing file and fades longer than the clip, `describe` lists the clips, and
+`edits render` reports how many were heard as `audio_clips`. There is no
+preset for them: write the clip directly.
+
 ## Workflow 2: the recipe of a reference edit, with different pictures
 
 The goal is not to copy pixels. It is to recover **what the editor did**

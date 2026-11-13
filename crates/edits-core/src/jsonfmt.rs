@@ -14,13 +14,15 @@ const WIDTH: usize = 110;
 
 /// Reading order for the keys of a project. Keys not listed come after, sorted.
 const ORDER: &[&str] = &[
-    "format", "settings", "audio", "slots", "camera", "layers", "markers",
+    "format", "settings", "audio", "audio_clips", "slots", "camera", "layers", "markers",
     // layers, effects, modifiers
     "id", "kind", "name", "slot", "faces", "size", "color", "in", "out", "enabled", "blend", "source", "transform", "params", "effects",
     // settings
     "width", "height", "fps", "duration", "time_base", "bpm", "beat_offset", "background", "motion_blur", "samples", "shutter",
     // slots and audio
     "path", "fit", "focus", "note", "offset", "gain",
+    // audio clips
+    "at", "trim_in", "trim_out", "fade_in", "fade_out",
     // camera and transform
     "fov", "position", "scale", "rotation", "anchor", "opacity",
     // animation

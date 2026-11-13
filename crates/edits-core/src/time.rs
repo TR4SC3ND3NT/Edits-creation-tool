@@ -1,8 +1,8 @@
 //! Times written the way an editor thinks of them.
 //!
 //! Wherever a command or an edit takes a time (`--at`, `--from`, `--to`, a
-//! layer's `in` / `out`, a key's `t`), it accepts a number in the project's
-//! time base or a string:
+//! layer's `in` / `out`, a key's `t`, an audio clip's `at`), it accepts a
+//! number in the project's time base or a string:
 //!
 //! | Text | Means |
 //! | --- | --- |
@@ -317,6 +317,15 @@ pub fn resolve_doc(doc: &mut Value, extra: Option<&TimeCtx>) -> Result<(), Strin
     if let Some(camera) = doc.get_mut("camera") {
         keys(camera, "/camera", &ctx, &mut errors);
     }
+    if let Some(clips) = doc.get_mut("audio_clips").and_then(Value::as_array_mut) {
+        for (i, clip) in clips.iter_mut().enumerate() {
+            let at = match clip.get("id").and_then(Value::as_str) {
+                Some(id) => format!("/audio_clips/@{}", crate::pointer::escape(id)),
+                None => format!("/audio_clips/{i}"),
+            };
+            fix(clip, "at", &format!("{at}/at"), &ctx, false, &mut errors);
+        }
+    }
     if errors.is_empty() {
         Ok(())
     } else {
@@ -433,5 +442,14 @@ mod tests {
         let mut bad = json!({ "settings": { "time_base": "beats", "bpm": 120 }, "layers": [ { "id": "a", "in": "nope" } ] });
         let e = resolve_doc(&mut bad, None).unwrap_err();
         assert!(e.starts_with("/layers/@a/in:"), "{e}");
+        let mut sfx = json!({ "settings": { "time_base": "beats", "bpm": 120, "fps": 25, "duration": 16 },
+            "markers": [ { "t": 8, "label": "drop" } ],
+            "audio_clips": [ { "id": "w", "at": "drop-1b", "trim_in": 0.5 }, { "id": "x", "at": "b12" } ] });
+        resolve_doc(&mut sfx, None).unwrap();
+        assert_eq!(sfx["audio_clips"][0]["at"], json!(7.0));
+        assert_eq!(sfx["audio_clips"][1]["at"], json!(12.0));
+        sfx["audio_clips"][1]["at"] = json!("nowhere");
+        let e = resolve_doc(&mut sfx, None).unwrap_err();
+        assert!(e.starts_with("/audio_clips/@x/at:"), "{e}");
     }
 }

@@ -22,6 +22,9 @@ pub struct Project {
     pub settings: Settings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<Audio>,
+    /// Sound effects mixed over the song at render (whooshes, impacts, risers).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio_clips: Vec<AudioClip>,
     /// Named media placeholders. The recipe refers to slots; content is swapped
     /// by changing a slot's `path`.
     #[serde(default)]
@@ -84,6 +87,35 @@ pub struct Audio {
     pub offset: f64,
     #[serde(default = "one")]
     pub gain: f64,
+}
+
+/// A sound effect: part of an audio file, played once from project time
+/// `at`, mixed over the song. Its own times (`trim_*`, `fade_*`) are seconds
+/// of the source, not project time, so a clip sounds the same at any tempo.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AudioClip {
+    pub id: String,
+    /// Audio (or video with sound) file, relative to the project.
+    pub path: String,
+    /// When the clip starts, in project time.
+    pub at: f64,
+    /// Seconds into the file where the clip starts.
+    #[serde(default)]
+    pub trim_in: f64,
+    /// Seconds into the file where the clip stops. `None` = end of the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trim_out: Option<f64>,
+    /// Linear gain: 1 keeps the file's level, 0.5 is about -6 dB, 0 mutes.
+    #[serde(default = "one")]
+    pub volume: f64,
+    /// Seconds of fade from silence at the start of the clip.
+    #[serde(default)]
+    pub fade_in: f64,
+    /// Seconds of fade to silence at the end of the clip.
+    #[serde(default)]
+    pub fade_out: f64,
+    #[serde(default = "yes")]
+    pub enabled: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
