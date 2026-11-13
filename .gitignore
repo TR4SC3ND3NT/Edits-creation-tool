@@ -6,3 +6,6 @@
 /analysis
 /assets
 .DS_Store
+
+# Agent worktrees (temporary checkouts of parallel agents)
+/.claude/worktrees/
