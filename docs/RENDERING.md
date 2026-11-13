@@ -96,6 +96,65 @@ Sample `i` of `N` is at the frame's start time plus
 never looks past the next cut. A frame is a pure function of the project and
 the frame number: rendering it twice gives the same bytes on the same adapter.
 
+## Blend modes
+
+A layer's `blend` combines its straight colour `s` with the straight colour
+`b` of the image beneath, in linear light; the result is mixed in by the
+layer's coverage (alpha x opacity) as in the W3C "Compositing and Blending"
+model: `out = sa (1 - da) s + sa da B(b, s) + (1 - sa) b_premultiplied`. The
+formulas are W3C's, with EffectCraft's mode list, and kept sensible for
+light above 1 (a flash, a glow, an exposure push) in three ways:
+
+- **As they are**: `normal` (s), `add` and `linear_dodge` (b + s),
+  `multiply` (b s), `lighten` (max), `darken` (min), `difference` |b - s|,
+  `subtract` max(b - s, 0), `linear_burn` max(b + s - 1, 0), `linear_light`
+  max(b + 2s - 1, 0), `pin_light` (s <= 0.5: min(b, 2s), else max(b, 2s - 1)),
+  `lighter_color` / `darker_color` (whichever colour has the higher / lower
+  Rec. 709 luminance). In `screen` (b + s - b' s'), `overlay` (b <= 0.5:
+  2 b s, else screen(s, 2b - 1)), `hard_light` (overlay with b and s
+  swapped) and `exclusion` (b + s - 2 b' s') the product terms use b' and s'
+  clamped to 0..1, so bright light never turns dark or negative.
+- **Clamped, plus the backdrop's excess**: `color_burn`, `color_dodge`,
+  `soft_light` (W3C's), `vivid_light`, `hard_mix` and `divide` (b / s, at
+  most 1) are defined for 0..1. They run on b and s clamped to 0..1, and then
+  add back max(b - 1, 0), so a highlight beneath stays as bright as it was.
+- **Scaled**: `hue`, `saturation`, `color` and `luminosity` (W3C's SetLum,
+  SetSat and ClipColor, with Rec. 709 luminance) run on b and s divided by
+  their brightest component when that is above 1, and the result is
+  multiplied back.
+
+Each mode is its own generated pass (`src/compose.rs`), compiled the first
+time it is used; `tests/render.rs` checks every mode against these formulas
+on a grid of values below and above 1.
+
+## Multi-pass effects
+
+`bloom`, `light_rays`, `outline`, `drop_shadow` and `tilt_shift` are chains
+of fixed passes (`src/fx.rs`, entry points in `shaders/passes.wgsl`, each
+pipeline compiled the first time it is used):
+
+- **bloom**: a soft threshold pixel by pixel, then Bevy's mip chain: a 13-tap
+  downsample to half size with Karis' average, more 13-tap downsamples, and
+  3x3 tent upsamples back to half size that add each level times its weight.
+  The weight of a level depends on its texel size in % of height (`x^2
+  exp(-x^2/2)` with x = texel / radius), so a frame at half scale, which lacks
+  only the finest level, blooms the same. The last pass is the glow's final
+  add, shared with the colour effects after it.
+- **light_rays**: the glow's bright pass at half size, then a zoom streak
+  that reaches from each pixel toward the centre only (the first of the
+  streak passes is shifted by half a streak), then a pass that adds, screens
+  or lightens it into the picture.
+- **outline**: a jump flood (Rong and Tan 2006) in a half-float texture that
+  holds, per pixel, the offset to the nearest pixel inside the shape and to
+  the nearest outside: log2(width) + 2 passes of nine reads, and one pass
+  that draws the stroke from the signed distance.
+- **drop_shadow**: the gaussian blur of the layer (skipped at softness 0),
+  then one pass that draws its offset alpha beneath the layer.
+- **tilt_shift**: two passes of glfx.js's variable-radius triangle filter,
+  along the band and across it.
+
+`lens_flare` is a single analytic pass.
+
 ## What keeps it fast
 
 The renderer is built to be usable on a CPU rasteriser (Mesa lavapipe), where

@@ -72,6 +72,19 @@ A project is **slots + layers + keyframes + effects**.
   `amount` or `zoom` on a hit), `pixelate` (key `size` to 0 for a reveal),
   `halftone` (`mode` mono/rgb/cmyk; manga print), `chromatic_aberration`
   (radial lens fringe, zero in the middle).
+- **Light and layer styles**: `bloom` (soft, wide glow above `threshold`;
+  key `intensity` on a hit after an `exposure` flash), `light_rays` (god rays
+  streaming out from `center`), `lens_flare` (put it on an adjustment layer,
+  key `position`), `outline` (a stroke around a cut-out picture's alpha:
+  `width` % of height, option `position` outside/inside/center),
+  `drop_shadow` (`offset` in composition units), `tilt_shift` (sharp band,
+  blurred top and bottom). **Blend modes** beyond `screen` / `add` /
+  `multiply`: `soft_light`, `hard_light`, `overlay`, `color_dodge` (hot
+  light overlays), `linear_light`, `vivid_light`, `pin_light`, `hard_mix`,
+  `color_burn`, `linear_burn`, `exclusion`, `subtract`, `divide`,
+  `lighter_color`, `darker_color`, and `hue` / `saturation` / `color` /
+  `luminosity` (recolour with a solid). All work in linear light and keep
+  values above 1 bright.
 - **Transitions** sit on the incoming layer: `"transition": { "kind": "whip_pan", "duration": 0.5 }`
   mixes the picture beneath into this one over `duration` from its `in`
   (`edits transitions` lists 22). The outgoing layer must last until the end.

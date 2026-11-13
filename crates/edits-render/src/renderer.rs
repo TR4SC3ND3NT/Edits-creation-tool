@@ -93,6 +93,9 @@ pub(crate) enum Pipe {
     Bright,
     RgbSplit,
     Transform2d,
+    /// Any other fragment entry point of `passes.wgsl` (the multi-pass
+    /// effects in `fx.rs`), compiled the first time it is used.
+    Pass(&'static str),
 }
 
 struct Pipes {
@@ -103,6 +106,8 @@ struct Pipes {
     /// Generated passes (see `compose.rs`), compiled on first use.
     composed: HashMap<Recipe, wgpu::RenderPipeline>,
     full: HashMap<Pipe, wgpu::RenderPipeline>,
+    /// `passes.wgsl`, for the `Pipe::Pass` pipelines.
+    module: wgpu::ShaderModule,
 }
 
 #[derive(Clone)]
@@ -349,6 +354,7 @@ impl Renderer {
             geo_depth: make_pipeline(device, &pipeline_layout, &module, "vs_geo", "fs_geo", WORK_FORMAT, None, msaa, true),
             composed: HashMap::new(),
             full,
+            module,
         };
 
         let ubuf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -862,7 +868,15 @@ impl Renderer {
 
     /// A full-target pass of a built-in pipeline reading `t0` (and `t1`).
     pub(crate) fn pass(&mut self, pipe: Pipe, target: &Tex, load: bool, t0: &Tex, t1: Option<&Tex>, p: &[[f32; 4]]) {
-        let pipeline = self.pipes.full[&pipe].clone();
+        let pipeline = match (self.pipes.full.get(&pipe), pipe) {
+            (Some(p), _) => p.clone(),
+            (None, Pipe::Pass(entry)) => {
+                let p = make_pipeline(&self.gpu.device, &self.pipeline_layout, &self.pipes.module, "vs_full", entry, WORK_FORMAT, None, 1, false);
+                self.pipes.full.insert(pipe, p.clone());
+                p
+            }
+            (None, _) => unreachable!("{pipe:?} is made with the renderer"),
+        };
         self.name(|| format!("{pipe:?}"));
         self.pass_with(&pipeline, target, load, t0, t1, p);
     }

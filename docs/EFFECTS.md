@@ -83,6 +83,22 @@ category (`color.rs`, `blur.rs`, `light.rs`, `distort.rs`, `stylize.rs`,
 | `spin_blur` | `angle` (5), `center` ([0, 0]) | Even streak along circles about `center`, sweeping `angle` degrees in total. |
 | `glow` | `threshold` (0.7), `radius` (3), `intensity` (1), `color` ([1, 1, 1]) | Bloom. Keeps the light above `threshold` (linear luminance L: colour x max(L - threshold, 0) / L), blurs it with sigma `radius` % of height, multiplies by `intensity` x `color` and adds it back. Around a layer the halo carries its own transparency, so later effects and blend modes treat it as part of the layer. |
 | `rgb_split` | `amount` (0.5), `angle` (0) | Chromatic aberration: red is moved `amount` % of height against the direction `angle`, blue the same distance along it, green stays. |
+| `tilt_shift` | `center` ([0, 0]), `angle` (0), `width` (20), `blur` (2) | Miniature look. A band `width` % of height wide through `center` (turned `angle` degrees clockwise from horizontal) stays sharp; beyond it the blur grows smoothly over another half `width` to `blur` % of height, the half-width of a triangle filter run along the band and then across it. Skipped below a quarter pixel of blur. |
+
+## Light (multi-pass)
+
+These run several passes each (`crates/edits-render/src/fx.rs`, passes in
+`shaders/passes.wgsl`). Light they add outside a layer brings its own
+coverage, as `glow` does, so later effects and blend modes see it as part of
+the layer. Each is skipped when its strength is zero.
+
+| Kind | Parameters (default) | What it does |
+| --- | --- | --- |
+| `bloom` | `threshold` (0.8), `knee` (0.2, 0..1), `intensity` (1), `radius` (10), `color` ([1, 1, 1]) | A deep, soft glow, wider and smoother than `glow`. Each pixel keeps the light above `threshold` (on its largest channel), with a soft start `knee` x `threshold` wide below it; the result is halved again and again (a mip chain), and the levels are added back up, each weighted by its size: levels near `radius` % of height weigh most, much smaller and much larger ones little. The sum (weights add up to 1) is multiplied by `intensity` x `color` and added to the picture, so the light added grows in proportion to `intensity`. Below `threshold` - `knee` x `threshold` nothing changes at all. Because the weights follow sizes in % of height, a render at `--scale 0.5` blooms the same (the tests check it within 5 %). |
+| `light_rays` | `center` ([0, 0]), `length` (0.5, 0..0.95), `intensity` (1), `threshold` (0.6), `color` ([1, 1, 1]); option `mode` = `add` / `screen` / `lighten` | God rays. The light above `threshold` (linear luminance, as `glow`) is streaked away from `center`: each pixel averages the bright pass scaled toward `center` by factors from 1 - `length` to 1, so a bright shape casts rays outward that are `length` x its distance from the centre long, and nothing appears between the centre and the shape. The rays, times `intensity` x `color`, are added (`add`), screened (`screen`) or kept where brighter (`lighten`). The rays are computed at half size. |
+| `lens_flare` | `position` ([-0.4, -0.25]), `brightness` (1), `size` (1); option `lens` = `zoom` / `prime35` / `prime105` | A flare from a light at `position`: a bright core, streaks (8, 6 or 12 by lens) and a thin halo ring around it, and coloured ghosts (discs and rings) along the line from the light through the frame's centre and beyond. Sizes are fractions of the frame's diagonal times `size`; everything times `brightness` is added to the picture. It draws over the whole frame, so put it on an adjustment layer, and key `position` to make it travel. |
+| `outline` | `width` (0.6), `color` ([1, 1, 1]), `softness` (0), `opacity` (1, 0..1); option `position` = `outside` / `inside` / `center` | A stroke around the layer's shape (where its alpha is at least one half), `width` % of height wide: beneath the layer just outside the edge, over it just inside, or half of each. Found with a jump flood, so the cost grows with the logarithm of the width only. With `softness` 0 the stroke's edges are antialiased over one pixel; `softness` (% of height) widens that ramp. On an adjustment layer it outlines everything beneath. |
+| `drop_shadow` | `offset` ([0.01, 0.015]), `softness` (1), `color` ([0, 0, 0]), `opacity` (0.6, 0..1) | A copy of the layer's alpha, moved by `offset` (composition units, y down), blurred with sigma `softness` % of height, in `color` at `opacity`, drawn beneath the layer. Nothing is pulled in from outside the frame. |
 
 ## Distort
 

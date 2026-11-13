@@ -6,6 +6,20 @@
 //! a chain looks the same at any `scale`. Effects whose strength is zero are
 //! skipped. Neighbouring colour effects share one pass, and can also share it
 //! with a glow's final add or with the layer's blend (see `compose.rs`).
+//!
+//! Multi-pass light effects (their passes are in `shaders/passes.wgsl`):
+//! - `bloom`: a mip chain after Bevy's bloom (MIT OR Apache-2.0); the
+//!   weight of each level depends on its size in % of height, so the bloom
+//!   looks the same at any scale.
+//! - `light_rays`: a bright pass streaked toward a point (after EffectCraft's
+//!   `light_rays`, MIT OR Apache-2.0), with the one-sided zoom streak below.
+//! - `lens_flare`: one analytic pass (EffectCraft's `lens_flare` and
+//!   `flare_ghosts` tables).
+//! - `outline`: a jump flood (Rong and Tan 2006) of the nearest pixel inside
+//!   and outside the layer's alpha, then a stroke from the signed distance.
+//! - `drop_shadow`: the gaussian below on the layer, offset and tinted.
+//! - `tilt_shift`: glfx.js's two passes of a triangle filter whose radius
+//!   grows with the distance from a line (MIT).
 
 use crate::compose::{self, MAX_OPS};
 use crate::renderer::{Pipe, Renderer, Sink, Source, Tex};
@@ -56,7 +70,66 @@ fn color_op(e: &ResolvedEffect, height: f32, frame: f32) -> Option<ColorOp> {
 pub(crate) const NATIVE: &[&str] = &[
     "exposure", "fade", "brightness_contrast", "saturation", "hue", "invert", "threshold", "posterize", "tint", "vignette", "grain",
     "gaussian_blur", "directional_blur", "zoom_blur", "spin_blur", "glow", "rgb_split", "transform2d", "custom",
+    "bloom", "light_rays", "lens_flare", "outline", "drop_shadow", "tilt_shift",
 ];
+
+/// Bloom: the weight of a mip level whose texels are `x` times the radius.
+/// Levels near the radius weigh most and fine levels little, so that a
+/// smaller frame, which lacks the finest level, blooms the same.
+fn bloom_profile(x: f32) -> f32 {
+    x * x * (-0.5 * x * x).exp()
+}
+
+/// The weights of the bloom's mip levels (level `k` is the frame divided by
+/// `2^(k+1)`) for a radius of `radius` pixels, normalised to a sum of 1.
+fn bloom_weights(radius: f32, w: u32, h: u32) -> Vec<f32> {
+    let mut weights = Vec::new();
+    let (mut lw, mut lh) = (w.div_ceil(2), h.div_ceil(2));
+    let mut texel = 2.0;
+    loop {
+        let x = texel / radius.max(1e-3);
+        if !weights.is_empty() && (x > 4.0 || lw.min(lh) < 2) {
+            break;
+        }
+        weights.push(bloom_profile(x));
+        (lw, lh, texel) = (lw.div_ceil(2), lh.div_ceil(2), texel * 2.0);
+    }
+    let sum: f32 = weights.iter().sum();
+    weights.iter().map(|v| if sum > 0.0 { v / sum } else { 1.0 / weights.len() as f32 }).collect()
+}
+
+/// A flare ghost: position along the line from the light through the
+/// frame's centre (0 at the light, 1 at the centre), radius (fraction of the
+/// frame's diagonal), strength, ring (1) or disc (0), colour.
+type Ghost = (f32, f32, f32, f32, [f32; 3]);
+
+/// The flare of a lens: core size, streak count, halo radius, ghosts.
+/// Values from EffectCraft's `lens_flare` and `flare_ghosts`
+/// (https://github.com/storytold/effectcraft, MIT OR Apache-2.0).
+fn flare_lens(lens: &str) -> (f32, f32, f32, &'static [Ghost]) {
+    match lens {
+        "prime35" => (0.035, 6.0, 0.18, &[
+            (0.45, 0.03, 0.20, 0.0, [0.4, 0.7, 1.0]),
+            (0.9, 0.06, 0.12, 0.0, [0.5, 1.0, 0.6]),
+            (1.3, 0.12, 0.10, 1.0, [1.0, 0.6, 0.3]),
+            (1.6, 0.04, 0.15, 0.0, [0.8, 0.5, 1.0]),
+        ]),
+        "prime105" => (0.02, 12.0, 0.3, &[
+            (0.6, 0.02, 0.25, 0.0, [1.0, 0.8, 0.5]),
+            (1.1, 0.05, 0.12, 0.0, [0.6, 0.6, 1.0]),
+            (1.4, 0.09, 0.08, 1.0, [0.4, 0.9, 1.0]),
+        ]),
+        _ => (0.03, 8.0, 0.25, &[
+            (0.25, 0.02, 0.25, 0.0, [1.0, 0.9, 0.6]),
+            (0.5, 0.04, 0.15, 0.0, [0.3, 1.0, 0.5]),
+            (0.75, 0.025, 0.2, 0.0, [0.5, 0.6, 1.0]),
+            (1.15, 0.07, 0.10, 0.0, [1.0, 0.5, 0.3]),
+            (1.45, 0.1, 0.08, 1.0, [0.6, 0.4, 1.0]),
+            (1.8, 0.05, 0.15, 0.0, [0.4, 0.9, 1.0]),
+            (2.1, 0.14, 0.06, 1.0, [1.0, 0.8, 0.4]),
+        ]),
+    }
+}
 
 fn is_color(kind: &str) -> bool {
     matches!(kind, "exposure" | "fade" | "brightness_contrast" | "saturation" | "hue" | "invert" | "threshold" | "posterize" | "tint" | "vignette" | "grain")
@@ -78,6 +151,22 @@ pub(crate) enum Step {
     /// A built-in one-pass effect (`fxlib`) and its numbers.
     Builtin(wgpu::RenderPipeline, crate::fxlib::Params),
     Custom(wgpu::RenderPipeline, crate::fxlib::Params),
+    /// Soft threshold (threshold, threshold - knee, 2 knee, 0.25 / knee),
+    /// radius in pixels, colour x intensity.
+    Bloom { threshold: [f32; 4], radius: f32, color: [f32; 3] },
+    /// Luminance threshold, centre (uv), log of the largest zoom toward the
+    /// centre, longest ray in pixels of the half-size bright pass, colour x
+    /// intensity, mode (0 add, 1 screen, 2 lighten).
+    Rays { threshold: f32, centre: [f32; 2], zoom: f32, length: f32, color: [f32; 3], mode: f32 },
+    /// The uniforms of `fs_lens_flare`.
+    Flare(Vec<[f32; 4]>),
+    /// Colour and opacity; widths outside and inside and the edge ramp (1 +
+    /// softness), in pixels.
+    Outline { color: [f32; 4], widths: [f32; 3] },
+    /// Colour and opacity, offset (uv), sigma in pixels.
+    Shadow { color: [f32; 4], offset: [f32; 2], sigma: f32 },
+    /// The uniforms of the two `fs_tilt` passes.
+    TiltShift([[[f32; 4]; 3]; 2]),
 }
 
 impl Renderer {
@@ -134,6 +223,87 @@ impl Renderer {
                         steps.push(Step::Glow(n("threshold"), (n("radius") / 100.0 * h).max(1.0), [color[0] as f32 * k, color[1] as f32 * k, color[2] as f32 * k]));
                     }
                 }
+                "bloom" => {
+                    let (k, color, radius) = (n("intensity"), e.vec("color", 3), n("radius") / 100.0 * h);
+                    if k > 0.0 && radius > 0.0 {
+                        let threshold = n("threshold").max(0.0);
+                        let knee = threshold * n("knee").clamp(0.0, 1.0);
+                        steps.push(Step::Bloom {
+                            threshold: [threshold, threshold - knee, 2.0 * knee, 0.25 / (knee + 1e-5)],
+                            radius,
+                            color: [color[0] as f32 * k, color[1] as f32 * k, color[2] as f32 * k],
+                        });
+                    }
+                }
+                "light_rays" => {
+                    let (k, color, length) = (n("intensity"), e.vec("color", 3), n("length").clamp(0.0, 0.95));
+                    if k > 0.0 && length > 0.0 {
+                        let c = e.vec("center", 2);
+                        let centre = [0.5 + c[0] as f32 / aspect, 0.5 + c[1] as f32];
+                        let reach = ((centre[0].abs().max((1.0 - centre[0]).abs()) * w).powi(2) + (centre[1].abs().max((1.0 - centre[1]).abs()) * h).powi(2)).sqrt();
+                        let mode = match e.option("mode") {
+                            "screen" => 1.0,
+                            "lighten" => 2.0,
+                            _ => 0.0,
+                        };
+                        steps.push(Step::Rays {
+                            threshold: n("threshold"),
+                            centre,
+                            zoom: -(1.0 - length).ln(),
+                            length: length * reach * 0.5,
+                            color: [color[0] as f32 * k, color[1] as f32 * k, color[2] as f32 * k],
+                            mode,
+                        });
+                    }
+                }
+                "lens_flare" => {
+                    let (brightness, size, pos) = (n("brightness"), n("size"), e.vec("position", 2));
+                    if brightness > 0.0 && size > 0.0 {
+                        let (core, streaks, halo, ghosts) = flare_lens(e.option("lens"));
+                        let mut p = vec![[pos[0] as f32, pos[1] as f32, brightness, ghosts.len() as f32], [core, streaks, halo, size]];
+                        for &(t, r, strength, ring, c) in ghosts {
+                            p.push([t, r, strength, ring]);
+                            p.push([c[0], c[1], c[2], 0.0]);
+                        }
+                        steps.push(Step::Flare(p));
+                    }
+                }
+                "outline" => {
+                    let (width, opacity, c) = (n("width").max(0.0) / 100.0 * h, n("opacity").clamp(0.0, 1.0), e.vec("color", 3));
+                    if width > 0.0 && opacity > 0.0 {
+                        let (outside, inside) = match e.option("position") {
+                            "inside" => (0.0, width),
+                            "center" => (width * 0.5, width * 0.5),
+                            _ => (width, 0.0),
+                        };
+                        let ramp = 1.0 + n("softness").max(0.0) / 100.0 * h;
+                        steps.push(Step::Outline { color: [c[0] as f32, c[1] as f32, c[2] as f32, opacity], widths: [outside, inside, ramp] });
+                    }
+                }
+                "drop_shadow" => {
+                    let (opacity, c, off) = (n("opacity").clamp(0.0, 1.0), e.vec("color", 3), e.vec("offset", 2));
+                    if opacity > 0.0 {
+                        steps.push(Step::Shadow {
+                            color: [c[0] as f32, c[1] as f32, c[2] as f32, opacity],
+                            offset: [off[0] as f32 / aspect, off[1] as f32],
+                            sigma: n("softness").max(0.0) / 100.0 * h,
+                        });
+                    }
+                }
+                "tilt_shift" => {
+                    let radius = n("blur") / 100.0 * h;
+                    if radius >= 0.25 {
+                        let c = e.vec("center", 2);
+                        let centre = [(0.5 + c[0] as f32 / aspect) * w, (0.5 + c[1] as f32) * h];
+                        let (sin, cos) = n("angle").to_radians().sin_cos();
+                        let half = n("width").max(0.0) / 100.0 * h * 0.5;
+                        // Taps on each side; past one per pixel the gaps are hidden by jitter.
+                        let taps = radius.ceil().clamp(2.0, 24.0);
+                        let jitter = if radius > taps { 1.0 } else { 0.0 };
+                        let pass = |dir: [f32; 2]| [[centre[0], centre[1], -sin, cos], [half, half, radius, taps], [dir[0], dir[1], jitter, 0.0]];
+                        steps.push(Step::TiltShift([pass([cos, sin]), pass([-sin, cos])]));
+                    }
+                }
                 "rgb_split" => {
                     let shift = n("amount") / 100.0 * h;
                     let a = n("angle").to_radians();
@@ -187,7 +357,56 @@ impl Renderer {
                     out
                 }
                 Step::Gaussian(sigma) => self.gaussian(&s, *sigma),
-                Step::Streak(mode, centre, amount, length) => self.streak(&s, *mode, *centre, *amount, *length),
+                Step::Streak(mode, centre, amount, length) => self.streak(&s, *mode, *centre, *amount, *length, false),
+                Step::Bloom { threshold, radius, color } => {
+                    let bloom = self.bloom(&s, *threshold, *radius);
+                    // Colour effects right after the bloom share its final pass.
+                    let ops = color_run(&steps[i + 1..]);
+                    i += ops.len();
+                    let out = self.acquire(s.w, s.h);
+                    self.compose(&out, Source::Glow(&s, &bloom, *color), &ops, Sink::Plain);
+                    self.release(bloom);
+                    out
+                }
+                Step::Rays { threshold, centre, zoom, length, color, mode } => {
+                    let half = self.acquire(s.w.div_ceil(2), s.h.div_ceil(2));
+                    self.pass(Pipe::Bright, &half, false, &s, None, &[[*threshold, 0.0, 0.0, 0.0]]);
+                    let rays = self.streak(&half, 1.0, *centre, [*zoom, 0.0], *length, true);
+                    self.release(half);
+                    let out = self.acquire(s.w, s.h);
+                    self.pass(Pipe::Pass("fs_rays_mix"), &out, false, &s, Some(&rays), &[[color[0], color[1], color[2], *mode]]);
+                    self.release(rays);
+                    out
+                }
+                Step::Flare(p) => {
+                    let out = self.acquire(s.w, s.h);
+                    self.pass(Pipe::Pass("fs_lens_flare"), &out, false, &s, None, p);
+                    out
+                }
+                Step::Outline { color, widths } => {
+                    let field = self.jump_flood(&s, widths[0].max(widths[1]) + widths[2] + 2.0);
+                    let out = self.acquire(s.w, s.h);
+                    self.pass(Pipe::Pass("fs_outline"), &out, false, &s, Some(&field), &[*color, [widths[0], widths[1], widths[2], 0.0]]);
+                    self.release(field);
+                    out
+                }
+                Step::Shadow { color, offset, sigma } => {
+                    let blurred = (*sigma >= 0.05).then(|| self.gaussian(&s, *sigma));
+                    let out = self.acquire(s.w, s.h);
+                    self.pass(Pipe::Pass("fs_shadow"), &out, false, &s, Some(blurred.as_ref().unwrap_or(&s)), &[*color, [offset[0], offset[1], 0.0, 0.0]]);
+                    if let Some(b) = blurred {
+                        self.release(b);
+                    }
+                    out
+                }
+                Step::TiltShift([first, second]) => {
+                    let mid = self.acquire(s.w, s.h);
+                    self.pass(Pipe::Pass("fs_tilt"), &mid, false, &s, None, first);
+                    let out = self.acquire(s.w, s.h);
+                    self.pass(Pipe::Pass("fs_tilt"), &out, false, &mid, None, second);
+                    self.release(mid);
+                    out
+                }
                 Step::Glow(threshold, sigma, color) => {
                     let half = self.acquire(s.w.div_ceil(2), s.h.div_ceil(2));
                     self.pass(Pipe::Bright, &half, false, &s, None, &[[*threshold, 0.0, 0.0, 0.0]]);
@@ -271,8 +490,10 @@ impl Renderer {
     /// longest streak in pixels and decides how many passes are needed: each
     /// pass takes `STREAK_TAPS` samples over a streak that is `STREAK_TAPS`
     /// times shorter than the one before, so `n` passes sample
-    /// `STREAK_TAPS^n` evenly spaced points.
-    fn streak(&mut self, src: &Tex, mode: f32, centre: [f32; 2], amount: [f32; 2], length: f32) -> Tex {
+    /// `STREAK_TAPS^n` evenly spaced points. The streak is centred on each
+    /// pixel, or with `one_sided` reaches from it toward the centre only (a
+    /// zoom then samples scales from `exp(-amount)` to 1: light rays).
+    fn streak(&mut self, src: &Tex, mode: f32, centre: [f32; 2], amount: [f32; 2], length: f32, one_sided: bool) -> Tex {
         let taps = STREAK_TAPS as usize;
         let mut passes = 1;
         while (taps as f32).powi(passes) < length / STREAK_SPACING && passes < 5 {
@@ -281,12 +502,15 @@ impl Renderer {
         let aspect = src.w as f32 / src.h as f32;
         let mut cur = src.clone();
         let mut span = 1.0;
+        // Shifting the first pass's taps by half a streak shifts the whole
+        // sum of passes: from -0.5..0.5 to -1..0.
+        let mut shift = if one_sided { -0.5 } else { 0.0 };
         for _ in 0..passes {
             let mut p = [[0.0f32; 4]; 18];
             p[0] = [STREAK_TAPS, aspect, 0.0, 0.0];
             p[1] = [centre[0], centre[1], 0.0, 0.0];
             for i in 0..taps {
-                let t = ((i as f32 + 0.5) / STREAK_TAPS - 0.5) * span;
+                let t = ((i as f32 + 0.5) / STREAK_TAPS - 0.5) * span + shift;
                 (p[2 + i], p[10 + i]) = match mode as u32 {
                     0 => ([1.0, 0.0, 0.0, 1.0], [amount[0] * t, amount[1] * t, 0.0, 0.0]),
                     1 => {
@@ -306,8 +530,66 @@ impl Renderer {
             }
             cur = out;
             span /= STREAK_TAPS;
+            shift = 0.0;
         }
         cur
+    }
+
+    /// The bloom of `src` at half size, before its colour: a soft threshold
+    /// pixel by pixel, a 13-tap downsample with Karis' average, a chain of
+    /// further 13-tap downsamples, then tent
+    /// upsamples from the smallest level that add each finer level times its
+    /// weight (see [`bloom_weights`]).
+    fn bloom(&mut self, src: &Tex, threshold: [f32; 4], radius: f32) -> Tex {
+        let weights = bloom_weights(radius, src.w, src.h);
+        let bright = self.acquire(src.w, src.h);
+        self.pass(Pipe::Pass("fs_bloom_bright"), &bright, false, src, None, &[threshold]);
+        let first = self.acquire(src.w.div_ceil(2), src.h.div_ceil(2));
+        self.pass(Pipe::Pass("fs_bloom_first"), &first, false, &bright, None, &[[0.0; 4], [1.0 / src.w as f32, 1.0 / src.h as f32, 0.0, 0.0]]);
+        self.release(bright);
+        let mut levels = vec![first];
+        while levels.len() < weights.len() {
+            let prev = levels[levels.len() - 1].clone();
+            let next = self.acquire(prev.w.div_ceil(2), prev.h.div_ceil(2));
+            self.pass(Pipe::Pass("fs_bloom_down"), &next, false, &prev, None, &[[0.0; 4], [1.0 / prev.w as f32, 1.0 / prev.h as f32, 0.0, 0.0]]);
+            levels.push(next);
+        }
+        let last = levels.pop().expect("at least one level");
+        let mut acc = self.acquire(last.w, last.h);
+        self.pass(Pipe::Copy, &acc, false, &last, None, &[[weights[levels.len()], 0.0, 0.0, 0.0]]);
+        self.release(last);
+        while let Some(level) = levels.pop() {
+            let out = self.acquire(level.w, level.h);
+            self.pass(Pipe::Pass("fs_bloom_up"), &out, false, &acc, Some(&level), &[[1.0 / acc.w as f32, 1.0 / acc.h as f32, weights[levels.len()], 0.0]]);
+            self.release(acc);
+            self.release(level);
+            acc = out;
+        }
+        acc
+    }
+
+    /// A jump flood of `src`'s alpha (inside where it is at least one half):
+    /// each pixel of the result holds the offset in pixels to the nearest
+    /// pixel inside (`xy`) and to the nearest pixel outside (`zw`), for
+    /// distances up to `reach` pixels.
+    fn jump_flood(&mut self, src: &Tex, reach: f32) -> Tex {
+        let mut field = self.acquire(src.w, src.h);
+        self.pass(Pipe::Pass("fs_jfa_seed"), &field, false, src, None, &[]);
+        let mut step = ((reach.ceil().max(1.0) as u32).next_power_of_two() / 2).max(1);
+        let mut steps = Vec::new();
+        while step >= 1 {
+            steps.push(step);
+            step /= 2;
+        }
+        // One more pass of 1 mends the rare misses of plain jump flooding.
+        steps.push(1);
+        for step in steps {
+            let next = self.acquire(src.w, src.h);
+            self.pass(Pipe::Pass("fs_jfa"), &next, false, &field, None, &[[step as f32, 0.0, 0.0, 0.0]]);
+            self.release(field);
+            field = next;
+        }
+        field
     }
 }
 

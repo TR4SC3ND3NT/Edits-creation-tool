@@ -52,7 +52,7 @@ pub fn describe(p: &Project) -> String {
             l.id,
             l.start,
             end,
-            if l.blend != Blend::Normal { format!(" blend={:?}", l.blend).to_lowercase() } else { String::new() },
+            if l.blend != Blend::Normal { format!(" blend={}", l.blend.name()) } else { String::new() },
             if l.enabled { "" } else { " (disabled)" }
         );
         if let Some(tr) = &l.transition {
