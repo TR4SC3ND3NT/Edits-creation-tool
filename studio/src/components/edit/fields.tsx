@@ -1,6 +1,8 @@
 import * as React from "react"
 import { DiamondIcon, RepeatIcon, WavesIcon } from "lucide-react"
 
+import { presenceRing, usePresence } from "@/agent/presence"
+import { PresenceValue } from "@/agent/presence-ui"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -104,13 +106,16 @@ export function PropRow({
   const names = prop.unit === "color" ? RGB : AXES
   const unit = unitLabel(prop.unit)
   React.useEffect(() => setLive(null), [prop.value, prop.base])
+  const agent = usePresence({ pointer: prop.pointer })
   return (
     <div
       className={cn(
         "group/prop flex min-h-8 items-center gap-2 rounded-md px-1",
-        picked && "bg-muted"
+        picked && "bg-muted",
+        presenceRing(agent)
       )}
     >
+      <PresenceValue hit={agent} />
       <Tooltip>
         <TooltipTrigger
           render={

@@ -175,6 +175,54 @@ for the writing side):
   "the window seems closed" (with the last state) when `updated` is more than
   30 s old.
 
+### What the agent is doing: `.edits/activity.jsonl`
+
+The other direction: the MCP server tells the person what the agent does.
+Every tool call adds one line to `<project dir>/.edits/activity.jsonl` when
+it starts and one when it ends (calls that name no project write to
+`<workspace root>/.edits/activity.jsonl`). Edits Studio follows the file and
+shows where the agent works: the layer row lights up, a marker sits on the
+timeline at the time it targets, the inspector field it changed shows the old
+and the new value, the viewer says "Claude is looking at frame 60", and a
+strip under the header names the step (see [GUI.md](GUI.md#seeing-where-the-agent-works)).
+Nothing in the agent changes: the server writes the log for every client.
+
+The format, `edits.activity/1` (type `edits_core::activity::Entry`; one JSON
+object per line, append-only):
+
+```json
+{"at":"20261114T101502.114Z","phase":"start","call":"41213-7","tool":"preset_apply","actor":"agent","label":"applying punch at b6 on layer d","project":"project.json","layers":["d"],"time":"b6","t":6.0,"client":"claude-code"}
+{"at":"20261114T101502.388Z","phase":"end","call":"41213-7","tool":"preset_apply","actor":"agent","label":"applying punch at b6 on layer d","project":"project.json","layers":["d"],"time":"b6","t":6.0,"ok":true,"ms":274,"client":"claude-code"}
+{"at":"20261114T101503.020Z","phase":"start","call":"41213-8","tool":"project_edit","actor":"agent","label":"adding glow to d (+1 more)","project":"project.json","layers":["d"],"pointers":["/layers/@d/effects/-","/layers/@d/transform/position"],"client":"claude-code"}
+{"at":"20261114T101504.511Z","phase":"start","call":"41213-9","tool":"render_frame","actor":"agent","label":"looking at frame 60","project":"project.json","t":4.92,"frame":60,"client":"claude-code"}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `at` | UTC time, as `edits_core::edit::utc_stamp` |
+| `phase` | `start` or `end` |
+| `call` | ties an end to its start (`<server pid>-<n>`) |
+| `tool` | the tool's name as the server serves it |
+| `actor` | `agent` |
+| `label` | what a person reads: `applying punch at b6 on layer d`, `setting d transform.scale`, `looking at frame 60`, `rendering a contact sheet` |
+| `project` | the project's file name, when the call names one |
+| `layers`, `pointers` | the layer ids and JSON pointers the call reads or changes (layer indices are turned into ids) |
+| `time`, `t` | the time argument as given (`b6`, `drop+2b`) and in project time |
+| `frame` | the frame `render_frame` renders |
+| `ok`, `error`, `ms` | end only: whether it worked, the first line of the error, how long it took |
+| `job` | end only: the job a call started (`render_video`, `reference_analyze`, `project_fit`) |
+| `client` | the MCP client's name, as it introduced itself (`claude-code`, `codex-mcp-client`) |
+| `via` | `EDITS_ACTIVITY_VIA` of the server; the studio's own panel sets `studio` |
+
+- Lines are written whole, in append mode, so two servers do not interleave.
+  A reader keeps its offset and reads what was appended; a line without its
+  newline yet is read on the next poll. Unknown fields are ignored; a line
+  that does not parse is skipped.
+- The log moves to `activity.1.jsonl` (replacing an older one) when it grows
+  past 1 MiB; a reader that sees the file shrink reads it again from the top.
+- `EDITS_ACTIVITY=off` in the server's environment turns it off.
+- `.edits/` has its own `.gitignore`: the log is never committed.
+
 ## The perception ladder
 
 Look at the cheapest thing that answers the question. Each step costs more
@@ -343,6 +391,15 @@ or `codex mcp add edits -- /path/to/edits-mcp --root /path/to/your/workspace`.
 The skill is plain Markdown: tell Codex to read
 `.claude/skills/edits/SKILL.md`, or copy it to where your Codex version keeps
 skills.
+
+### Edits Studio's agent panel
+
+The studio is itself a client: its agent panel starts Claude Code or Codex
+through their Agent Client Protocol adapters and passes this server to every
+session (`edits-mcp --root <project folder>`, with `EDITS_ACTIVITY_VIA=studio`),
+so nothing has to be configured; see [GUI.md](GUI.md#the-agent-panel).
+Claude Code and Codex in a terminal, configured as above, are shown in the
+studio too, through the activity log.
 
 ### Configuration
 

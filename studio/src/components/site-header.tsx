@@ -1,5 +1,6 @@
 import { CircleAlertIcon, Redo2Icon, SearchIcon, Undo2Icon } from "lucide-react"
 
+import { AgentToggle } from "@/agent/dock"
 import { AgentNote } from "@/components/agent-note"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -72,6 +73,7 @@ export function SiteHeader() {
             </KbdGroup>
           </Button>
           <AgentNote />
+          <AgentToggle />
           <Separator
             orientation="vertical"
             className="mx-1 h-4 data-vertical:self-auto"

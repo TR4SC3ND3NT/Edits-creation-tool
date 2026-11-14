@@ -6,6 +6,7 @@
 //! This crate has no GPU, windowing or media dependencies, so the same
 //! evaluation runs in the renderer, the CLI, the MCP server and tests.
 
+pub mod activity;
 pub mod check;
 pub mod comp;
 pub mod cube;

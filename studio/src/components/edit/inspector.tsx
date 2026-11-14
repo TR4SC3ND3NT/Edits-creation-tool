@@ -12,6 +12,8 @@ import {
   XIcon,
 } from "lucide-react"
 
+import { presenceFor, presenceRing, usePresenceState } from "@/agent/presence"
+import { AgentAddedBadge } from "@/agent/presence-ui"
 import { KindIcon } from "@/components/edit/kind-icon"
 import { NumberInput, PropRow, SectionTitle } from "@/components/edit/fields"
 import { Badge } from "@/components/ui/badge"
@@ -92,6 +94,7 @@ import {
 } from "@/lib/api"
 import { CATEGORY_LABEL, useEffects, usePresets } from "@/lib/library"
 import { useStudio } from "@/lib/store"
+import { cn } from "@/lib/utils"
 import { firstFrameFrom, fmtTime, tidy } from "@/lib/time"
 
 const BLENDS = [
@@ -469,6 +472,7 @@ function ProjectSummary() {
 
 export function Inspector() {
   const s = useStudio()
+  const agent = usePresenceState()
   const { data, error } = useInspection()
   const layerId = s.layer
   const problems = s.snapshot?.problems ?? []
@@ -835,11 +839,19 @@ export function Inspector() {
                     <Card
                       key={`${e.index}-${e.kind}`}
                       size="sm"
-                      className={e.enabled ? undefined : "opacity-60"}
+                      className={cn(
+                        e.enabled ? undefined : "opacity-60",
+                        presenceRing(
+                          presenceFor(agent, {
+                            effect: { layer: l.id, index: e.index },
+                          })
+                        )
+                      )}
                     >
                       <CardHeader>
                         <CardTitle className="flex items-center gap-2">
                           {e.kind}
+                          <AgentAddedBadge layer={l.id} index={e.index} />
                           <Badge variant="outline">
                             {CATEGORY_LABEL[e.category] ?? e.category}
                           </Badge>
