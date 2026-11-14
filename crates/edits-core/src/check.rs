@@ -401,11 +401,20 @@ fn check_text(t: &Text, lp: &str, base_dir: Option<&Path>, err: &mut impl FnMut(
         warn.push(Finding { severity: Severity::Warning, path: format!("{lp}.text"), message: "the text is empty: the layer draws nothing".into(), hint: None });
     }
     if let (Some(font), Some(dir)) = (&t.font, base_dir) {
-        if !dir.join(font).is_file() {
+        if font.starts_with("builtin:") {
+            if !BUILTIN_FONTS.contains(&font.as_str()) {
+                err(format!("{lp}.font"), format!("no built-in font {font}"), Some("builtin:inter or builtin:sans-bold-italic, or a .ttf or .otf file relative to the project file"));
+            }
+        } else if !dir.join(font).is_file() {
             err(format!("{lp}.font"), format!("font not found: {font}"), Some("a .ttf or .otf file, relative to the project file; remove \"font\" to use the built-in Inter"));
         }
     }
 }
+
+/// Fonts built into the renderer, named in a text layer's `font` instead of
+/// a file: Inter (the default) and Liberation Sans Bold Italic (a free
+/// Helvetica / Nimbus Sans Bold Italic look-alike). See `assets/fonts/README.md`.
+pub const BUILTIN_FONTS: &[&str] = &["builtin:inter", "builtin:sans-bold-italic"];
 
 /// A text animator: its properties and its selector's values.
 fn check_animator(a: &crate::text_select::TextAnimator, ap: &str, err: &mut impl FnMut(String, String, Option<&str>), warn: &mut Vec<Finding>) {

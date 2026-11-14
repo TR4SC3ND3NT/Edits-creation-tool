@@ -32,6 +32,7 @@ mod color;
 mod distort;
 mod generate;
 mod key;
+mod kit;
 mod stylize;
 
 /// Helpers shared by the built-in effects (not part of the custom contract).
@@ -123,7 +124,8 @@ impl Renderer {
         let scene = self.scene.clone();
         let seconds = self.ctx.time[0] as f64;
         let t = scene.as_ref().map_or(seconds, |s| s.project.from_seconds(seconds));
-        let Some(p) = (b.pack)(e, &Frame { h, aspect: self.ctx.time[3], t }) else { return Ok(None) };
+        let frame = Frame { h, aspect: self.ctx.time[3], t };
+        let Some(p) = (b.pack)(e, &frame) else { return Ok(None) };
         let mut inputs = Inputs::default();
         match spec.source {
             SourceKind::Cube => {
@@ -143,6 +145,8 @@ impl Renderer {
         }
         if let Some(table) = color::table(b.kind, e) {
             inputs.lut = Some(self.fx_table(TABLE_WIDTH as u32, &table).map_err(|err| anyhow!("layer \"{layer}\": {err}"))?);
+        } else if let Some(table) = kit::table(b.kind, e, &frame) {
+            inputs.lut = Some(self.fx_table(kit::TABLE_ROW as u32, &table).map_err(|err| anyhow!("layer \"{layer}\": {err}"))?);
         }
         let key = option_key(spec, e);
         let pipeline = self.builtin_pipeline(b, &key).map_err(|err| anyhow!("layer \"{layer}\": {err}"))?;
@@ -152,7 +156,7 @@ impl Renderer {
 
 /// Every built-in one-pass effect.
 pub(crate) fn all() -> impl Iterator<Item = &'static Builtin> {
-    distort::BUILTINS.iter().chain(stylize::BUILTINS).chain(color::BUILTINS).chain(key::BUILTINS).chain(generate::BUILTINS)
+    distort::BUILTINS.iter().chain(stylize::BUILTINS).chain(color::BUILTINS).chain(key::BUILTINS).chain(generate::BUILTINS).chain(kit::BUILTINS)
 }
 
 pub(crate) fn builtin(kind: &str) -> Option<&'static Builtin> {

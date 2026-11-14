@@ -40,6 +40,10 @@ use std::sync::Arc;
 /// `assets/fonts/README.md`.
 static INTER: &[u8] = include_bytes!("../../../assets/fonts/InterVariable.ttf");
 const INTER_KEY: &str = "builtin:Inter";
+/// Liberation Sans Bold Italic (`"font": "builtin:sans-bold-italic"`). OFL:
+/// see `assets/fonts/README.md`.
+static SANS_BOLD_ITALIC: &[u8] = include_bytes!("../../../assets/fonts/LiberationSans-BoldItalic.ttf");
+const SANS_BOLD_ITALIC_KEY: &str = "builtin:sans-bold-italic";
 
 /// Largest em, in pixels, that glyphs are rasterised at; bigger text is
 /// magnified from it.
@@ -63,6 +67,15 @@ pub(crate) struct Font {
 impl Font {
     pub(crate) fn builtin() -> Font {
         Font { key: INTER_KEY.into(), data: Cow::Borrowed(INTER) }
+    }
+
+    /// A font built into the renderer, by its name in `edits_core::check::BUILTIN_FONTS`.
+    pub(crate) fn named(name: &str) -> Option<Font> {
+        match name {
+            "builtin:inter" => Some(Font::builtin()),
+            "builtin:sans-bold-italic" => Some(Font { key: SANS_BOLD_ITALIC_KEY.into(), data: Cow::Borrowed(SANS_BOLD_ITALIC) }),
+            _ => None,
+        }
     }
 
     /// Read a font file and check that it is one.
@@ -643,6 +656,9 @@ impl Renderer {
             }
             let loaded = match font {
                 None => Arc::new(Font::builtin()),
+                Some(name) if name.starts_with("builtin:") => Arc::new(Font::named(name).ok_or_else(|| {
+                    anyhow!("layer \"{id}\": no built-in font {name} (one of: {})", edits_core::check::BUILTIN_FONTS.join(", "))
+                })?),
                 Some(path) => {
                     let full = base_dir.join(path);
                     if !full.is_file() {

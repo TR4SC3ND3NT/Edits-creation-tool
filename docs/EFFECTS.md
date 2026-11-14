@@ -269,6 +269,102 @@ multiplies, and more than 4 levels is refused with an error. Use a small
 `posterize time` is not an effect: a layer's `fps` field holds its frames
 (see [FORMAT.md](FORMAT.md#video-layers-and-layer-time)).
 
+## Ported from a hand-built edit
+
+These six effects come from the effect modules of a hand-built 3D edit (a
+recreation, in Python, of a 576 x 576 Death Note edit: shards, band
+glitch, typed and dripping captions, a print look). They are general: the
+numbers that recreate that edit are measurements you pass as parameters.
+Each is one pass (`shatter` also reads a small table computed for the
+instant), deterministic per frame, and has pixel tests in
+`crates/edits-render/tests/fx_kit.rs`.
+
+| Kind | Parameters (default) | What it does |
+| --- | --- | --- |
+| `shatter` (distort) | `start` (0), `gamma` (1, 0.1..4), `center` ([0, 0]), `pieces` (7, 2..32), `rings` (0, 0..3), `ring_size` (25), `jitter` (0.5), `angles` (none), `motion` (none), `spin` (40), `twist` (0), `spread` (10), `drift` ([0, 0]), `depth` (10), `fov` (35), `zoom` (0), `roll` (0), `pan` ([0, 0]), `shade` (0.5), `gap` (0), `jag` (0.15), `cracks` (0), `crack_width` (0.25), `crack_color` ([0.01, 0.01, 0.01]), `glint` (0), `reach` (200), `seed` (0); option `fill` = `transparent` / `black` | The layer's picture is a sheet of glass in front of a pinhole camera of vertical field of view `fov` (the sheet fills the frame at rest) that breaks into shards: sectors around the impact point `center`, between `pieces` seeded angles (or the explicit `angles`, degrees, 0 pointing right and 90 down), each cut by `rings` more breaks about every `ring_size` % of height out. With e = max(0, t - `start`)^`gamma` (t in the project's time base), every shard turns about an axis in the sheet's plane through its centre by spin x e degrees and moves by (vx, vy, vz) x e (vz toward the camera), and the camera zooms by exp(`zoom` x e), rolls `roll` x e degrees and shifts the image by `pan` x e. Seeded shards get a random axis, a spin of 0.5 to 1.5 x `spin` either way, an outward speed of 0.5 to 1.5 x `spread` and a speed toward the camera of 0.6 to 1.4 x `depth` (% of height per time unit^gamma), plus the common `drift`, and every shard turns in the plane by up to `twist` x e degrees either way (tapering the gaps); `motion` gives them explicitly, five numbers per shard (axis angle, spin, vx, vy, vz), in the order of the sorted angles (with rings: each sector's shards from the inside out). A shard turned by an angle a is darkened toward abs(cos a) by `shade`. Nearer shards cover farther ones; between them the layers beneath show through (or black, with `fill` black). `gap` cuts extra space between neighbours and `jag` makes their edges wander. `cracks` draws lines `crack_width` wide along every edge, out to `reach` % of height from the impact point (key it to let the cracks run out), with a bright `glint` line beside them. Motion blur samples render the shards at their own instants. Never skipped: it costs one pass while it is on the layer. *Moves with time.* |
+| `pinch` (distort) | `amount` (0.3, -0.9..8), `radius` (30), `center` ([0, 0]) | Each pixel at offset d from `center` reads the picture at d x (1 + `amount` x exp(-abs(d)^2 / `radius`^2)): positive pinches the middle toward the point (0.3 shows 1.3 times as much there), negative bulges it. Unlike `bulge` the Gaussian falloff never ends and the amount is not limited to a two-thirds pinch; key `amount` for the "frame sucked in" move of a transition. Skipped at amount 0. |
+| `glitch_bands` (stylize) | `amount` (0.5), `bands` (10, 0..32), `height` (3), `width` (0.6), `shift` (6), `stretch` (0.5), `smear` (0.3), `blocks` (6, 0..48), `block_size` (6), `noise` (0.7), `colors` (1), `hold` (2), `seed` (0) | A cut-up glitch as measured on edits: each pattern (a new one every `hold` output frames) has up to `bands` horizontal bands, a share `amount` of them in use, each up to `height` % tall and over its own stretch of the width (at least `width` of it), that show the picture moved sideways by up to `shift` % of height, stretched about their middle by up to 1 + `stretch` (or shrunk by as much), and, a share `smear` of them, with their top row repeated down the band (duplicated rows). Up to `blocks` thin strips up to `block_size` % wide are either bricks of saturated colour (green, magenta, cyan, yellow, blue, white; `colors` 0 makes them grey) on a dark base, a share `noise` of them, or flat colour taken from the picture. Bands read the input picture, never each other. Compared with `glitch`: no colour split, local bands instead of full-width ones, a stepped pattern counted in frames instead of a rate per time unit. *Moves with time.* Skipped at amount 0. |
+| `film_scratches` (stylize) | `scratches` (0.5), `count` (1, 1..8), `length` (50), `width` (1.8 px), `brightness` (0.18), `dust` (23, 0..64), `dust_size` (2 px), `dust_depth` (0.33), `light_only` (1), `seed` (0) | Print damage as measured on a finished edit, new on every output frame: with chance `scratches` a frame gets a thin vertical scratch (`count` of them, each further one with half the chance) a third to all of `length` % of height long, starting in the upper half, that lightens by `brightness` (display values); and 0.5 to 1.5 x `dust` dark specks, each up to `dust_size` pixels (at 1080) in radius and up to 2.2 times as long, darkening by up to `dust_depth`. With `light_only` 1 both show only on bright parts (a scratch fades in between display luminance 0.08 and 0.31, dust in proportion to luminance up to 0.55), so black stays clean. Compared with `film_damage`: no gate weave or flicker, partial scratches that lighten rather than full-height wandering lines, dust as a count of specks. Skipped when `scratches` and `dust` are 0. |
+| `grain_highlights` (stylize) | `amount` (0.02), `size` (1 px), `low` (0.05), `high` (0.25), `seed` (0) | *Display.* Gaussian grey grain of standard deviation `amount`, faded in by smoothstep(`low`, `high`, display luminance): black stays clean, light areas get grain. `size` is the grain cell in pixels at 1080 high; new on every output frame. Unlike `grain`, which adds even noise everywhere. Skipped at amount 0. |
+| `drip` (stylize) | `roughness` (0.3), `scale` (1), `drips` (0.3), `length` (6), `width` (0.6), `grow` (1), `seed` (0) | Ragged edges and paint drips on the layer's shapes (made for text): the picture is read through a noise displacement of `roughness` % of height with features `scale` % wide, then the frame is cut into columns 2.5 drip widths wide and a share `drips` of them drips: below an opaque part, paint runs down for 30 to 100% of `length` x `grow` % of height, narrowing from `width` to 40% of it, and ends in a round drop of the paint's colour. Key `grow` from 0 to 1 to let the drips run. Skipped when there is nothing to roughen or drip. |
+
+```json
+{ "kind": "shatter", "params": {
+    "start": 6.4, "gamma": 1.4, "center": [-0.08, -0.22], "angles": [6, 40, 92, 145, 184, 243, 293],
+    "spin": 110, "spread": 10, "depth": 25, "zoom": 0.8, "roll": 4,
+    "cracks": 1, "crack_width": 0.3, "glint": 0.25,
+    "reach": { "keys": [ { "t": 6.0, "v": 0, "ease": "out" }, { "t": 6.25, "v": 120 } ] } },
+  "options": { "fill": "black" } }
+```
+
+A face "with cracks" before it breaks is the same effect with `start` after
+the shot ends (or a `reach` keyed from 0). To replay a fitted motion (the kit
+fitted per shard phi, om, vx, vy, vz in pixels of a 576 frame per
+frame^gamma), convert to this effect's units: angles stay, a speed v px /
+frame^gamma at f frames per time unit is v / 576 x 100 x f^gamma % of height
+per time unit^gamma, and the sign of vz flips (the kit's z grows away from
+the camera). `edits effects shatter` lists the parameters.
+
+### Recipes for the rest of that edit
+
+These looks need no new effect:
+
+- **Typing, per frame.** A `range` animator over `characters` with
+  `smoothness` 0 and `opacity` 0 reveals the text letter by letter; key
+  `start` in percent of the characters (`100 x n / count` shows n of them,
+  with `"ease": "hold"` keys for an exact count per frame). A second
+  animator over `words` with fixed `start` / `end` and a `fill` colours one
+  word (the fourth of five words is 60 to 80). Motion blur of the typing
+  is a `directional_blur` on the layer with keyed `length`; the project's
+  motion blur smears text that moves.
+
+  ```json
+  { "id": "typed", "kind": "text", "text": "this is my perfect victory", "font": "builtin:sans-bold-italic", "size": 3.3,
+    "animators": [
+      { "selector": { "kind": "range", "units": "characters", "smoothness": 0,
+          "start": { "keys": [ { "t": 0.15, "v": 0 }, { "t": 2.6, "v": 100 } ] } }, "opacity": 0 },
+      { "selector": { "kind": "range", "units": "words", "smoothness": 0, "start": 60, "end": 80 }, "fill": [0.95, 0.12, 0.12] } ],
+    "effects": [ { "kind": "directional_blur", "params": { "length": 0.15 } } ] }
+  ```
+
+- **Rough, dripping red caption.** A text layer squeezed sideways
+  (`"scale": [0.72, 1]`) with `drip` (`roughness` 0.18, `scale` 0.5,
+  `drips` 0.15 to 0.35, `length` 5 to 7, `width` 0.35, `grow` keyed 0.2 to
+  1); add `glow` with `threshold` 0 and a red `color` for a halo.
+- **Soft dotted lines.** A `shape` layer: a `path` with a stroke of `width`
+  0.4 to 0.55, `cap` `round` and `dash` `[0.01, 1.4]` (each dash is a
+  round dot; the second number is the spacing), then `gaussian_blur` with
+  `radius` 0.1 on the layer: soft dots. Solid white curves next to them go
+  on their own layer, with `glow` (`threshold` 0) for the faint halo.
+- **Glowing arrows.** Each arrow is a `line` (the shaft) and a three-point
+  `path` (the head) with a red stroke, `cap` and `join` `round`; on the
+  layer, two `glow` effects with `threshold` 0 and a red `color` make the
+  additive halo of the kit (`radius` 1.2, `intensity` 0.6 and `radius` 3.5,
+  `intensity` 0.5).
+- **Shake on the beat.** The `shake` preset (`edits apply project.json
+  shake --layer fx --at drop`), or `beats accent` with it.
+- **The print look (post).** On a top adjustment layer: `glow`
+  (`threshold` 0.5, `radius` 0.56, `intensity` 0.17), `curves` (the
+  measured per-channel tone curves), `vignette` (`amount` 0.25, `radius`
+  0, `softness` 1), `film_scratches` and `grain_highlights` (`amount`
+  0.005 for a nearly clean source).
+- **A card falling onto a table.** The card on its own image layer, then
+  the `card_fall` preset at the instant it starts (`--var length=1`): it
+  starts lifted toward the camera, tilted and turned, and drops faster and
+  faster until it lies flat in its place. Turn on motion blur; `pinch`
+  keyed on an adjustment layer above gives the frame's "suck in" of the
+  same transition.
+- **A collage of clean crops.** Each piece is an image layer of the same
+  art (a slot each, or one slot used by several layers) with a `polygon`
+  or `rect` mask in layer space that cuts out its crop, its own colour
+  (`curves` or `lut` with the piece's tone curve) and softness
+  (`gaussian_blur` with the piece's sigma), and its own transform keys
+  (position, scale, rotation; a 3D rotation for a piece that tilts). Put
+  the pieces in a comp (`project.comps`) when the collage moves as one
+  (a camera move over it, a glitch over all of it), and give the comp
+  layer the shared effects. Masks and comps are in
+  [FORMAT.md](FORMAT.md).
+
 ## Custom effects
 
 `{ "kind": "custom", "source": "shaders/mine.wgsl", "params": { "p0": 0.5 } }`
