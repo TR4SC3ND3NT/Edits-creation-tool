@@ -263,9 +263,11 @@ impl<'a> Evaluator<'a> {
         }
         for (k, v) in &e.params {
             let val = self.prop(v, t);
-            // Keep the spec's arity: a single number given for a vector parameter repeats.
-            let want = params.get(k).map(|d| d.len()).unwrap_or(val.len());
-            params.insert(k.clone(), pad(val, want.max(1)));
+            // A single number given for a vector parameter repeats to the
+            // spec's arity; a list is kept as written (curve points and colour
+            // stops have any length; `ResolvedEffect::vec` pads short ones).
+            let want = params.get(k).map(|d| d.len()).unwrap_or(val.len()).max(1);
+            params.insert(k.clone(), if val.len() >= 2 { val } else { pad(val, want) });
         }
         ResolvedEffect { kind: e.kind.clone(), source: e.source.clone(), params, options }
     }
@@ -521,6 +523,13 @@ mod tests {
         assert_eq!((r.option("mode"), r.option("shape"), r.option("nope")), ("cmyk", "dot", ""));
         let fx: Effect = serde_json::from_str(r#"{"kind":"halftone","options":{"mode":"sepia"}}"#).unwrap();
         assert_eq!(e.effect(&fx, 0.0).option("mode"), "mono");
+        // A single number repeats; a list keeps its length (curve points, colour stops).
+        let fx: Effect = serde_json::from_str(r#"{"kind":"curves","params":{"red":[0,0,0.5,0.7,1,1],"green":0.5,"blue":[0,1]}}"#).unwrap();
+        let r = e.effect(&fx, 0.0);
+        assert_eq!(r.params["red"], vec![0.0, 0.0, 0.5, 0.7, 1.0, 1.0]);
+        assert_eq!(r.params["green"], vec![0.5; 4]);
+        assert_eq!(r.params["blue"], vec![0.0, 1.0]);
+        assert_eq!(r.vec("blue", 4), vec![0.0, 1.0, 1.0, 1.0]);
     }
 
     /// A 24 fps project in seconds with one video layer from `json` (spliced into the layer).

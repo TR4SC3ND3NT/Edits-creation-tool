@@ -12,7 +12,9 @@
 //!
 //! Some effects read more than the picture: `lut` a `.cube` table (loaded by
 //! `Renderer::prepare` into [`Loaded`] and bound as the 3D lookup table),
-//! `displacement_map` a slot's picture (bound as the auxiliary picture).
+//! `displacement_map` a slot's picture (bound as the auxiliary picture), and
+//! `curves`, `hsl`, `colorama` and `gradient_map` (stops) a [`Table`] computed
+//! from their values (bound in the lookup table's place).
 //!
 //! To add an effect: its row in `edits_core::effects::<category>`, a WGSL
 //! file here, a [`Builtin`] in the category's file below, a pixel test, and a
@@ -29,6 +31,7 @@ use std::path::Path;
 mod color;
 mod distort;
 mod generate;
+mod key;
 mod stylize;
 
 /// Helpers shared by the built-in effects (not part of the custom contract).
@@ -55,6 +58,14 @@ pub(crate) struct Builtin {
     /// nothing (it is then skipped).
     pub pack: fn(&ResolvedEffect, &Frame) -> Option<Params>,
 }
+
+/// Rows of numbers a built-in effect reads with `fxl_table(x, row)` (see
+/// `shaders/fx/lib.wgsl`): [`TABLE_WIDTH`] entries per row, for x = 0,
+/// 1 / (width - 1), ..., 1, linearly interpolated between.
+pub(crate) type Table = Vec<[f32; 3]>;
+
+/// Entries per row of a [`Table`].
+pub(crate) const TABLE_WIDTH: usize = 257;
 
 /// The extra inputs of one built-in effect step.
 #[derive(Clone, Default)]
@@ -130,6 +141,9 @@ impl Renderer {
             }
             SourceKind::None | SourceKind::Shader | SourceKind::OptionalSlot => {}
         }
+        if let Some(table) = color::table(b.kind, e) {
+            inputs.lut = Some(self.fx_table(TABLE_WIDTH as u32, &table).map_err(|err| anyhow!("layer \"{layer}\": {err}"))?);
+        }
         let key = option_key(spec, e);
         let pipeline = self.builtin_pipeline(b, &key).map_err(|err| anyhow!("layer \"{layer}\": {err}"))?;
         Ok(Some(Step::Builtin(pipeline, p, Box::new(inputs))))
@@ -138,7 +152,7 @@ impl Renderer {
 
 /// Every built-in one-pass effect.
 pub(crate) fn all() -> impl Iterator<Item = &'static Builtin> {
-    distort::BUILTINS.iter().chain(stylize::BUILTINS).chain(color::BUILTINS).chain(generate::BUILTINS)
+    distort::BUILTINS.iter().chain(stylize::BUILTINS).chain(color::BUILTINS).chain(key::BUILTINS).chain(generate::BUILTINS)
 }
 
 pub(crate) fn builtin(kind: &str) -> Option<&'static Builtin> {
@@ -190,6 +204,13 @@ pub(crate) fn pos(e: &ResolvedEffect, name: &str) -> [f32; 2] {
 pub(crate) fn vec2(e: &ResolvedEffect, name: &str) -> [f32; 2] {
     let v = e.vec(name, 2);
     [clamped(e, name, v[0]), clamped(e, name, v[1])]
+}
+
+/// Three numbers of a parameter (one number counts for all three), each
+/// clamped to its range in the registry.
+pub(crate) fn vec3(e: &ResolvedEffect, name: &str) -> [f32; 3] {
+    let v = e.vec(name, 3);
+    [clamped(e, name, v[0]), clamped(e, name, v[1]), clamped(e, name, v[2])]
 }
 
 /// A colour parameter as three numbers.

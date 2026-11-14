@@ -95,7 +95,15 @@ A project is **slots + layers + keyframes + effects**.
   `sharpen`. Texture: `scanlines`, `vhs`, `film_damage` (new every frame),
   `mirror`, `tile`, `polar` (`to_polar` = tiny planet). Colour:
   `gradient_map` (duotone/tritone), `levels`, `vibrance`, `lut` (a `.cube`
-  file in `"source"`). Generators drawn over the layer: `fractal_noise`,
+  file in `"source"`), `curves` (points `[x0, y0, x1, y1, ...]` per
+  `master`/`red`/`green`/`blue`), `hsl` (per hue band), `white_balance`,
+  `lift_gamma_gain`, `highlights_shadows`, `channel_mixer`, `colorama` (key
+  `phase`), `replace_color`, `leave_color` (colour pop), `solarize`,
+  `bleach_bypass`, `technicolor`, `haze`; looks as presets `sepia`, `xray`,
+  `fade_film`, `thermal`. Keys (they cut the layer's alpha after its masks,
+  before its matte; option `view` `matte` shows the cut): `chroma_key` (green
+  screen), `spill_suppress` after it, `luma_key`, `unmult` (overlays shot on
+  black), `difference_matte` (clean plate slot). Generators drawn over the layer: `fractal_noise`,
   `gradient_ramp` (option `blend`). `displacement_map` takes a slot as its
   map: `"source": "slot:<name>"`. Effects that change on their own every
   frame (`glitch`, `vhs`, `film_damage`, moving waves) are still the same

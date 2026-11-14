@@ -6,8 +6,8 @@ layer before it is blended; on an `adjustment` layer it changes everything
 beneath. Effects run in list order. `edits effects` prints this registry
 (`--json` for machines; the MCP tool `effects_list` shows the same);
 `crates/edits-core/src/effects/` is the source of truth, one file per
-category (`color.rs`, `blur.rs`, `light.rs`, `distort.rs`, `stylize.rs`,
-`time.rs`, `generate.rs`).
+category (`color.rs`, `key.rs`, `blur.rs`, `light.rs`, `distort.rs`,
+`stylize.rs`, `time.rs`, `generate.rs`).
 
 ## Rules that hold for every effect
 
@@ -41,7 +41,7 @@ category (`color.rs`, `blur.rs`, `light.rs`, `distort.rs`, `stylize.rs`,
 - **`source`** names what an effect reads besides the picture: a WGSL file
   for `custom`, a `.cube` file for `lut` (both relative to the project
   file), and `"slot:<name>"`, a slot of the project, for
-  `displacement_map` and (optionally) `time_displacement`. `edits check` reports a missing or unreadable file, a
+  `displacement_map`, `difference_matte` and (optionally) `time_displacement`. `edits check` reports a missing or unreadable file, a
   slot that does not exist, and a `source` on an effect that takes none.
 - **Options are choices that cannot be animated**, such as a pixelate's cell
   shape: `"options": { "shape": "hex" }`. Each option has a fixed list of
@@ -61,7 +61,7 @@ category (`color.rs`, `blur.rs`, `light.rs`, `distort.rs`, `stylize.rs`,
   list they are folded into the blend. Each blur, `glow`, `rgb_split`,
   `transform2d` and `custom` adds at least one pass over the frame; each
   built-in one-pass effect below (distort, stylise, the colour passes `lut`
-  to `vibrance`, and the generators) is exactly one.
+  to `haze`, the keys and the generators) is exactly one.
 
 ## Colour
 
@@ -172,9 +172,42 @@ blend like the colour effects above).
 | Kind | Parameters (default) | What it does |
 | --- | --- | --- |
 | `lut` | `amount` (1, 0..1); `source` = a `.cube` file | *Display.* A colour lookup table: `source` is a `.cube` file (the Adobe / Resolve text format: `LUT_3D_SIZE` up to 256 and/or `LUT_1D_SIZE`, `DOMAIN_MIN` / `DOMAIN_MAX`, `TITLE`, `#` comments) relative to the project. It is applied to display values clamped to 0..1, with trilinear interpolation, and `amount` mixes with the original as display values (so a table that inverts equals `invert` at any amount). A 1D table, or a domain other than 0..1, is baked into a 33³ table when the project is loaded. `edits check` reports a file that does not load and why. Skipped at amount 0. |
-| `gradient_map` | `shadows` ([0, 0, 0]), `midtones` ([0.214, 0.214, 0.214]), `highlights` ([1, 1, 1]), `amount` (1); option `mode` = `tritone` / `duotone` | *Display.* Recolours by luminance: black becomes `shadows`, mid grey `midtones` and white `highlights` (`duotone`: shadows straight to highlights), mixed as display values. The defaults are a black-and-white conversion. Skipped at amount 0. |
+| `gradient_map` | `shadows` ([0, 0, 0]), `midtones` ([0.214, 0.214, 0.214]), `highlights` ([1, 1, 1]), `amount` (1), `stops` ([0, 0, 0, 1, 1, 1]); option `mode` = `tritone` / `duotone` / `stops` | *Display.* Recolours by luminance: black becomes `shadows`, mid grey `midtones` and white `highlights` (`duotone`: shadows straight to highlights), mixed as display values. With `stops` the colours are the list `stops` = [r, g, b, r, g, b, ...] (linear RGB, 2 to 16 colours, evenly spaced from black to white): eight stops make a thermal camera (the `thermal` preset). The defaults are a black-and-white conversion. Skipped at amount 0. |
 | `levels` | `in_black` (0), `in_white` (1), `gamma` (1, 0.01..10), `out_black` (0), `out_white` (1) | *Display.* Per channel: (value - `in_black`) / (`in_white` - `in_black`), clamped to 0..1, raised to 1 / `gamma`, then mapped to `out_black`..`out_white`. Values above 1 (a flash) are clipped. Skipped at the defaults. |
+| `white_balance` | `temperature` (0, -1..1), `tint` (0, -1..1) | *Display.* `tint` moves the colour along YIQ's Q axis (positive toward magenta; 1 shifts Q by 0.105), then `temperature` mixes toward the picture overlaid with an orange warming filter (0.93, 0.54, 0): 1 is that overlay (mid grey becomes the filter colour), negative values push the other way (cooler). From GPUImage. Skipped at 0, 0. |
+| `lift_gamma_gain` | `lift` ([0, 0, 0], -1..1), `gamma` ([1, 1, 1], 0.01..10), `gain` ([1, 1, 1], 0..16), `saturation` (1, 0..4) | *Display.* Colour wheels, per channel ([r, g, b], or one number for all three): value + `lift` x (1 - value), times `gain`, raised to 1 / `gamma` (above 1 brightens the midtones, as `levels`); then saturation about the Rec. 709 luminance. Values above 1 are not clipped. After ISF's LGG. Skipped at the defaults. |
+| `highlights_shadows` | `shadows` (0, 0..1), `highlights` (0, 0..1) | *Display.* GPUImage's tone curves on the luminance (weights 0.3, 0.3, 0.3): `shadows` lifts the dark tones, `highlights` pulls the bright ones down, and each pixel keeps its colour (scaled to its new luminance). Skipped at 0, 0. |
+| `channel_mixer` | `red` ([1, 0, 0, 0]), `green` ([0, 1, 0, 0]), `blue` ([0, 0, 1, 0]), `amount` (1, 0..1); option `space` = `rgb` / `hsv` | *Display.* Each output channel is [r, g, b] . row + the row's fourth number (a constant), kept at 0 or above, mixed with the original by `amount`. Swap red and blue with `"red": [0, 0, 1, 0], "blue": [1, 0, 0, 0]`; the `sepia` preset is the classic sepia matrix. In `hsv` the rows read and write hue (in turns, wrapped), saturation (clamped to 0..1) and value: `"red": [0, 0, 0, 0.333]` sets every hue to green. Skipped at the identity. |
+| `curves` | `master`, `red`, `green`, `blue` (each [0, 0, 1, 1], 0..1), `amount` (1, 0..1) | *Display.* Tone curves: each parameter is a list of control points [x0, y0, x1, y1, ...] (any number of points, any order; x and y in 0..1). The curve is the natural cubic spline through them (as glfx.js and GPUImage draw it), flat before the first point and after the last, clamped to 0..1. `master` applies to every channel first, then each channel's own curve. An S-curve: `"master": [0, 0, 0.25, 0.18, 0.75, 0.82, 1, 1]`; an inversion: `[0, 1, 1, 0]`. Values above 1 continue the curve's end with slope 1. The curves are sampled into a table of 257 entries, again for each frame in which they change (so they can be keyed: give every key the same number of points). Skipped when every curve is the identity. |
+| `hsl` | `reds`, `oranges`, `yellows`, `greens`, `aquas`, `blues`, `purples`, `magentas` (each [0, 0, 0]: [hue degrees, saturation -1..1, lightness -1..1]) | *Display.* Selective colour, as CapCut's HSL panel: each band is centred on a hue (0, 30, 60, 120, 180, 240, 270, 300 degrees) and blends smoothly into its neighbours. A colour of that hue turns by the band's hue degrees; saturation and lightness step toward 1 (positive) or 0 (negative) by the given share. Greys are left alone. `"reds": [120, 0, 0]` turns red into green; `"blues": [0, -1, 0]` takes the colour out of blues only. Skipped when every band is [0, 0, 0]. |
+| `colorama` | `phase` (0, degrees), `cycles` (1, 0..64), `colors` (three colours), `amount` (1, 0..1); options `input` = `luminance` / `hue` / `saturation` / `red` / `green` / `blue`, `palette` = `hue_cycle` / `fire` / `ice` / `grey` / `pastel` / `custom` | *Display.* A phase from each pixel (`input`, 0..1), times `cycles`, plus `phase` / 360, picks a colour of a cyclic palette: `hue_cycle` (the colour wheel), `fire` (black, red, orange, yellow, white), `ice`, `grey`, `pastel`, or `custom`: the colours of `colors` = [r, g, b, ...] (linear, 2 to 16) evenly spaced around the cycle. A phase at the very end of a cycle (white with one cycle) takes the palette's end, not its start. Key `phase` to make the colours flow (Video Star's Color Map). Skipped at amount 0. |
+| `replace_color` | `from` ([1, 0, 0]), `to` ([0, 0, 1]), `tolerance` ([0.05, 0.5, 0.5]), `softness` (0.5, 0..1), `amount` (1, 0..1); options `change` = `hue` / `hue_lightness` / `hue_saturation` / `all`, `by` = `setting` / `transforming` | *Display.* A pixel within `tolerance` of `from` in hue (half a turn is 1), lightness and saturation changes completely; beyond it the change fades out over `softness`. It takes `to`'s hue (and, as `change` says, its lightness and saturation), or with `transforming` shifts by `to` - `from`. Skipped at amount 0. |
+| `leave_color` | `color` ([1, 0, 0]), `tolerance` (0.15, 0..1), `softness` (0.1, 0..1), `amount` (1, 0..1); option `match` = `hue` / `rgb` | Colour pop: colours unlike `color` lose their colour (to their linear luminance, as `saturation` 0) by `amount`. Likeness is the hue distance (half a turn is 1; greys never match) or the distance of the display values divided by the square root of 3; within `tolerance` a colour is kept, beyond it it greys over `softness`. Skipped at amount 0 or tolerance 1. |
+| `solarize` | `threshold` (0.5, 0..1), `softness` (0, 0..1), `amount` (1, 0..1); option `invert` = `above` / `below` | *Display.* Where the luminance (Rec. 709 on display values) is above `threshold` (or, with `below`, at or below it, as GPUImage does) every channel becomes the absolute value of 1 - value; `softness` makes the cut a ramp. White becomes black, light grey 0.8 becomes 0.2. Skipped at amount 0. |
+| `bleach_bypass` | `amount` (1, 0..1) | *Display.* The colour overlaid with its own luminance: multiplied below a luminance of 0.45, screened above 0.55, blended between, so contrast rises and colour drops (three.js's BleachBypassShader). Skipped at 0. |
+| `technicolor` | `amount` (1, 0..1) | *Display.* Two-strip Technicolor (three.js's TechnicolorShader): red stays, green and blue both become their average, so the picture is reds and cyans. Skipped at 0. |
+| `haze` | `distance` (0.2, -1..0.9), `slope` (0, -1..1), `color` ([1, 1, 1]) | *Display.* (value - d x `color`) / (1 - d), with d = `distance` + `slope` x y (y from 0 at the top of the frame to 1 at the bottom): positive d removes a haze of that colour (more contrast), negative adds it. Results below 0 are clipped. From GPUImage. Skipped at 0, 0. |
 | `vibrance` | `amount` (0.5, -1..1) | Saturation (about the luminance, as `saturation`) by a factor that depends on how saturated the colour already is: 1 + 2 x `amount` x (1 - s)², where s = (max - min) / max, so grey-ish colours are boosted up to three times and pure ones not at all. Negative amounts mute every colour evenly (-1 is black and white). Skipped at 0. |
+
+## Keying
+
+Keys make part of the layer transparent: they multiply its alpha where they
+run in its effect list. A layer's **masks** are applied to what it draws,
+*before* its effects, so a key removes colour from what the masks left; its
+**track matte** multiplies the alpha *after* its effects, so a matte cuts
+the keyed result again. On an adjustment layer a key makes the picture
+beneath transparent, which then shows the background. Put `spill_suppress`
+after a key, and a blur or `glow` after it to soften or light the cut edge.
+Each key except `unmult` has the option `view` = `final` / `matte`: `matte`
+shows the key's alpha as grey (white kept, black removed) to tune it.
+
+| Kind | Parameters (default) | What it does |
+| --- | --- | --- |
+| `chroma_key` | `color` ([0, 1, 0]), `tolerance` (0.4, 0..2), `softness` (0.1, 0..2), `amount` (1, 0..1); option `view` | Green (or any colour) screen. The distance between the pixel's and `color`'s chroma (Cb, Cr of YCbCr on display values, as GPUImage's ChromaKeyFilter) decides: within `tolerance` the pixel is removed, beyond `tolerance + softness` it is kept, a smoothstep between. Pure green to grey is 0.53 and to red 0.93, so the defaults key a pure green screen and keep greys and skin. `amount` scales the transparency (0.5 makes keyed pixels half transparent). Skipped at amount 0. |
+| `spill_suppress` | `color` ([0, 1, 0]), `amount` (1, 0..1); option `method` = `fast` / `better` | Takes the screen's colour cast out of the straight linear colour that a key leaves. `fast`: the key colour's strongest channel is limited to the larger of the other two (a green fringe turns grey; for green, blue and red screens). `better`: the part of the colour's chroma (its difference from its grey) that points along the key colour's chroma is removed (any key colour). Skipped at amount 0. |
+| `luma_key` | `threshold` (0.1, 0..1), `tolerance` (0.1, 0..1), `softness` (0.05, 0..1), `amount` (1, 0..1); options `key_out` = `darker` / `brighter` / `similar` / `dissimilar`, `view` | Black or white out, by brightness measured as a `luma` track matte does (Rec. 709 weights on display values). `darker` removes what is at or below `threshold` (kept from `threshold + softness` on), `brighter` what is above it, `similar` what is within `tolerance` of it, `dissimilar` what is not. Skipped at amount 0. |
+| `unmult` | `level` (0, 0..1), `softness` (1, 0..1); option `background` = `black` / `white` | For overlays shot on black (light leaks, sparks, flares): the alpha becomes the brightest channel (linear light) and the colour is divided by it, so over black the result is the original and over anything else the dark parts are see-through. The alpha ramps from `level` over `softness` of what is left above it (1: the classic unmultiply; 0: a hard cut at `level`). With `white` the darkest channel, mirrored, sets the alpha and white is removed. Always runs. |
+| `difference_matte` | `tolerance` (0.05, 0..1), `softness` (0.1, 0..1), `amount` (1, 0..1); `source` = `"slot:<name>"`; option `view` | A clean plate: `source` names a slot holding the same shot without the subject, stretched over the frame. Where the largest difference of the display channels (and alpha) is within `tolerance` the pixel is removed; from `tolerance + softness` on it is kept. For a locked-off camera. Skipped at amount 0. |
 
 ## Generate
 
@@ -190,7 +223,8 @@ and `amount` is the opacity.
 | `gradient_ramp` | `start` ([0, -0.5]), `end` ([0, 0.5]), `color_a` ([0, 0, 0]), `color_b` ([1, 1, 1]), `amount` (1); option `shape` = `linear` / `radial`; option `blend` | Two colours mixed as display values: `linear` along the line from `start` to `end` (constant across it, held beyond the ends), `radial` by the distance from `start`, reaching `color_b` at the distance of `end`. The default is black at the top edge to white at the bottom. Skipped at amount 0. |
 
 The built-in one-pass effects (the distort and stylise tables except
-`transform2d` and `rgb_split`, the colour passes and the generators) are WGSL
+`transform2d` and `rgb_split`, the colour passes, the keys and the
+generators) are WGSL
 files in `crates/edits-render/src/shaders/fx/`, written against the same
 contract as a custom effect (below) plus shared helpers
 (`shaders/fx/lib.wgsl`: sRGB transfer, fractal noise, generator blends), with
