@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react"
 
 import { AgentDock } from "@/agent/dock"
+import { useAgent } from "@/agent/store"
 import { AppSidebar } from "@/components/app-sidebar"
 import { CommandMenu } from "@/components/command-menu"
 import { Shortcuts } from "@/components/shortcuts"
@@ -39,7 +40,11 @@ function Page() {
 
 function ThemedToaster() {
   const { theme } = useTheme()
-  return <Toaster theme={theme} position="bottom-right" />
+  // With the agent panel open, toasts keep clear of its message box.
+  const { open } = useAgent()
+  return (
+    <Toaster theme={theme} position={open ? "bottom-left" : "bottom-right"} />
+  )
 }
 
 export default function App() {

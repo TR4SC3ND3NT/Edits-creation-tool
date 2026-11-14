@@ -365,7 +365,10 @@ fn run(
                 let _ = pv.reply.send(Err("no renderer".into()));
                 continue;
             };
-            let base = last.as_ref().map(|m: &ProjectMsg| m.base_dir.clone()).unwrap_or_default();
+            let base = last
+                .as_ref()
+                .map(|m: &ProjectMsg| m.base_dir.clone())
+                .unwrap_or_default();
             // The renderer now holds the preview; the saved version is prepared again before its next frame.
             prepared = None;
             r.set_motion_blur_samples(Some(1));

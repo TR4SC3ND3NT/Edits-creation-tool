@@ -44,9 +44,8 @@ pub fn load_saved(project: &Path, audio: &Path) -> Option<Value> {
 
 /// Analyse `audio` and keep the result next to `project`.
 pub fn analyze(project: &Path, audio: &Path) -> Result<Value, String> {
-    let song =
-        edits_analyze::song::analyze_file(audio, &edits_analyze::song::SongOpts::default())
-            .map_err(|e| format!("{e:#}"))?;
+    let song = edits_analyze::song::analyze_file(audio, &edits_analyze::song::SongOpts::default())
+        .map_err(|e| format!("{e:#}"))?;
     let value = serde_json::to_value(&song).map_err(|e| e.to_string())?;
     let text = edits_analyze::jsonfmt::to_string(&song).map_err(|e| e.to_string())?;
     let dir = edits_core::edit::project_dir(project);
@@ -290,7 +289,11 @@ fn strength() -> f64 {
 }
 
 impl CutRequest {
-    pub fn plan(&self, doc: &Value, song: Option<&SongInfo>) -> Result<(CutOpts, TimeCtx, String), String> {
+    pub fn plan(
+        &self,
+        doc: &Value,
+        song: Option<&SongInfo>,
+    ) -> Result<(CutOpts, TimeCtx, String), String> {
         let tc = time_ctx(doc, song);
         let (from, to) = range(&tc, &self.from, &self.to)?;
         if self.slots.is_empty() {
@@ -299,7 +302,15 @@ impl CutRequest {
         let on = self.on.as_deref().map(str::trim).filter(|s| !s.is_empty());
         let (times, every) = match on {
             Some(on) => (
-                Some(beatops::times(on, song, &tc, from, to, self.min_strength, audio_offset(doc))?),
+                Some(beatops::times(
+                    on,
+                    song,
+                    &tc,
+                    from,
+                    to,
+                    self.min_strength,
+                    audio_offset(doc),
+                )?),
                 1.0,
             ),
             None => match self.every.unwrap_or(1.0) {
@@ -315,7 +326,12 @@ impl CutRequest {
         } else {
             self.prefix.trim().to_string()
         };
-        let label = format!("beats cut {} from {} to {}", self.slots.join(","), tidy(from), tidy(to));
+        let label = format!(
+            "beats cut {} from {} to {}",
+            self.slots.join(","),
+            tidy(from),
+            tidy(to)
+        );
         Ok((
             CutOpts {
                 slots: self.slots.clone(),
@@ -332,7 +348,11 @@ impl CutRequest {
     }
 
     /// The document after the cut, the number of layers it adds and the history line.
-    pub fn apply(&self, doc: &Value, song: Option<&SongInfo>) -> Result<(Value, usize, String), String> {
+    pub fn apply(
+        &self,
+        doc: &Value,
+        song: Option<&SongInfo>,
+    ) -> Result<(Value, usize, String), String> {
         let (opts, tc, label) = self.plan(doc, song)?;
         beatops::cut(doc, &opts, &tc).map(|(d, r)| (d, r.layers.len(), label))
     }
@@ -365,17 +385,35 @@ impl AccentRequest {
     pub fn times(&self, doc: &Value, song: Option<&SongInfo>) -> Result<Vec<f64>, String> {
         let tc = time_ctx(doc, song);
         let (from, to) = range(&tc, &self.from, &self.to)?;
-        let mut times = beatops::times(&self.on, song, &tc, from, to, self.min_strength, audio_offset(doc))?;
+        let mut times = beatops::times(
+            &self.on,
+            song,
+            &tc,
+            from,
+            to,
+            self.min_strength,
+            audio_offset(doc),
+        )?;
         if self.every_nth > 1 {
             times = times.into_iter().step_by(self.every_nth).collect();
         }
         if times.is_empty() {
-            return Err(format!("no {} between {} and {}", self.on, tidy(from), tidy(to)));
+            return Err(format!(
+                "no {} between {} and {}",
+                self.on,
+                tidy(from),
+                tidy(to)
+            ));
         }
         Ok(times)
     }
 
-    pub fn apply(&self, doc: &Value, dir: Option<&Path>, song: Option<&SongInfo>) -> Result<(Value, usize, String), String> {
+    pub fn apply(
+        &self,
+        doc: &Value,
+        dir: Option<&Path>,
+        song: Option<&SongInfo>,
+    ) -> Result<(Value, usize, String), String> {
         let p = preset::find(&self.preset, dir)?;
         let times = self.times(doc, song)?;
         let tc = time_ctx(doc, song);
@@ -396,7 +434,11 @@ impl AccentRequest {
             .collect();
         let (out, _) = preset::apply(doc, &p, &target, &times, &given, &tc)?;
         let n = times.len();
-        Ok((out, n, format!("beats accent {} on {} ({n} times)", p.name, self.on)))
+        Ok((
+            out,
+            n,
+            format!("beats accent {} on {} ({n} times)", p.name, self.on),
+        ))
     }
 }
 
@@ -444,12 +486,17 @@ mod tests {
         assert_eq!(m.kicks, vec![(0.0, 1.0), (2.0, 0.2), (4.0, 0.9)]);
         assert_eq!(m.sections[1], ("drop".to_string(), 4.0, 8.0));
         assert_eq!(m.drop, Some(4.0));
-        assert_eq!(m.summary, "120 BPM · 2 bars · 3 kicks · 2 snares · drop at 4");
+        assert_eq!(
+            m.summary,
+            "120 BPM · 2 bars · 3 kicks · 2 snares · drop at 4"
+        );
     }
 
     #[test]
     fn peaks_are_normalised_windows() {
-        let samples: Vec<f32> = (0..800).map(|i| if i < 400 { 0.25 } else { -0.5 }).collect();
+        let samples: Vec<f32> = (0..800)
+            .map(|i| if i < 400 { 0.25 } else { -0.5 })
+            .collect();
         let w = peaks(&samples, 8000, 20.0);
         assert_eq!(w.rate, 20.0);
         assert_eq!(w.peaks.len(), 2);

@@ -102,6 +102,8 @@ export function RendersPage() {
   React.useEffect(() => {
     if (!isTauri()) return
     let un: (() => void) | undefined
+    // An effect cleaned up before `listen` resolved (StrictMode) must still unlisten.
+    let gone = false
     listen<JobStatus>("render-job", (e) => {
       setJob(e.payload)
       if (!e.payload.running) {
@@ -113,8 +115,11 @@ export function RendersPage() {
           toast.error("Render failed", { description: e.payload.error ?? "" })
         else toast("Render cancelled")
       }
-    }).then((u) => (un = u))
-    return () => un?.()
+    }).then((u) => (gone ? u() : (un = u)))
+    return () => {
+      gone = true
+      un?.()
+    }
   }, [refresh])
 
   const start = async () => {

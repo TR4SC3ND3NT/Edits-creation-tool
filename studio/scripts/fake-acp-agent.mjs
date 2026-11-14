@@ -184,6 +184,8 @@ async function tool(s, id, name, title, kind, args, run, needsPermission = false
 }
 
 async function turn(s, prompt) {
+  // Tool call ids are unique across turns, as a real agent's are.
+  const n = `t${(s.turns = (s.turns ?? 0) + 1)}`
   const text = prompt.filter((b) => b.type === "text").map((b) => b.text).join(" ")
   const p = s.project
   const plan = (n) =>
@@ -199,7 +201,7 @@ async function turn(s, prompt) {
   await chunks(s.id, "agent_message_chunk", "I'll read the project, then give layer **d** a glow and a punch at beat 6, and check frame 60.\n\n")
   plan(0)
   await sleep(DELAY)
-  await tool(s, "call-1", "mcp__edits__project_describe", "mcp__edits__project_describe", "read", { project: p }, () => s.mcp.call("project_describe", { project: p }))
+  await tool(s, `${n}-call-1`, "mcp__edits__project_describe", "mcp__edits__project_describe", "read", { project: p }, () => s.mcp.call("project_describe", { project: p }))
   if (s.cancelled) return "cancelled"
   plan(1)
   const edit = {
@@ -209,16 +211,16 @@ async function turn(s, prompt) {
       { op: "set", pointer: "/layers/@d/transform/position", value: [0.06, 0, 0] },
     ],
   }
-  await tool(s, "call-2", "mcp__edits__project_edit", "mcp__edits__project_edit", "edit", edit, () => s.mcp.call("project_edit", edit), true)
+  await tool(s, `${n}-call-2`, "mcp__edits__project_edit", "mcp__edits__project_edit", "edit", edit, () => s.mcp.call("project_edit", edit), true)
   if (s.cancelled) return "cancelled"
   await sleep(DELAY)
   const preset = { project: p, preset: "punch", layer: "d", at: "b6" }
-  await tool(s, "call-3", "mcp__edits__preset_apply", "mcp__edits__preset_apply", "edit", preset, () => s.mcp.call("preset_apply", preset), true)
+  await tool(s, `${n}-call-3`, "mcp__edits__preset_apply", "mcp__edits__preset_apply", "edit", preset, () => s.mcp.call("preset_apply", preset), true)
   if (s.cancelled) return "cancelled"
   plan(2)
   await sleep(DELAY)
   const frame = { project: p, frame: 60 }
-  await tool(s, "call-4", "mcp__edits__render_frame", "mcp__edits__render_frame", "read", frame, () => s.mcp.call("render_frame", frame))
+  await tool(s, `${n}-call-4`, "mcp__edits__render_frame", "mcp__edits__render_frame", "read", frame, () => s.mcp.call("render_frame", frame))
   if (s.cancelled) return "cancelled"
   plan(3)
   await chunks(

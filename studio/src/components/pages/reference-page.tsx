@@ -307,6 +307,8 @@ export function ReferencePage() {
     api.rendersList().then((r) => setOutputs(r.outputs))
     api.compareStatus().then(setRun)
     let un: (() => void) | undefined
+    // An effect cleaned up before `listen` resolved (StrictMode) must still unlisten.
+    let gone = false
     listen<CompareRun>("compare", (e) => {
       setRun(e.payload)
       if (e.payload.report) {
@@ -315,8 +317,11 @@ export function ReferencePage() {
         setBump((b) => b + 1)
       } else if (e.payload.error)
         toast.error("Comparison failed", { description: e.payload.error })
-    }).then((u) => (un = u))
-    return () => un?.()
+    }).then((u) => (gone ? u() : (un = u)))
+    return () => {
+      gone = true
+      un?.()
+    }
   }, [s.snapshot?.path])
 
   React.useEffect(() => {

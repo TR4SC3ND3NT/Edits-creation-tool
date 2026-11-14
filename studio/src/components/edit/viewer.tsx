@@ -288,8 +288,8 @@ export function Viewer() {
           </div>
         )}
       </div>
-      {/* "Claude is looking at frame N": top left, clear of the zoom controls. */}
-      <AgentViewing className="top-2 left-2" />
+      {/* "Claude is looking at frame N": bottom right, clear of the zoom controls and the status badges. */}
+      <AgentViewing className="right-2 bottom-2 max-w-[calc(100%-1rem)]" />
       <div className="absolute bottom-2 left-2 flex items-center gap-2">
         {live && <Badge variant="secondary">preview</Badge>}
         {!live && shown != null && shown !== frame && (

@@ -841,7 +841,10 @@ export function Inspector() {
     : undefined
   const transform = l ? data!.transform.filter((p) => p.name !== "opacity") : []
   return (
-    <div className="flex h-full min-h-0 flex-col" data-slot="inspector">
+    <div
+      className="@container/inspector flex h-full min-h-0 flex-col"
+      data-slot="inspector"
+    >
       <div className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
         <KindIcon
           kind={l?.kind ?? "camera"}

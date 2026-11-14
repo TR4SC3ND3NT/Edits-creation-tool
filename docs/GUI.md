@@ -190,8 +190,15 @@ clip of `d` showing its picture repeated, `d`, `⇢ cross zoom` and the
 chips `zoom blur` `saturation` `invert` `fade`; `cube` and `a` below.
 
 **Browser.** Tabs *Media, Effects, Transitions, Presets, Text, Shapes,
-Audio* and a search field (every word must match a name, a category or a
-description). Items are cards: a small preview and one line saying what the
+Audio* and a search field. It folds to its rail of tabs when dragged
+narrow or when its open tab is clicked again (a tab opens it), and by
+itself when the page is narrower than 900 pixels, as when the agent panel
+is open at 1400 pixels; it opens again when there is room, unless you
+folded or opened it yourself. The inspector stays at least 264 pixels wide
+and puts the name of a 3-number value above its fields when narrow; the
+transport hides the frame steps, *Blur* and the loop toggle as the viewer
+narrows. Search: every word must match a name, a category or a
+description. Items are cards: a small preview and one line saying what the
 item does (hover for the whole text). The preview is the item rendered by
 `edits-render` on a sample project of two generated pictures, 192 × 108: an
 effect with its registry defaults (when they change almost nothing, each

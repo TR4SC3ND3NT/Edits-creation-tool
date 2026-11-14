@@ -125,6 +125,8 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
   React.useEffect(() => {
     if (!isTauri()) return
     let unlisten: (() => void) | undefined
+    // An effect cleaned up before `listen` resolved (StrictMode) must still unlisten.
+    let gone = false
     listen<ProjectEvent>("project", (e) => {
       const { snapshot: s, reason } = e.payload
       setSnapshot(s)
@@ -167,7 +169,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
           setLastAction(reason.summary)
           break
       }
-    }).then((u) => (unlisten = u))
+    }).then((u) => (gone ? u() : (unlisten = u)))
     api
       .startup()
       .then(async (st) => {
@@ -178,7 +180,10 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
         if (s) setSnapshot(s)
       })
       .catch(() => {})
-    return () => unlisten?.()
+    return () => {
+      gone = true
+      unlisten?.()
+    }
   }, [])
 
   // The renderer's adapter and timings, for the status line.

@@ -411,6 +411,11 @@ fn move_keys_in(a: &mut Anim, from: f64, to: f64) -> bool {
         {
             moved |= move_keys_in(env, from, to);
         }
+        if let Modifier::Oscillate(o) = m {
+            if let Prop::Anim(env) = &mut o.amplitude {
+                moved |= move_keys_in(env, from, to);
+            }
+        }
     }
     moved
 }
@@ -437,6 +442,12 @@ fn shift_anim(a: &mut Anim, dt: f64) {
                 ..
             } => shift_anim(env, dt),
             Modifier::Shake { .. } => {}
+            Modifier::Oscillate(o) => {
+                o.from = tidy(o.from + dt);
+                if let Prop::Anim(env) = &mut o.amplitude {
+                    shift_anim(env, dt);
+                }
+            }
         }
     }
 }

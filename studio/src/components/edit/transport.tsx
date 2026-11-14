@@ -50,7 +50,7 @@ export function Transport() {
   const beats = info.time_base === "beats"
   return (
     <div className="@container/transport shrink-0 border-t">
-      <div className="grid h-12 grid-cols-[1fr_auto_1fr] items-center gap-3 px-3">
+      <div className="grid h-12 grid-cols-[1fr_auto_1fr] items-center gap-2 px-2 @md/transport:gap-3 @md/transport:px-3">
         <div className="flex min-w-0 items-center gap-2 overflow-hidden text-sm whitespace-nowrap tabular-nums">
           <span className="font-medium">{clock(toSeconds(info, t))}</span>
           <span className="hidden text-muted-foreground @2xl/transport:inline">
@@ -99,6 +99,7 @@ export function Transport() {
               <Button
                 variant="outline"
                 size="icon-sm"
+                className="hidden @md/transport:inline-flex"
                 onClick={() => {
                   s.setPlaying(false)
                   s.seek(frame - 1)
@@ -116,6 +117,7 @@ export function Transport() {
               <Button
                 variant="outline"
                 size="icon-sm"
+                className="hidden @md/transport:inline-flex"
                 onClick={() => {
                   s.setPlaying(false)
                   s.seek(frame + 1)
@@ -138,6 +140,7 @@ export function Transport() {
             <Toggle
               variant="outline"
               size="sm"
+              className="hidden @sm/transport:inline-flex"
               pressed={s.looping}
               onPressedChange={s.setLooping}
               aria-label="Loop"
@@ -154,6 +157,7 @@ export function Transport() {
               pressed={s.blurPaused}
               onPressedChange={s.setBlurPaused}
               disabled={!info.motion_blur}
+              className="hidden @lg/transport:inline-flex"
             >
               Blur
             </Toggle>
@@ -163,7 +167,11 @@ export function Transport() {
             value={String(s.scale)}
             onValueChange={(v) => v && s.setScale(Number(v))}
           >
-            <SelectTrigger size="sm" className="w-20" aria-label="Preview size">
+            <SelectTrigger
+              size="sm"
+              className="w-16 @sm/transport:w-20"
+              aria-label="Preview size"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

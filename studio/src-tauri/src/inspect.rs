@@ -196,7 +196,7 @@ fn prop_dto(p: &Project, layer: Option<&Layer>, r: &PropRef, t: f64) -> PropDto 
         Some(Prop::Anim(a)) => (
             a.modifiers
                 .iter()
-                .any(|m| matches!(m, Modifier::Shake { .. })),
+                .any(|m| matches!(m, Modifier::Shake { .. } | Modifier::Oscillate(_))),
             a.modifiers
                 .iter()
                 .any(|m| matches!(m, Modifier::Loop { .. })),

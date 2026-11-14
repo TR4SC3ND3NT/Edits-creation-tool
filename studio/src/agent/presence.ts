@@ -232,6 +232,9 @@ export const presence = {
       steps[i] = {
         ...old,
         ...step,
+        // An update without a title (tool_call_update) keeps the step's label and tool.
+        label: step.label || old.label,
+        tool: step.tool ?? old.tool,
         layers: step.layers.length ? step.layers : old.layers,
         pointers: step.pointers.length ? step.pointers : old.pointers,
         t: step.t ?? old.t,

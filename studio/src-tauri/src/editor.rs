@@ -105,7 +105,12 @@ fn find<'a>(p: &'a Project, id: &str) -> Result<&'a Layer, String> {
 /// there (its keys stay where they are, so the motion goes on). A video
 /// without a time remap gets one on the second part, so it plays on from
 /// where the first part stops.
-pub fn split_ops(p: &Project, doc: &Value, id: &str, t: f64) -> Result<(Vec<EditOp>, String), String> {
+pub fn split_ops(
+    p: &Project,
+    doc: &Value,
+    id: &str,
+    t: f64,
+) -> Result<(Vec<EditOp>, String), String> {
     let l = find(p, id)?;
     let end = l.end.unwrap_or(p.settings.duration);
     let t = tidy(t);
@@ -134,7 +139,14 @@ pub fn split_ops(p: &Project, doc: &Value, id: &str, t: f64) -> Result<(Vec<Edit
     }
     let ops = vec![
         set_field(id, "out", json!(t)),
-        EditOp::insert_layer(editing::tidy_json(Value::Object(second)).as_object().cloned().unwrap_or_default(), Some(id.to_string()), None),
+        EditOp::insert_layer(
+            editing::tidy_json(Value::Object(second))
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            Some(id.to_string()),
+            None,
+        ),
     ];
     Ok((ops, format!("split {id} at {t} ({new_id} after)")))
 }
@@ -174,7 +186,11 @@ pub fn shift_ops(p: &Project, ids: &[String], dt: f64) -> Result<(Vec<EditOp>, S
 /// Delete layers. With `ripple`, every layer that starts at or after the
 /// end of a deleted one moves earlier by the deleted span (spans of
 /// deleted layers that overlap count once), keys and all.
-pub fn remove_ops(p: &Project, ids: &[String], ripple: bool) -> Result<(Vec<EditOp>, String), String> {
+pub fn remove_ops(
+    p: &Project,
+    ids: &[String],
+    ripple: bool,
+) -> Result<(Vec<EditOp>, String), String> {
     let mut spans: Vec<(f64, f64)> = Vec::new();
     for id in ids {
         let l = find(p, id)?;
@@ -212,7 +228,12 @@ pub fn remove_ops(p: &Project, ids: &[String], ripple: bool) -> Result<(Vec<Edit
 // ---- new layers -------------------------------------------------------------------
 
 /// A new text, shape or particles layer at `at`, `length` long.
-pub fn new_layer(p: &Project, kind: &str, at: f64, length: f64) -> Result<Map<String, Value>, String> {
+pub fn new_layer(
+    p: &Project,
+    kind: &str,
+    at: f64,
+    length: f64,
+) -> Result<Map<String, Value>, String> {
     let (base, mut layer) = match kind {
         "text" => (
             "title",
@@ -246,7 +267,10 @@ pub fn new_layer(p: &Project, kind: &str, at: f64, length: f64) -> Result<Map<St
     layer["id"] = json!(unique_id(p, base));
     layer["in"] = json!(start);
     layer["out"] = json!(tidy((start + length).min(p.settings.duration)));
-    Ok(editing::tidy_json(layer).as_object().cloned().unwrap_or_default())
+    Ok(editing::tidy_json(layer)
+        .as_object()
+        .cloned()
+        .unwrap_or_default())
 }
 
 // ---- pictures ----------------------------------------------------------------------
@@ -261,7 +285,11 @@ pub fn slot_name(p: &Project, file: &Path) -> String {
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
     let stem = stem.trim_matches('_');
-    let base = if stem.is_empty() { "picture".to_string() } else { stem.chars().take(24).collect() };
+    let base = if stem.is_empty() {
+        "picture".to_string()
+    } else {
+        stem.chars().take(24).collect()
+    };
     let taken = |n: &str| p.slots.contains_key(n) || p.layers.iter().any(|l| l.id == n);
     if !taken(&base) {
         return base;
@@ -294,7 +322,10 @@ pub fn picture_ops(
         let l = json!({ "id": unique_id(p, &name), "kind": "image", "slot": name,
                         "in": start, "out": tidy((start + length).min(p.settings.duration)) });
         ops.push(EditOp::insert_layer(
-            editing::tidy_json(l).as_object().cloned().unwrap_or_default(),
+            editing::tidy_json(l)
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
             above,
             None,
         ));
@@ -308,7 +339,12 @@ pub fn picture_ops(
 }
 
 /// Point a slot at another picture.
-pub fn slot_replace_ops(p: &Project, project_dir: &Path, slot: &str, file: &Path) -> Result<Vec<EditOp>, String> {
+pub fn slot_replace_ops(
+    p: &Project,
+    project_dir: &Path,
+    slot: &str,
+    file: &Path,
+) -> Result<Vec<EditOp>, String> {
     if !p.slots.contains_key(slot) {
         return Err(format!("there is no slot \"{slot}\""));
     }
@@ -336,7 +372,9 @@ pub fn new_project(
     if pictures.is_empty() {
         return Err("pick at least one picture".into());
     }
-    let info = song.map(edits_core::song::SongInfo::from_value).transpose()?;
+    let info = song
+        .map(edits_core::song::SongInfo::from_value)
+        .transpose()?;
     let (bpm, offset, beats) = match &info {
         Some(s) => {
             let beats = ((s.duration - s.beat_offset) / s.beat_seconds).floor();
@@ -355,11 +393,18 @@ pub fn new_project(
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
             .take(20)
             .collect();
-        let mut name = if stem.trim_matches('_').is_empty() { format!("p{}", i + 1) } else { stem.trim_matches('_').to_string() };
+        let mut name = if stem.trim_matches('_').is_empty() {
+            format!("p{}", i + 1)
+        } else {
+            stem.trim_matches('_').to_string()
+        };
         while names.contains(&name) {
             name = format!("{name}_{}", i + 1);
         }
-        slots.insert(name.clone(), json!({ "path": editing::slot_path(pic, dir) }));
+        slots.insert(
+            name.clone(),
+            json!({ "path": editing::slot_path(pic, dir) }),
+        );
         names.push(name);
     }
     let mut doc = json!({
@@ -428,9 +473,15 @@ mod tests {
         let (p, doc) = project();
         let ops = key_move_ops(&p, Some("a"), &PropRef::Transform("scale"), 2.0, 2.5).unwrap();
         let out = apply(&doc, &ops);
-        assert_eq!(out.pointer("/layers/0/transform/scale/keys/1/t"), Some(&json!(2.5)));
+        assert_eq!(
+            out.pointer("/layers/0/transform/scale/keys/1/t"),
+            Some(&json!(2.5))
+        );
         // The glow's keys stay.
-        assert_eq!(out.pointer("/layers/0/effects/0/params/intensity/keys/1/t"), Some(&json!(3)));
+        assert_eq!(
+            out.pointer("/layers/0/effects/0/params/intensity/keys/1/t"),
+            Some(&json!(3))
+        );
         assert!(key_move_ops(&p, Some("a"), &PropRef::Transform("scale"), 7.0, 2.5).is_err());
     }
 
@@ -441,14 +492,32 @@ mod tests {
         let out = apply(&doc, &ops);
         let ls = out["layers"].as_array().unwrap();
         assert_eq!(ls.len(), 4);
-        assert_eq!((ls[1]["id"].as_str(), ls[1]["out"].as_f64()), (Some("b"), Some(6.0)));
-        assert_eq!((ls[2]["id"].as_str(), ls[2]["in"].as_f64(), ls[2]["out"].as_f64()), (Some("b-2"), Some(6.0), Some(8.0)));
-        assert!(ls[2].get("transition").is_none(), "only the first part comes in through the transition");
+        assert_eq!(
+            (ls[1]["id"].as_str(), ls[1]["out"].as_f64()),
+            (Some("b"), Some(6.0))
+        );
+        assert_eq!(
+            (
+                ls[2]["id"].as_str(),
+                ls[2]["in"].as_f64(),
+                ls[2]["out"].as_f64()
+            ),
+            (Some("b-2"), Some(6.0), Some(8.0))
+        );
+        assert!(
+            ls[2].get("transition").is_none(),
+            "only the first part comes in through the transition"
+        );
         assert!(label.contains("split b at 6"));
         // A video plays on: 2 beats at 120 BPM = 1 s into the clip.
         let (ops, _) = split_ops(&p, &doc, "v", 6.0).unwrap();
         let out = apply(&doc, &ops);
-        let second = out["layers"].as_array().unwrap().iter().find(|l| l["id"] == "v-2").unwrap();
+        let second = out["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["id"] == "v-2")
+            .unwrap();
         assert_eq!(second.pointer("/time_remap/keys/0/v"), Some(&json!(1)));
         assert_eq!(second.pointer("/time_remap/keys/1/v"), Some(&json!(2)));
         assert!(split_ops(&p, &doc, "b", 2.0).is_err(), "outside the layer");
@@ -461,7 +530,10 @@ mod tests {
         let out = apply(&doc, &ops);
         let ls = out["layers"].as_array().unwrap();
         assert_eq!(ls[0]["id"], "b");
-        assert_eq!((ls[0]["in"].as_f64(), ls[0]["out"].as_f64()), (Some(0.0), Some(4.0)));
+        assert_eq!(
+            (ls[0]["in"].as_f64(), ls[0]["out"].as_f64()),
+            (Some(0.0), Some(4.0))
+        );
         let (ops, _) = remove_ops(&p, &["a".to_string()], false).unwrap();
         let out = apply(&doc, &ops);
         assert_eq!(out["layers"][0]["in"].as_f64(), Some(4.0));
@@ -472,41 +544,76 @@ mod tests {
         let (p, doc) = project();
         let (ops, _) = shift_ops(&p, &["a".to_string(), "b".to_string()], 1.0).unwrap();
         let out = apply(&doc, &ops);
-        assert_eq!(out.pointer("/layers/0/in").and_then(Value::as_f64), Some(1.0));
-        assert_eq!(out.pointer("/layers/0/transform/scale/keys/0/t"), Some(&json!(2)));
-        assert_eq!(out.pointer("/layers/1/out").and_then(Value::as_f64), Some(9.0));
+        assert_eq!(
+            out.pointer("/layers/0/in").and_then(Value::as_f64),
+            Some(1.0)
+        );
+        assert_eq!(
+            out.pointer("/layers/0/transform/scale/keys/0/t"),
+            Some(&json!(2))
+        );
+        assert_eq!(
+            out.pointer("/layers/1/out").and_then(Value::as_f64),
+            Some(9.0)
+        );
         assert!(shift_ops(&p, &["a".to_string()], -1.0).is_err());
     }
 
     #[test]
     fn new_layers_and_pictures() {
         let (p, doc) = project();
-        for kind in ["text", "shape:rect", "shape:ellipse", "shape:polystar", "shape:line", "particles"] {
+        for kind in [
+            "text",
+            "shape:rect",
+            "shape:ellipse",
+            "shape:polystar",
+            "shape:line",
+            "particles",
+        ] {
             let l = new_layer(&p, kind, 2.0, 4.0).unwrap();
             let out = apply(&doc, &[EditOp::insert_layer(l, None, None)]);
             let parsed = Project::from_json(&out.to_string());
             assert!(parsed.is_ok(), "{kind}: {parsed:?}");
             let findings = edits_core::check::check(&parsed.unwrap(), None);
             assert!(
-                findings.iter().all(|f| f.severity != edits_core::check::Severity::Error),
+                findings
+                    .iter()
+                    .all(|f| f.severity != edits_core::check::Severity::Error),
                 "{kind}: {findings:?}"
             );
         }
         assert!(new_layer(&p, "teapot", 0.0, 1.0).is_err());
         assert_eq!(slot_name(&p, Path::new("/x/My Photo.JPG")), "my_photo");
         assert_eq!(slot_name(&p, Path::new("/x/a.png")), "a2");
-        let (ops, _) = picture_ops(&p, Path::new("/x"), Path::new("/x/pics/new.png"), 1.0, 4.0, true, None);
+        let (ops, _) = picture_ops(
+            &p,
+            Path::new("/x"),
+            Path::new("/x/pics/new.png"),
+            1.0,
+            4.0,
+            true,
+            None,
+        );
         let out = apply(&doc, &ops);
         assert_eq!(out.pointer("/slots/new/path"), Some(&json!("pics/new.png")));
-        assert_eq!(out["layers"].as_array().unwrap().last().unwrap()["slot"], "new");
+        assert_eq!(
+            out["layers"].as_array().unwrap().last().unwrap()["slot"],
+            "new"
+        );
         let ops = slot_replace_ops(&p, Path::new("/x"), "a", Path::new("/y/other.png")).unwrap();
-        assert_eq!(apply(&doc, &ops).pointer("/slots/a/path"), Some(&json!("/y/other.png")));
+        assert_eq!(
+            apply(&doc, &ops).pointer("/slots/a/path"),
+            Some(&json!("/y/other.png"))
+        );
         assert!(slot_replace_ops(&p, Path::new("/x"), "zz", Path::new("/y.png")).is_err());
     }
 
     #[test]
     fn a_new_project_cuts_the_pictures_on_beats() {
-        let pics: Vec<std::path::PathBuf> = ["/p/one.png", "/p/two.png"].iter().map(Into::into).collect();
+        let pics: Vec<std::path::PathBuf> = ["/p/one.png", "/p/two.png"]
+            .iter()
+            .map(Into::into)
+            .collect();
         let doc = new_project(Path::new("/p"), &pics, None, None, (1080, 1920), 64.0).unwrap();
         let p = Project::from_json(&doc.to_string()).unwrap();
         assert_eq!(p.settings.duration, 16.0);

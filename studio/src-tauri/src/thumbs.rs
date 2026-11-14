@@ -41,7 +41,13 @@ pub fn cache_dir() -> PathBuf {
 pub fn file_name(kind: &str, name: &str) -> String {
     let clean: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     format!("{kind}-{clean}.jpg")
 }
@@ -103,7 +109,9 @@ fn frame_at(beat: f64) -> u64 {
 /// Values worth trying for an effect whose defaults change nothing: a
 /// telling value for each single-number parameter, in registry order.
 pub fn boosts(kind: &str) -> Vec<(&'static str, f64)> {
-    let Some(spec) = effects::spec(kind) else { return Vec::new() };
+    let Some(spec) = effects::spec(kind) else {
+        return Vec::new();
+    };
     spec.params
         .iter()
         .filter(|p| p.default.len() == 1)
@@ -112,7 +120,11 @@ pub fn boosts(kind: &str) -> Vec<(&'static str, f64)> {
             let v = match p.range {
                 Some((a, b)) if a.is_finite() && b.is_finite() => {
                     let v = a + 0.7 * (b - a);
-                    if (v - d).abs() < 1e-9 { a + 0.3 * (b - a) } else { v }
+                    if (v - d).abs() < 1e-9 {
+                        a + 0.3 * (b - a)
+                    } else {
+                        v
+                    }
                 }
                 _ if d == 0.0 => match p.unit.as_str() {
                     "%h" => 4.0,
@@ -129,12 +141,20 @@ pub fn boosts(kind: &str) -> Vec<(&'static str, f64)> {
 }
 
 /// The sample project for one item and the frame to show.
-pub fn sample(kind: &str, name: &str, dir: &Path, boost: Option<(&str, f64)>) -> Result<(Value, u64), String> {
+pub fn sample(
+    kind: &str,
+    name: &str,
+    dir: &Path,
+    boost: Option<(&str, f64)>,
+) -> Result<(Value, u64), String> {
     let mut doc = base_doc(dir);
     match kind {
         "effect" => {
             let spec = effects::spec(name).ok_or_else(|| format!("unknown effect {name}"))?;
-            if !matches!(spec.source, effects::SourceKind::None | effects::SourceKind::OptionalSlot) {
+            if !matches!(
+                spec.source,
+                effects::SourceKind::None | effects::SourceKind::OptionalSlot
+            ) {
                 return Err(format!("{name} needs a file and has no preview"));
             }
             let mut params = Map::new();
@@ -179,8 +199,16 @@ pub fn sample(kind: &str, name: &str, dir: &Path, boost: Option<(&str, f64)>) ->
             };
             let tc = edits_core::time::TimeCtx::from_doc(&doc);
             let (out, _) = preset::apply(&doc, &p, &target, &[1.0], &Map::new(), &tc)?;
-            let later = if text || p.tags.iter().any(|t| t == "intro" || t == "transition") { 1.5 } else { 1.12 };
-            let frame = if p.target == TargetKind::Project { frame_at(1.6) } else { frame_at(later) };
+            let later = if text || p.tags.iter().any(|t| t == "intro" || t == "transition") {
+                1.5
+            } else {
+                1.12
+            };
+            let frame = if p.target == TargetKind::Project {
+                frame_at(1.6)
+            } else {
+                frame_at(later)
+            };
             Ok((out, frame))
         }
         other => Err(format!("no thumbnails of {other}")),
@@ -214,7 +242,10 @@ pub struct Thumbs {
 
 impl Thumbs {
     pub fn new(dir: PathBuf) -> Arc<Self> {
-        Arc::new(Thumbs { tx: Mutex::new(None), dir })
+        Arc::new(Thumbs {
+            tx: Mutex::new(None),
+            dir,
+        })
     }
 
     fn start(&self) -> mpsc::Sender<Job> {
@@ -257,16 +288,22 @@ impl Thumbs {
         }
         let (reply, rx) = mpsc::channel();
         self.start()
-            .send(Job { kind: kind.into(), name: name.into(), reply })
+            .send(Job {
+                kind: kind.into(),
+                name: name.into(),
+                reply,
+            })
             .map_err(|_| "the thumbnail thread stopped".to_string())?;
-        rx.recv().map_err(|_| "the thumbnail thread stopped".to_string())?
+        rx.recv()
+            .map_err(|_| "the thumbnail thread stopped".to_string())?
     }
 }
 
 fn render(r: &mut Renderer, doc: &Value, frame: u64) -> Result<RgbaImage, String> {
     let p = Project::from_json(&doc.to_string()).map_err(|e| format!("{e:#}"))?;
     r.set_motion_blur_samples(Some(1));
-    r.prepare(&p, Path::new("/")).map_err(|e| format!("{e:#}"))?;
+    r.prepare(&p, Path::new("/"))
+        .map_err(|e| format!("{e:#}"))?;
     r.render_frame(frame, 1.0).map_err(|e| format!("{e:#}"))
 }
 
@@ -295,7 +332,9 @@ fn make(
             if best >= 4.0 {
                 break;
             }
-            let Ok((doc, frame)) = sample(kind, name, dir, Some(boost)) else { continue };
+            let Ok((doc, frame)) = sample(kind, name, dir, Some(boost)) else {
+                continue;
+            };
             if let Ok(other) = render(r, &doc, frame) {
                 let d = mean_diff(base, &other);
                 if d > best {
@@ -327,10 +366,19 @@ mod tests {
         samples(&d).unwrap();
         let mut items: Vec<(&str, String)> = effects::EFFECTS
             .iter()
-            .filter(|e| matches!(e.source, effects::SourceKind::None | effects::SourceKind::OptionalSlot))
+            .filter(|e| {
+                matches!(
+                    e.source,
+                    effects::SourceKind::None | effects::SourceKind::OptionalSlot
+                )
+            })
             .map(|e| ("effect", e.kind.to_string()))
             .collect();
-        items.extend(effects::TRANSITIONS.iter().map(|t| ("transition", t.kind.to_string())));
+        items.extend(
+            effects::TRANSITIONS
+                .iter()
+                .map(|t| ("transition", t.kind.to_string())),
+        );
         items.extend(
             preset::builtin()
                 .into_iter()
@@ -347,7 +395,8 @@ mod tests {
                 }
                 Err(e) => panic!("{kind} {name}: {e}"),
             };
-            let p = Project::from_json(&doc.to_string()).unwrap_or_else(|e| panic!("{kind} {name}: {e}"));
+            let p = Project::from_json(&doc.to_string())
+                .unwrap_or_else(|e| panic!("{kind} {name}: {e}"));
             assert!(frame < p.frame_count(), "{kind} {name}");
             let errors: Vec<_> = edits_core::check::check(&p, Some(&d))
                 .into_iter()
@@ -355,7 +404,10 @@ mod tests {
                 .collect();
             assert!(errors.is_empty(), "{kind} {name}: {errors:?}");
         }
-        assert_eq!(file_name("preset", "transition:fade"), "preset-transition_fade.jpg");
+        assert_eq!(
+            file_name("preset", "transition:fade"),
+            "preset-transition_fade.jpg"
+        );
         let b = boosts("exposure");
         assert!(!b.is_empty() && b[0].1 != 0.0, "{b:?}");
         std::fs::remove_dir_all(&d).ok();

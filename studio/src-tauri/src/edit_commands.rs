@@ -32,7 +32,10 @@ fn current(studio: &Studio) -> Result<(Arc<Project>, Value, PathBuf), String> {
     }
 }
 
-fn layer_of<'a>(p: &'a Project, layer: Option<&str>) -> Result<Option<&'a edits_core::Layer>, String> {
+fn layer_of<'a>(
+    p: &'a Project,
+    layer: Option<&str>,
+) -> Result<Option<&'a edits_core::Layer>, String> {
     match layer {
         None => Ok(None),
         Some(id) => p
@@ -44,7 +47,12 @@ fn layer_of<'a>(p: &'a Project, layer: Option<&str>) -> Result<Option<&'a edits_
     }
 }
 
-async fn render_preview(studio: &Studio, doc: Value, frame: u64, scale: f32) -> Result<Response, String> {
+async fn render_preview(
+    studio: &Studio,
+    doc: Value,
+    frame: u64,
+    scale: f32,
+) -> Result<Response, String> {
     let p = Project::from_json(&doc.to_string()).map_err(|e| format!("{e:#}"))?;
     let rx = studio.render.preview(Arc::new(p), frame, scale);
     let bytes = tauri::async_runtime::spawn_blocking(move || {
@@ -57,7 +65,12 @@ async fn render_preview(studio: &Studio, doc: Value, frame: u64, scale: f32) -> 
 
 /// The frame as it would look with `ops` applied (nothing is written).
 #[tauri::command]
-pub async fn preview_ops(studio: S<'_>, ops: Vec<EditOp>, frame: u64, scale: f32) -> Result<Response, String> {
+pub async fn preview_ops(
+    studio: S<'_>,
+    ops: Vec<EditOp>,
+    frame: u64,
+    scale: f32,
+) -> Result<Response, String> {
     let (_, doc, _) = current(&studio)?;
     let doc = edits_core::edit::apply_ops(&doc, &ops)?;
     render_preview(&studio, doc, frame, scale).await
@@ -85,7 +98,13 @@ pub async fn preview_prop(
 
 /// Move one key of one property from `from` to `to`.
 #[tauri::command]
-pub fn key_move(studio: S<'_>, layer: Option<String>, key: PropKey, from: f64, to: f64) -> Result<EditDone, String> {
+pub fn key_move(
+    studio: S<'_>,
+    layer: Option<String>,
+    key: PropKey,
+    from: f64,
+    to: f64,
+) -> Result<EditDone, String> {
     let r = key.to_ref()?;
     let label = format!(
         "{}: key of {} from {} to {}",
@@ -94,7 +113,9 @@ pub fn key_move(studio: S<'_>, layer: Option<String>, key: PropKey, from: f64, t
         editing::tidy(from),
         editing::tidy(to)
     );
-    studio.edit(Some(&label), |p, _| editor::key_move_ops(p, layer.as_deref(), &r, from, to))
+    studio.edit(Some(&label), |p, _| {
+        editor::key_move_ops(p, layer.as_deref(), &r, from, to)
+    })
 }
 
 #[tauri::command]
@@ -114,7 +135,12 @@ pub fn layers_shift(studio: S<'_>, ids: Vec<String>, dt: f64) -> Result<EditDone
 
 /// A new text, shape (`shape:rect`, ...) or particles layer at `at`, one bar long, above `above`.
 #[tauri::command]
-pub fn layer_new(studio: S<'_>, kind: String, at: f64, above: Option<String>) -> Result<EditDone, String> {
+pub fn layer_new(
+    studio: S<'_>,
+    kind: String,
+    at: f64,
+    above: Option<String>,
+) -> Result<EditDone, String> {
     studio.edit(Some(&format!("add a {kind} layer")), |p, _| {
         let tm = TimeMap::of(p);
         let at = editing::snap(&tm, at.max(0.0), false);
@@ -125,7 +151,13 @@ pub fn layer_new(studio: S<'_>, kind: String, at: f64, above: Option<String>) ->
 
 /// Add a picture file as a slot, and as an image layer at `at` when `layer`.
 #[tauri::command]
-pub fn picture_add(studio: S<'_>, path: String, at: f64, layer: bool, above: Option<String>) -> Result<EditDone, String> {
+pub fn picture_add(
+    studio: S<'_>,
+    path: String,
+    at: f64,
+    layer: bool,
+    above: Option<String>,
+) -> Result<EditDone, String> {
     let file = PathBuf::from(&path);
     if !file.is_file() {
         return Err(format!("no file {path}"));
@@ -134,7 +166,15 @@ pub fn picture_add(studio: S<'_>, path: String, at: f64, layer: bool, above: Opt
     studio.edit_labelled(|p, _| {
         let tm = TimeMap::of(p);
         let at = editing::snap(&tm, at.max(0.0), false);
-        let (ops, label) = editor::picture_ops(p, &dir, &file, at, editing::new_layer_length(&tm), layer, above);
+        let (ops, label) = editor::picture_ops(
+            p,
+            &dir,
+            &file,
+            at,
+            editing::new_layer_length(&tm),
+            layer,
+            above,
+        );
         Ok((ops, Some(label)))
     })
 }
@@ -156,7 +196,11 @@ pub fn slot_replace(studio: S<'_>, slot: String, path: String) -> Result<EditDon
 
 /// The preview picture of an effect, preset or transition (a file in the cache), made on first use.
 #[tauri::command]
-pub async fn thumbnail(thumbs: State<'_, Arc<Thumbs>>, kind: String, name: String) -> Result<String, String> {
+pub async fn thumbnail(
+    thumbs: State<'_, Arc<Thumbs>>,
+    kind: String,
+    name: String,
+) -> Result<String, String> {
     let t = thumbs.inner().clone();
     tauri::async_runtime::spawn_blocking(move || t.get(&kind, &name))
         .await
@@ -226,7 +270,10 @@ pub fn song_analyze(studio: S<'_>, songs: State<'_, Arc<SongService>>) -> Result
 
 /// Peaks of the project's audio, `rate` a second from the start of the file.
 #[tauri::command]
-pub async fn waveform(studio: S<'_>, songs: State<'_, Arc<SongService>>) -> Result<Option<Waveform>, String> {
+pub async fn waveform(
+    studio: S<'_>,
+    songs: State<'_, Arc<SongService>>,
+) -> Result<Option<Waveform>, String> {
     let (_, doc, path) = current(&studio)?;
     let Some(audio) = song::audio_file(&path, &doc) else {
         return Ok(None);
@@ -252,7 +299,9 @@ pub fn beats_cut(studio: S<'_>, request: CutRequest, dry: bool) -> Result<Value,
     if dry {
         return serde_json::to_value(DryRun { count, label }).map_err(|e| e.to_string());
     }
-    let done = studio.edit_doc(&label, &|d| request.apply(d, info.as_ref()).map(|(v, _, _)| v))?;
+    let done = studio.edit_doc(&label, &|d| {
+        request.apply(d, info.as_ref()).map(|(v, _, _)| v)
+    })?;
     serde_json::to_value(done).map_err(|e| e.to_string())
 }
 
@@ -265,7 +314,11 @@ pub fn beats_accent(studio: S<'_>, request: AccentRequest, dry: bool) -> Result<
     if dry {
         return serde_json::to_value(DryRun { count, label }).map_err(|e| e.to_string());
     }
-    let done = studio.edit_doc(&label, &|d| request.apply(d, Some(&dir), info.as_ref()).map(|(v, _, _)| v))?;
+    let done = studio.edit_doc(&label, &|d| {
+        request
+            .apply(d, Some(&dir), info.as_ref())
+            .map(|(v, _, _)| v)
+    })?;
     serde_json::to_value(done).map_err(|e| e.to_string())
 }
 
@@ -307,17 +360,30 @@ pub async fn project_new(studio: S<'_>, request: NewProject) -> Result<String, S
     let s = studio.inner().clone();
     let path = tauri::async_runtime::spawn_blocking(move || -> Result<PathBuf, String> {
         let dir = PathBuf::from(&request.dir);
-        std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
         let pictures: Vec<PathBuf> = request.pictures.iter().map(PathBuf::from).collect();
-        let audio = request.audio.as_ref().map(PathBuf::from).filter(|a| a.is_file());
+        let audio = request
+            .audio
+            .as_ref()
+            .map(PathBuf::from)
+            .filter(|a| a.is_file());
         let path = free_project_file(&dir);
         let analysis = match &audio {
             Some(a) => Some(song::analyze(&path, a)?),
             None => None,
         };
-        let doc = editor::new_project(&dir, &pictures, audio.as_deref(), analysis.as_ref(), size_of(&request.aspect), 64.0)?;
+        let doc = editor::new_project(
+            &dir,
+            &pictures,
+            audio.as_deref(),
+            analysis.as_ref(),
+            size_of(&request.aspect),
+            64.0,
+        )?;
         let text = edits_core::jsonfmt::to_file_text(&doc);
-        edits_core::edit::write_atomic(&path, &text).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        edits_core::edit::write_atomic(&path, &text)
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
         Ok(path)
     })
     .await
@@ -328,14 +394,23 @@ pub async fn project_new(studio: S<'_>, request: NewProject) -> Result<String, S
 
 /// A new project drafted from a reference edit (`edits-analyze analyze` then `draft`, with the proxies as pictures), opened.
 #[tauri::command]
-pub async fn project_from_reference(studio: S<'_>, video: String, dir: String) -> Result<String, String> {
+pub async fn project_from_reference(
+    studio: S<'_>,
+    video: String,
+    dir: String,
+) -> Result<String, String> {
     let s = studio.inner().clone();
     let path = tauri::async_runtime::spawn_blocking(move || -> Result<PathBuf, String> {
         let dir = PathBuf::from(&dir);
         let analysis_dir = dir.join("analysis");
-        std::fs::create_dir_all(&analysis_dir).map_err(|e| format!("cannot create {}: {e}", analysis_dir.display()))?;
-        let an = edits_analyze::pipeline::analyze_video(Path::new(&video), Some(&analysis_dir), &edits_analyze::AnalyzeOpts::default())
-            .map_err(|e| format!("{e:#}"))?;
+        std::fs::create_dir_all(&analysis_dir)
+            .map_err(|e| format!("cannot create {}: {e}", analysis_dir.display()))?;
+        let an = edits_analyze::pipeline::analyze_video(
+            Path::new(&video),
+            Some(&analysis_dir),
+            &edits_analyze::AnalyzeOpts::default(),
+        )
+        .map_err(|e| format!("{e:#}"))?;
         let opts = edits_analyze::draft::DraftOpts {
             proxies: true,
             width: None,
@@ -347,7 +422,8 @@ pub async fn project_from_reference(studio: S<'_>, video: String, dir: String) -
         };
         let project = edits_analyze::draft::draft(&an, &opts);
         let path = free_project_file(&dir);
-        std::fs::write(&path, project.to_json()).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+        std::fs::write(&path, project.to_json())
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
         Ok(path)
     })
     .await

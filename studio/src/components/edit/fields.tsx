@@ -364,6 +364,8 @@ export function PropRow({
               onClick={onPick}
               className={cn(
                 "flex w-20 shrink-0 items-center gap-1 truncate text-left text-sm",
+                // In a narrow inspector a vector's name goes above its fields.
+                value.length > 2 && "@max-xs/inspector:w-full",
                 prop.set ? "text-foreground" : "text-muted-foreground"
               )}
             />

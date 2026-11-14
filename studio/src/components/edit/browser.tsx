@@ -662,8 +662,14 @@ function Nothing() {
   )
 }
 
-/** The left browser of the Edit page. */
-export function Browser() {
+/** The left browser of the Edit page; `folded` shows only its tab rail. */
+export function Browser({
+  folded = false,
+  onFold,
+}: {
+  folded?: boolean
+  onFold?: (on: boolean) => void
+}) {
   const s = useStudio()
   const presets = usePresets(s.snapshot?.path ?? null)
   const [tab, setTab] = React.useState<Tab>("effects")
@@ -672,8 +678,11 @@ export function Browser() {
   return (
     <div className="flex h-full min-h-0" data-slot="browser">
       <Tabs
-        value={tab}
-        onValueChange={(v) => setTab(v as Tab)}
+        value={folded ? null : tab}
+        onValueChange={(v) => {
+          setTab(v as Tab)
+          if (folded) onFold?.(false)
+        }}
         orientation="vertical"
         className="shrink-0 gap-0 border-r"
       >
@@ -686,6 +695,10 @@ export function Browser() {
               key={t.id}
               value={t.id}
               className="h-12 flex-none flex-col justify-center gap-1 px-0 text-[10px] data-active:bg-muted"
+              onClick={() => {
+                // The open tab again folds the browser to its rail.
+                if (!folded && t.id === tab) onFold?.(true)
+              }}
             >
               <t.icon className="size-4" />
               {t.label}
@@ -693,7 +706,7 @@ export function Browser() {
           ))}
         </TabsList>
       </Tabs>
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className={cn("flex min-w-0 flex-1 flex-col", folded && "hidden")}>
         {tab !== "audio" && (
           <div className="px-2 pt-2">
             <InputGroup className="h-8">

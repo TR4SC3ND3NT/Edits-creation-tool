@@ -384,6 +384,8 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
   React.useEffect(() => {
     if (!isTauri()) return
     let unlisten: (() => void) | undefined
+    // An effect cleaned up before `listen` resolved (StrictMode) must still unlisten.
+    let gone = false
     listen<AgentEvent>("agent", (e) => {
       const ev = e.payload
       if (ev.type === "activity") {
@@ -498,8 +500,11 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
           return out
         })
       }
-    }).then((u) => (unlisten = u))
-    return () => unlisten?.()
+    }).then((u) => (gone ? u() : (unlisten = u)))
+    return () => {
+      gone = true
+      unlisten?.()
+    }
   }, [patch])
 
   // ---- threads ------------------------------------------------------------------------------

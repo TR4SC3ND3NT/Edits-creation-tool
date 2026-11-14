@@ -310,6 +310,8 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
   React.useEffect(() => {
     if (!isTauri()) return
     let un: (() => void) | undefined
+    // An effect cleaned up before `listen` resolved (StrictMode) must still unlisten.
+    let gone = false
     listen<Song>("song", (e) => {
       setSong(e.payload)
       if (e.payload.error)
@@ -320,8 +322,11 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
         toast.success("Song analysed", {
           description: e.payload.marks.summary,
         })
-    }).then((u) => (un = u))
-    return () => un?.()
+    }).then((u) => (gone ? u() : (un = u)))
+    return () => {
+      gone = true
+      un?.()
+    }
   }, [])
   const analyze = React.useCallback(() => {
     api
