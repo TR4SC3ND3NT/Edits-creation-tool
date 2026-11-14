@@ -158,6 +158,12 @@ fn every_registered_effect_renders_and_changes_the_picture() {
             "bleach_bypass" => r#"{}"#,
             "technicolor" => r#"{}"#,
             "haze" => r#"{"distance":-0.4}"#,
+            "shatter" => r#"{"start":-1,"spread":20}"#,
+            "pinch" => r#"{"amount":0.8}"#,
+            "glitch_bands" => r#"{"amount":1,"height":20,"shift":20}"#,
+            "film_scratches" => r#"{"scratches":1,"width":10,"dust":40,"dust_size":20}"#,
+            "grain_highlights" => r#"{"amount":0.3}"#,
+            "drip" => r#"{"roughness":3,"scale":5}"#,
             other => panic!("the registry has an effect this test does not cover: {other}"),
         };
         let source = match spec.kind {
