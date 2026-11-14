@@ -6,9 +6,11 @@
 //! (`render`, through `edits-render`), makes every edit through
 //! `edits_core::edit` with actor `window` (`studio`), writes `ui.json` for
 //! the agent (`uictx`), runs `edits render` for the Renders page (`renders`)
-//! and compares renders with a reference analysis (`reference`). The
-//! commands the frontend calls are in `commands`.
+//! and compares renders with a reference analysis (`reference`). The agent
+//! panel's ACP client and the agent's activity log are in `agent`. The
+//! commands the frontend calls are in `commands` (and `agent::commands`).
 
+mod agent;
 mod commands;
 mod engine;
 mod inspect;
@@ -159,8 +161,22 @@ pub fn run(startup: Startup) {
             });
             let render =
                 render::RenderService::spawn(edits_render::RenderOptions::default(), 384 << 20);
-            let studio = studio::Studio::new(render, emit);
+            let studio = studio::Studio::new(render, emit.clone());
             app.manage(studio.clone());
+            // The agent panel: an ACP client, and the agent's activity log.
+            let (for_path, for_doc) = (Arc::downgrade(&studio), Arc::downgrade(&studio));
+            let host = agent::AgentHost::new(
+                emit,
+                Arc::new(move || for_path.upgrade().and_then(|s| s.path())),
+                Arc::new(move || {
+                    for_doc
+                        .upgrade()
+                        .and_then(|s| s.snapshot())
+                        .and_then(|s| s.doc)
+                }),
+            );
+            host.watch_activity();
+            app.manage(host);
             // `ui.json` is rewritten on a heartbeat while the window is open.
             let weak = Arc::downgrade(&studio);
             std::thread::Builder::new()
@@ -223,6 +239,22 @@ pub fn run(startup: Startup) {
             commands::report_load,
             commands::compare_status,
             commands::compare_start,
+            agent::commands::agent_adapters,
+            agent::commands::agent_setup,
+            agent::commands::agent_connect,
+            agent::commands::agent_disconnect,
+            agent::commands::agent_session_new,
+            agent::commands::agent_session_load,
+            agent::commands::agent_session_list,
+            agent::commands::agent_prompt,
+            agent::commands::agent_cancel,
+            agent::commands::agent_permission,
+            agent::commands::agent_set_mode,
+            agent::commands::agent_set_model,
+            agent::commands::agent_set_config,
+            agent::commands::agent_authenticate,
+            agent::commands::agent_login,
+            agent::commands::agent_files,
         ])
         .on_page_load(|webview, payload| {
             if webview.label() == "main" && matches!(payload.event(), PageLoadEvent::Finished) {
@@ -236,6 +268,9 @@ pub fn run(startup: Startup) {
         if let tauri::RunEvent::Exit = event {
             if let Some(s) = handle.try_state::<Arc<studio::Studio>>() {
                 s.close();
+            }
+            if let Some(a) = handle.try_state::<Arc<agent::AgentHost>>() {
+                a.disconnect();
             }
         }
     });
