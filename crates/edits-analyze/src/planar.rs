@@ -58,11 +58,15 @@ pub struct TrackOpts {
     /// Keypoints per frame and per picture.
     pub features: usize,
     pub seed: u64,
+    /// Frames of a window before its first and after its last trusted key
+    /// (motion blur at a shot's entry and exit) filled by carrying the
+    /// corners on at their last speed, at most this many.
+    pub extend: usize,
 }
 
 impl Default for TrackOpts {
     fn default() -> Self {
-        Self { min_ncc: 0.5, max_gap: 8, smooth: 5, ignore_dark: false, ignore_red: false, features: 1500, seed: 1 }
+        Self { min_ncc: 0.5, max_gap: 8, smooth: 5, ignore_dark: false, ignore_red: false, features: 1500, seed: 1, extend: 0 }
     }
 }
 
@@ -344,6 +348,10 @@ fn quad(h: &Mat3, a: &Art) -> Option<[f64; 8]> {
     Some(q)
 }
 
+fn quad_area_px(c: &[f64; 8]) -> f64 {
+    0.5 * (0..4).map(|i| c[2 * i] * c[(2 * i + 3) % 8] - c[(2 * i + 2) % 8] * c[2 * i + 1]).sum::<f64>().abs()
+}
+
 /// Savitzky-Golay smoothing (quadratic) of a sequence, window `w` (odd).
 pub fn savgol(y: &[f64], w: usize) -> Vec<f64> {
     let n = y.len();
@@ -388,6 +396,21 @@ fn finish(a: &Art, windows: &[(usize, usize)], raw: Vec<Option<Raw>>, frames: &F
         // Trusted corners per frame of the window.
         let mut q: Vec<Option<([f64; 8], &Raw)>> = (s..=e).map(|i| raw[i].as_ref().filter(|r| r.ncc >= o.min_ncc).and_then(|r| quad(&r.h, a).map(|c| (c, r)))).collect();
         let len = q.len();
+        // A key whose quad jumps to more than twice (or under half) the size of the
+        // last kept key a few frames before is a false match: drop it.
+        let side = |c: &[f64; 8]| quad_area_px(c).sqrt();
+        let mut last: Option<(usize, f64)> = None;
+        for i in 0..len {
+            let Some((c, _)) = q[i] else { continue };
+            let sd = side(&c);
+            if let Some((j, ls)) = last {
+                if i - j <= 3 && (sd > 2.0 * ls || sd < 0.5 * ls) {
+                    q[i] = None;
+                    continue;
+                }
+            }
+            last = Some((i, sd));
+        }
         let mut method: Vec<&'static str> = q.iter().map(|x| x.map(|(_, r)| r.method).unwrap_or("")).collect();
         let mut filled: Vec<Option<[f64; 8]>> = q.iter().map(|x| x.map(|(c, _)| c)).collect();
         // Fill short gaps between trusted frames.
@@ -411,6 +434,28 @@ fn finish(a: &Art, windows: &[(usize, usize)], raw: Vec<Option<Raw>>, frames: &F
                     }
                     filled[k] = Some(c);
                     method[k] = "filled";
+                }
+            }
+        }
+        // Carry the first and last known corners outward at their speed.
+        if let (Some(first), Some(lastk)) = (filled.iter().position(|c| c.is_some()), filled.iter().rposition(|c| c.is_some())) {
+            let step = |a: [f64; 8], b: [f64; 8], k: f64| {
+                let mut c = [0.0; 8];
+                for j in 0..8 {
+                    c[j] = b[j] + (b[j] - a[j]) * k;
+                }
+                c
+            };
+            for k in 1..=o.extend {
+                if first >= k {
+                    let (a, b) = (filled.get(first + 1).copied().flatten().unwrap_or(filled[first].unwrap()), filled[first].unwrap());
+                    filled[first - k] = Some(step(a, b, k as f64));
+                    method[first - k] = "extended";
+                }
+                if lastk + k < len {
+                    let (a, b) = (lastk.checked_sub(1).and_then(|i| filled[i]).unwrap_or(filled[lastk].unwrap()), filled[lastk].unwrap());
+                    filled[lastk + k] = Some(step(a, b, k as f64));
+                    method[lastk + k] = "extended";
                 }
             }
         }
@@ -444,6 +489,11 @@ fn finish(a: &Art, windows: &[(usize, usize)], raw: Vec<Option<Raw>>, frames: &F
                 continue;
             };
             let qc = [[c[0], c[1]], [c[2], c[3]], [c[4], c[5]], [c[6], c[7]]];
+            // Filling and smoothing can fold a quad: such a key is not a plane.
+            if !pin::convex(&qc) {
+                missing.push(f);
+                continue;
+            }
             // Picture 0..1 -> frame pixel edges.
             let Some(sq) = pin::square_to_quad(qc) else {
                 missing.push(f);
@@ -482,7 +532,7 @@ pub fn overlay(frames: &Frames, i: usize, track: &Track) -> Vec<u8> {
     let colours = [[0u8, 255, 0], [255, 220, 0], [0, 200, 255], [255, 0, 255], [255, 128, 0], [128, 255, 128]];
     for (ai, a) in track.arts.iter().enumerate() {
         let Some(k) = a.keys.iter().find(|k| k.frame == i) else { continue };
-        let col = if k.method == "filled" { [255, 60, 60] } else { colours[ai % colours.len()] };
+        let col = if k.method == "filled" || k.method == "extended" { [255, 60, 60] } else { colours[ai % colours.len()] };
         let hm = [[k.h[0], k.h[1], k.h[2]], [k.h[3], k.h[4], k.h[5]], [k.h[6], k.h[7], k.h[8]]];
         let pts: Vec<[f64; 2]> = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)].iter().filter_map(|(u, v)| apply(&hm, u * a.size[0] as f64, v * a.size[1] as f64)).collect();
         if pts.len() < 4 {

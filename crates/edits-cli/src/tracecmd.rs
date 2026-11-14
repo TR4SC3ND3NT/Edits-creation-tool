@@ -35,6 +35,9 @@ pub struct TraceArgs {
     /// Correlation (0..1) a frame needs to be trusted
     #[arg(long, default_value_t = 0.5)]
     pub min_ncc: f64,
+    /// Carry the corners on at their last speed for up to N frames before the first and after the last trusted key of a window (blurred entries and exits); 0 = off. Check the result by eye: an abrupt move (a collapse, a cut) is not a constant speed
+    #[arg(long, default_value_t = 0)]
+    pub extend: usize,
     /// Frame pixels to leave out of the refinement: dark, red
     #[arg(long, value_delimiter = ',')]
     pub ignore: Vec<String>,
@@ -124,7 +127,7 @@ pub fn trace_cmd(a: TraceArgs) -> Result<ExitCode> {
     let info = media::probe(&a.video)?;
     eprintln!("decoding {} ({}x{}, {} fps)", a.video.display(), info.width, info.height, info.fps);
     let frames = media::decode_frames(&a.video, &info, info.height)?;
-    let mut opts = planar::TrackOpts { min_ncc: a.min_ncc, ..Default::default() };
+    let mut opts = planar::TrackOpts { min_ncc: a.min_ncc, extend: a.extend, ..Default::default() };
     for i in &a.ignore {
         match i.as_str() {
             "dark" => opts.ignore_dark = true,
@@ -222,7 +225,7 @@ pub fn trace_cmd(a: TraceArgs) -> Result<ExitCode> {
     eprintln!("measuring the grade");
     let mut graded = tr.clone();
     graded.arts.retain(|x| !x.path.is_empty() && !x.keys.is_empty());
-    let grade = trace::measure_grade(&a.video, &graded, 9, 1)?;
+    let grade = trace::measure_grade(&a.video, &graded, 9, 1, &fills.keys().cloned().collect::<Vec<_>>())?;
     let grade_path = dir.join("grade.json");
     std::fs::write(&grade_path, edits_analyze::jsonfmt::to_string(&grade)?)?;
     // The beat grid of the reference's sound: cuts near a beat go on it.

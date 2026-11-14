@@ -115,7 +115,13 @@ correlation (NCC) wins; below `--min-ncc` (0.5) the frame is not trusted.
 A backward pass carries trusted frames into the frames before them. Gaps
 up to `--max-gap` frames (motion blur breaks tracking) are filled by
 interpolating the corners, then the corners are smoothed (Savitzky-Golay,
-`--smooth 5`). `--ignore dark,red` leaves black or red frame pixels out of
+`--smooth 5`). A key whose quad jumps to more than twice or under half
+the size of the last kept one is a false match and is dropped; a folded
+quad is never written. `--extend N` carries the corners on at their last
+speed for N frames before and after each window's trusted keys (the
+blurred entry and exit of a shot); it is off by default because an abrupt
+move (a collapse into a line, a cut) is not a constant speed: look before
+you keep it. `--ignore dark,red` leaves black or red frame pixels out of
 the refinement (vignettes, red arrows drawn over the picture). On a
 synthetic 6-frame warp the corners land within 0.1 px; through H.264 at
 576 px, within 0.15 px.
@@ -134,7 +140,10 @@ blur (0 to 6 px) that leaves the least error; pictures tracked over it
 (smaller ones in the same frame) are left out. The result is `curves` and
 `gaussian_blur` keys per key, ready to paste (`arts[].effects`). With a
 different picture (a `--fill`) the same matching gives a tone curve per
-key: one look per shot, from the reference's colours only.
+key: one look per shot, from the reference's colours only; its blur is not
+measured (another picture's softness says nothing, and SSIM rewards
+blurring a mismatched picture: a metric that lies). In the draft, curves
+that barely move over a run become one constant curve.
 
 **`edits measure blur`.** Per frame, on top of a render: the Gaussian, then
 the zoom blur (strength, one of 9 centres), then the directional blur

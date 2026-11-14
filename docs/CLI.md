@@ -450,7 +450,7 @@ $ edits fit edit/project.json -r an/reference_analysis.json --dry-run
 ## trace
 
 ```
-edits trace <reference> --arts <file|dir>... -o <project.json> [--window NAME=A-B,...] [--proxy NAME=FRAME:X,Y,W,H --fill NAME=FILE] [--min-ncc 0.5] [--ignore dark,red] [--width W --height H] [--no-audio] [--preview] [--json]
+edits trace <reference> --arts <file|dir>... -o <project.json> [--window NAME=A-B,...] [--proxy NAME=FRAME:X,Y,W,H --fill NAME=FILE] [--min-ncc 0.5] [--extend 0] [--ignore dark,red] [--width W --height H] [--no-audio] [--preview] [--json]
 ```
 
 The start of the trace method ([ANALYSIS.md](ANALYSIS.md#trace-or-recipe)):
@@ -486,7 +486,7 @@ the "reference" was rendered from the very same files.)
 ## track
 
 ```
-edits track <reference> --art <png>... [--window NAME=A-B,...] [--min-ncc 0.5] [--max-gap 8] [--smooth 5] [--ignore dark,red] [--features 1500] [-o track.json] [--sheet quads.jpg] [--json]
+edits track <reference> --art <png>... [--window NAME=A-B,...] [--min-ncc 0.5] [--extend 0] [--max-gap 8] [--smooth 5] [--ignore dark,red] [--features 1500] [-o track.json] [--sheet quads.jpg] [--json]
 ```
 
 Per art and frame, a homography found by keypoints and RANSAC, refined on

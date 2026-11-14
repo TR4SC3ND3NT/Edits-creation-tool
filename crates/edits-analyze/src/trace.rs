@@ -393,7 +393,9 @@ fn curve(src: &[f64], dst: &[f64], points: usize) -> Vec<f64> {
 }
 
 /// Tone curves and blur per tracked key (every `every`th found key).
-pub fn measure_grade(video: &Path, tr: &Track, points: usize, every: usize) -> Result<Grade> {
+/// `no_blur`: pictures that are not the ones in the reference (a proxy's fill): their
+/// softness says nothing about the reference's, so only their curves are measured.
+pub fn measure_grade(video: &Path, tr: &Track, points: usize, every: usize, no_blur: &[String]) -> Result<Grade> {
     let info = media::probe(video)?;
     let frames = media::decode_frames(video, &info, info.height)?;
     let (w, h) = (frames.w, frames.h);
@@ -401,7 +403,7 @@ pub fn measure_grade(video: &Path, tr: &Track, points: usize, every: usize) -> R
     let mut arts = Vec::new();
     for at in &tr.arts {
         let pyr = rgb_pyramid(Path::new(&at.path))?;
-        let keys: Vec<&planar::TrackKey> = at.keys.iter().filter(|k| k.method != "filled" && k.frame < frames.len()).step_by(every).collect();
+        let keys: Vec<&planar::TrackKey> = at.keys.iter().filter(|k| !matches!(k.method.as_str(), "filled" | "extended") && k.frame < frames.len()).step_by(every).collect();
         let measured: Vec<GradeKey> = keys
             .par_iter()
             .filter_map(|k| {
@@ -429,7 +431,8 @@ pub fn measure_grade(video: &Path, tr: &Track, points: usize, every: usize) -> R
                 let q = 64;
                 let refq: Vec<Vec<f64>> = (0..3).map(|c| quantiles(&mut idx.iter().map(|i| rgb[i * 3 + c] as f32 / 255.0).collect::<Vec<_>>(), q)).collect();
                 let mut best: Option<(f64, f64, Vec<Vec<f64>>)> = None;
-                for sigma in [0.0f32, 0.6, 1.0, 1.5, 2.2, 3.0, 4.0, 6.0] {
+                let sigmas: &[f32] = if no_blur.contains(&at.name) { &[0.0] } else { &[0.0, 0.6, 1.0, 1.5, 2.2, 3.0, 4.0, 6.0] };
+                for &sigma in sigmas {
                     let b: Vec<Gray> = ch.iter().map(|g| gaussian_blur(g, sigma)).collect();
                     let srcq: Vec<Vec<f64>> = (0..3).map(|c| quantiles(&mut idx.iter().map(|i| b[c].d[*i]).collect::<Vec<_>>(), q)).collect();
                     let err = (0..3)

@@ -25,6 +25,9 @@ pub struct TrackArgs {
     /// Correlation (0..1) a frame needs to be trusted
     #[arg(long, default_value_t = 0.5)]
     pub min_ncc: f64,
+    /// Carry the corners on at their last speed for up to N frames before the first and after the last trusted key of a window (blurred entries and exits); 0 = off. Check the result by eye: an abrupt move (a collapse, a cut) is not a constant speed
+    #[arg(long, default_value_t = 0)]
+    pub extend: usize,
     /// Longest run of untrusted frames to fill by interpolating the corners
     #[arg(long, default_value_t = 8)]
     pub max_gap: usize,
@@ -172,7 +175,7 @@ pub fn track(a: TrackArgs) -> Result<ExitCode> {
     if let Some(name) = windows.keys().next() {
         bail!("--window names \"{name}\", which is not the file stem of any --art");
     }
-    let mut opts = planar::TrackOpts { min_ncc: a.min_ncc, max_gap: a.max_gap, smooth: a.smooth, features: a.features, ..Default::default() };
+    let mut opts = planar::TrackOpts { min_ncc: a.min_ncc, max_gap: a.max_gap, smooth: a.smooth, features: a.features, extend: a.extend, ..Default::default() };
     for i in &a.ignore {
         match i.as_str() {
             "dark" => opts.ignore_dark = true,
@@ -217,9 +220,9 @@ pub fn track(a: TrackArgs) -> Result<ExitCode> {
         .arts
         .iter()
         .map(|x| {
-            let found = x.keys.iter().filter(|k| k.method != "filled").count();
+            let found = x.keys.iter().filter(|k| !matches!(k.method.as_str(), "filled" | "extended")).count();
             let filled = x.keys.len() - found;
-            let mean = if found > 0 { x.keys.iter().filter(|k| k.method != "filled").map(|k| k.ncc).sum::<f64>() / found as f64 } else { 0.0 };
+            let mean = if found > 0 { x.keys.iter().filter(|k| !matches!(k.method.as_str(), "filled" | "extended")).map(|k| k.ncc).sum::<f64>() / found as f64 } else { 0.0 };
             json!({ "art": x.name, "keys": x.keys.len(), "found": found, "filled": filled, "missing": x.missing.len(), "mean_ncc": (mean * 1000.0).round() / 1000.0 })
         })
         .collect();
@@ -244,7 +247,7 @@ pub fn measure(c: MeasureCommand) -> Result<ExitCode> {
     match c {
         MeasureCommand::Grade(a) => {
             let tr: planar::Track = serde_json::from_str(&std::fs::read_to_string(&a.track).with_context(|| format!("reading {}", a.track.display()))?).context("not an edits.track/1 file: write one with `edits track`")?;
-            let g = trace::measure_grade(&a.video, &tr, a.points, a.every.max(1))?;
+            let g = trace::measure_grade(&a.video, &tr, a.points, a.every.max(1), &[])?;
             write_or_print(a.output.as_deref(), &edits_analyze::jsonfmt::to_string(&g)?)?;
             if let Some(p) = &a.output {
                 eprintln!("wrote {}", p.display());
