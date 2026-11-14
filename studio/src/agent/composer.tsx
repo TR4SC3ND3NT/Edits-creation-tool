@@ -169,7 +169,7 @@ function OptionControl({
     >
       <SelectTrigger
         size="sm"
-        className="h-7 max-w-40 gap-1 border-none px-1.5 text-xs shadow-none"
+        className="h-7 min-w-0 max-w-40 gap-1 border-none px-1.5 text-xs shadow-none [&_[data-slot=select-value]]:truncate"
         aria-label={o.name}
       >
         <Icon className="size-3.5 text-muted-foreground" />
@@ -620,7 +620,7 @@ export function Composer() {
             }
           }}
         />
-        <InputGroupAddon align="block-end" className="gap-0.5">
+        <InputGroupAddon align="block-end" className="min-w-0 flex-wrap gap-0.5">
           <Tooltip>
             <TooltipTrigger
               render={
@@ -671,7 +671,7 @@ export function Composer() {
             >
               <SelectTrigger
                 size="sm"
-                className="h-7 gap-1 border-none px-1.5 text-xs shadow-none"
+                className="h-7 min-w-0 max-w-36 gap-1 border-none px-1.5 text-xs shadow-none [&_[data-slot=select-value]]:truncate"
                 aria-label="Permission mode"
               >
                 <ShieldIcon className="size-3.5 text-muted-foreground" />
@@ -707,7 +707,7 @@ export function Composer() {
             >
               <SelectTrigger
                 size="sm"
-                className="h-7 gap-1 border-none px-1.5 text-xs shadow-none"
+                className="h-7 min-w-0 max-w-36 gap-1 border-none px-1.5 text-xs shadow-none [&_[data-slot=select-value]]:truncate"
                 aria-label="Model"
               >
                 <CpuIcon className="size-3.5 text-muted-foreground" />
