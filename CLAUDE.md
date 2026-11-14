@@ -24,8 +24,18 @@ A Cargo workspace; every crate is under `crates/`.
 | `edits-cli` | `edits` | The command line: `render`, `frame`, `sheet`, `bench`, `describe`, `check`, `effects`, `doctor`, `demo`; `analyze`, `draft`, `compare`, `probe` through the `edits-analyze` library (`analysis.rs`); `gui` and `mcp` start the sibling executables (`launch.rs`). Encoding through the system `ffmpeg` (`encode.rs`), contact sheets (`sheet.rs`), the generated demo (`demo.rs`). |
 | `edits-analyze` | `edits-analyze` | Reference analysis: `analyze` (recipe of a finished edit -> `reference_analysis.json`), `draft` (analysis -> project), `compare` (render vs analysis in signature space), `probe` (per-frame signatures). |
 | `edits-mcp` | `edits-mcp` | The MCP server (stdio, `rmcp`). A thin adapter that runs `edits` and `edits-analyze` as subprocesses, plus `project_edit` / `project_undo` (validated, atomic edits with history), path confinement, background jobs and image size caps. |
-| `edits-gui` | `edits-gui` | A desktop window that previews a project while something else edits it (transport, timeline, live reload). It does not edit projects. |
+| `edits-gui` | `edits-gui` | The older egui desktop window (preview, timeline, inspector, live reload, edits as actor `window`). Kept; `edits gui` starts it only when the studio is not built. |
 | `edits-calib` | | Round-trip calibration: random recipes with known parameters are rendered, analysed and scored against the truth. |
+
+Outside `crates/`: **`studio/`**, Edits Studio, the desktop app (binary
+`edits-studio`): a Tauri v2 + React + shadcn/ui frontend in `studio/src`
+(scaffolded with create-tauri-ui, components from the shadcn CLI in
+`studio/src/components/ui`, pages in `studio/src/components/pages`) and its
+Rust side in `studio/src-tauri` (depends on `edits-core`, `edits-render` and
+`edits-analyze` by path; frames, edits through `edits_core::edit`, live
+reload, `ui.json`, renders, comparisons; `engine/` is ported from
+`edits-gui`). It is **not** a workspace member (`exclude` in `Cargo.toml`)
+and builds into the workspace's `target/`.
 
 Other folders: `docs/` (format, effects, CLI, rendering, analysis, agents, window),
 `examples/` (`beat-loop.json`, example shaders), `.claude/skills/edits/` (the
@@ -59,6 +69,16 @@ cargo clippy -p <crate> --all-targets
   of parallel builds and are ignored by git; nothing depends on them.
 - `edits-gui` pulls in windowing and audio libraries; build it only when you
   work on it (`cargo build -p edits-gui`), not as part of every check.
+- **Edits Studio** needs WebKitGTK and Bun (docs/GUI.md lists the apt
+  packages). `cd studio && bun install`, then `bun run tauri build --no-bundle`
+  (release, `target/release/edits-studio`) or `bun run tauri build --debug
+  --no-bundle`; `bun run tauri dev` for hot reload and the debug panel
+  (Ctrl+D). Checks: `bun run typecheck && bun run lint && bun run build`, and
+  `cd studio/src-tauri && cargo test` (no window needed). Add UI components
+  with `bunx --bun shadcn@latest add <name>` and use them as generated: no
+  restyling, colours only from the theme tokens in `studio/src/index.css`.
+  Commit `studio/bun.lock` and `studio/src-tauri/Cargo.lock`, never
+  `node_modules`, `dist` or `gen`.
 
 ## Run the demo
 
@@ -124,4 +144,4 @@ definitions; `docs/AGENTS.md` has the client setup.
 | `docs/RENDERING.md` | Colour, geometry and what the renderer does to be fast |
 | `docs/ANALYSIS.md` | `edits-analyze`: stages, the analysis file, draft, compare |
 | `docs/AGENTS.md` | Driving the engine from an agent: JSON, CLI, MCP tools, security, client setup |
-| `docs/GUI.md` | The preview window |
+| `docs/GUI.md` | The desktop app (Edits Studio) and the egui window |

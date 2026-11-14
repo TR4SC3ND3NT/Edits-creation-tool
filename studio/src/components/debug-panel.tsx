@@ -850,7 +850,7 @@ export function DebugPanel() {
     function refreshSystemDefaults() {
       const resolved = new Intl.DateTimeFormat().resolvedOptions()
       const localeChain = getLocaleChain()
-      let region: string | null = null
+      let region: string | null
 
       try {
         region = new Intl.Locale(resolved.locale).region ?? null

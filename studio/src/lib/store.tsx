@@ -115,7 +115,9 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
 
   const info = snapshot?.info ?? null
   const infoRef = React.useRef(info)
-  infoRef.current = info
+  React.useLayoutEffect(() => {
+    infoRef.current = info
+  })
   const t = info ? frameTime(info, frame) : 0
 
   // ---- the project, pushed by the Rust side ----------------------------------------
@@ -134,6 +136,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
             {
               description: s.history.undo[0]?.readable ?? reason.summary,
               action: { label: "Undo", onClick: () => undoRef.current() },
+            duration: 8000,
             }
           )
           break
@@ -239,9 +242,11 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
 
   const clockRef = React.useRef<{ start: number; frame: number } | null>(null)
   const frameRef = React.useRef(frame)
-  frameRef.current = frame
   const loopingRef = React.useRef(looping)
-  loopingRef.current = looping
+  React.useLayoutEffect(() => {
+    frameRef.current = frame
+    loopingRef.current = looping
+  })
 
   const setPlaying = React.useCallback(
     (on: boolean) => {
@@ -341,7 +346,9 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
 
   const undo = React.useCallback(() => void run(api.undo()), [run])
   const redo = React.useCallback(() => void run(api.redo()), [run])
-  undoRef.current = undo
+  React.useLayoutEffect(() => {
+    undoRef.current = undo
+  })
 
   const openProject = React.useCallback(async (path: string) => {
     try {

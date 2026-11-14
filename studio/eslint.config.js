@@ -20,6 +20,9 @@ export default defineConfig([
     },
     rules: {
       'react-refresh/only-export-components': 'off',
+      // Syncing state from props in an effect is how the template's own
+      // components (use-mobile, the debug panel) work: a hint, not an error.
+      'react-hooks/set-state-in-effect': 'warn',
     },
   },
 ])

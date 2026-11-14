@@ -240,7 +240,7 @@ function SignatureChart({
               axisLine={false}
               tickMargin={8}
               minTickGap={32}
-              tickFormatter={(v) => `b${v}`}
+              tickFormatter={(v) => `b${Math.round(Number(v) * 4) / 4}`}
             />
             <YAxis
               tickLine={false}
@@ -403,13 +403,13 @@ export function ReferencePage() {
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
       <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6">
-        <div className="flex flex-wrap items-center gap-2 px-4 lg:px-6">
+        <div className="flex items-center gap-2 px-4 lg:px-6">
           <Select
             items={analyses.map((a) => ({ label: name(a), value: a }))}
             value={analysisPath}
             onValueChange={(v) => v && setAnalysisPath(v)}
           >
-            <SelectTrigger size="sm" className="w-72" aria-label="Analysis">
+            <SelectTrigger size="sm" className="w-64" aria-label="Analysis">
               <SelectValue placeholder="No analysis found" />
             </SelectTrigger>
             <SelectContent>
@@ -439,7 +439,7 @@ export function ReferencePage() {
             value={reportPath}
             onValueChange={(v) => v && setReportPath(v)}
           >
-            <SelectTrigger size="sm" className="w-56" aria-label="Report">
+            <SelectTrigger size="sm" className="w-48" aria-label="Report">
               <SelectValue placeholder="No comparison yet" />
             </SelectTrigger>
             <SelectContent>
@@ -471,7 +471,7 @@ export function ReferencePage() {
             >
               <SelectTrigger
                 size="sm"
-                className="w-56"
+                className="w-52"
                 aria-label="Compare a render"
               >
                 <ScanEyeIcon />

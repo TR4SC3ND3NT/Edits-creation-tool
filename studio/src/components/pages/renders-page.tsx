@@ -89,10 +89,15 @@ export function RendersPage() {
         setOutputs(r.outputs)
         setJob((j) => j ?? r.job)
         setEdits(r.edits)
-        setOutput((o) => o || r.default_output || "")
+        setOutput((o) => {
+          if (o) return o
+          const d = r.default_output ?? ""
+          const dir = s.snapshot ? `${s.snapshot.dir}/` : ""
+          return dir && d.startsWith(dir) ? d.slice(dir.length) : d
+        })
       })
       .catch(() => {})
-  }, [])
+  }, [s.snapshot])
   React.useEffect(refresh, [refresh, s.snapshot?.path])
   React.useEffect(() => {
     if (!isTauri()) return

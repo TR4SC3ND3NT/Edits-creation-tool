@@ -70,7 +70,7 @@ function Actor({ actor }: { actor: string }) {
 /** The edit history shared with the agent (`.edits/history/`). */
 export function ActivityPage() {
   const s = useStudio()
-  const [now, setNow] = React.useState(Date.now())
+  const [now, setNow] = React.useState(() => Date.now())
   React.useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 5000)
     return () => window.clearInterval(id)

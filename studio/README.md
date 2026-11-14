@@ -1,21 +1,24 @@
-# React + TypeScript + Vite + shadcn/ui
+# Edits Studio
 
-This is a template for a new Vite project with React, TypeScript, and shadcn/ui.
+The desktop app of the `edits` engine: Tauri v2, React, shadcn/ui. What it
+does, the system packages it needs and every page are in
+[docs/GUI.md](../docs/GUI.md).
 
-## Adding components
-
-To add components to your app, run the following command:
-
-```bash
-npx shadcn@latest add button
+```
+bun install
+bun run tauri build --no-bundle        # ../target/release/edits-studio
+bun run tauri dev -- -- "$PWD/../demo/project.json"   # hot reload, debug panel (Ctrl+D)
+bun run typecheck && bun run lint && bun run build
+(cd src-tauri && cargo test)
 ```
 
-This will place the ui components in the `src/components` directory.
+- `src/` the frontend: `components/ui` as the shadcn CLI generates it,
+  `components/pages` one file per page, `components/edit` the viewer,
+  transport, timeline and inspector, `lib/store.tsx` the shared state,
+  `lib/api.ts` the typed Tauri commands.
+- `src-tauri/` the Rust side: project, frames, edits, `ui.json`, renders and
+  comparisons (see the module docs in `src/lib.rs`). Not a member of the root
+  Cargo workspace.
 
-## Using components
-
-To use the components in your app, import them as follows:
-
-```tsx
-import { Button } from "@/components/ui/button"
-```
+Scaffolded with [create-tauri-ui](https://github.com/agmmnn/tauri-ui) (MIT);
+see `THIRD_PARTY.md` at the root.

@@ -18,7 +18,9 @@ function editable(target: EventTarget | null) {
 export function Shortcuts() {
   const s = useStudio()
   const ref = React.useRef(s)
-  ref.current = s
+  React.useLayoutEffect(() => {
+    ref.current = s
+  })
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const s = ref.current

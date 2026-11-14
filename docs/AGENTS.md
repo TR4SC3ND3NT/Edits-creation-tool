@@ -141,7 +141,7 @@ few calls, then refine with `project_edit`:
 
 ### What the person is looking at: `.edits/ui.json`
 
-The preview window (`edits-gui`) shares what the person has selected and
+The desktop app (Edits Studio, or the egui window `edits-gui`) shares what the person has selected and
 where they are, through a file next to the project. `ui_context` reads it, so
 "make *this* hit stronger" can be resolved to a layer and a time. The format,
 `edits.ui/1` (type `edits_core::ui::UiContext`, with `edits_core::ui::write`
@@ -231,7 +231,7 @@ is compared is timing and effect curves. See [ANALYSIS.md](ANALYSIS.md).
 
 ### The person and the agent share one history
 
-The window (`edits-gui`) is also an editor, and its edits go through the same
+The window (Edits Studio or `edits-gui`) is also an editor, and its edits go through the same
 code as `project_edit` (`edits_core::edit`): validated the same way, written
 atomically, and saved in the same `.edits/history/`. So there is one history
 for the project, not one per side:
@@ -371,8 +371,8 @@ has no `main`-only assumptions, so a subcommand of another binary can call it.
 - MCP tasks (the `io.modelcontextprotocol/tasks` extension) are not used;
   jobs are ordinary tools, which every client can call.
 - No MCP resources or prompts; the skill is a file, not served over MCP.
-- The window does not write `.edits/ui.json` yet: the format above is the
-  contract for it, and `ui_context` already reads it.
+- Edits Studio writes `.edits/ui.json` without a `note` (it has no note box
+  yet); the egui window writes the note too.
 - Presets are applied, not previewed: there are no poster images; look with
   `render_sheet` after `preset_apply` (`dry_run` reports the changes only).
 - No tool isolates a single layer in a render, overlays ids or motion paths

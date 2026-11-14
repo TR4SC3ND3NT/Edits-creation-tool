@@ -41,7 +41,7 @@ preview of the full one.
 | [`beats accent`](#beats-accent) | A preset on every beat, bar, kick, snare, hat or the drop |
 | [`transitions`](#transitions) | The transitions between two layers, with their parameters |
 | [`shader check`](#shader-check) | Check a custom effect shader without a GPU, with line numbers |
-| [`gui`](#gui-and-mcp) | Open the preview window (`edits-gui`) |
+| [`gui`](#gui-and-mcp) | Open the desktop app (Edits Studio, or `edits-gui`) |
 | [`mcp`](#gui-and-mcp) | Serve the MCP tools over stdio (`edits-mcp`) |
 
 A first run:
@@ -575,14 +575,21 @@ error: shaders/bad.wgsl:3:24: no definition in scope for identifier: `nope`
 ## gui and mcp
 
 ```
-edits gui <project.json> [edits-gui options]
+edits gui [project.json] [options]
 edits mcp [--root DIR]
 ```
 
-Start the preview window ([GUI.md](GUI.md)) or the MCP server for agents
-([AGENTS.md](AGENTS.md)). They are separate executables, `edits-gui` and
-`edits-mcp`, so the main binary carries no windowing, audio or async code;
-these subcommands find them next to `edits` (or on `PATH`, or through
-`EDITS_GUI_BIN` / `EDITS_MCP_BIN`) and pass the arguments on. When one is
-missing the error says which `cargo build` produces it. `edits mcp` tells the
+Start the desktop app ([GUI.md](GUI.md)) or the MCP server for agents
+([AGENTS.md](AGENTS.md)). They are separate executables, so the main binary
+carries no windowing, audio or async code; these subcommands find them next
+to `edits` (or on `PATH`, or through `EDITS_STUDIO_BIN`, `EDITS_GUI_BIN`,
+`EDITS_MCP_BIN`) and pass the arguments on.
+
+`edits gui` starts Edits Studio (`edits-studio`, built from `studio/`) when
+it is there, and the egui window (`edits-gui`) when it is not, when
+`EDITS_GUI=egui` is set, or when an option only the egui window has is given
+(`--screenshot`, `--delay`, `--size`, `--scale`, `--play`, `--cache-mb`,
+`--adapter`); `EDITS_GUI=studio` insists on the studio. The studio takes
+`--page`, `--select` and `--at`. When neither is built the error says how to
+build them. `edits mcp` tells the
 server to use this `edits` binary.
