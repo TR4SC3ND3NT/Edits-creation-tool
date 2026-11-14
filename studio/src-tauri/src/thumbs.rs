@@ -3,13 +3,13 @@
 //! card shows what the item does. They are made lazily (when a card first
 //! shows), one at a time on a thread with a renderer of its own (the preview
 //! renderer keeps the project's pictures), and kept on disk under the user's
-//! cache folder (`$XDG_CACHE_HOME/edits-studio/thumbs/v1/`, else
+//! cache folder (`$XDG_CACHE_HOME/edits-studio/thumbs/v2/`, else
 //! `~/.cache/...`), so they are made once per machine.
 //!
 //! The sample is two generated pictures (warm circles, cool stripes) at
 //! 192 x 108. An effect is put on the picture with its registry defaults;
-//! when that changes almost nothing, its first parameter with a range is set
-//! to 70 % of the range. A preset is applied at beat 1 and shown a little
+//! when that changes almost nothing, its parameters are tried in turn at a
+//! telling value (70 % of a range) and the clearest result is kept. A preset is applied at beat 1 and shown a little
 //! after; a text preset gets a text layer to work on; a transition is shown
 //! half way.
 
@@ -34,7 +34,7 @@ pub fn cache_dir() -> PathBuf {
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
         .unwrap_or_else(std::env::temp_dir);
-    base.join("edits-studio").join("thumbs").join("v1")
+    base.join("edits-studio").join("thumbs").join("v2")
 }
 
 /// The file of one thumbnail: `effect-glow.jpg`, `preset-flash.jpg`, `transition-fade.jpg`.
@@ -100,8 +100,36 @@ fn frame_at(beat: f64) -> u64 {
     (beat * 60.0 / BPM * FPS).round() as u64
 }
 
+/// Values worth trying for an effect whose defaults change nothing: a
+/// telling value for each single-number parameter, in registry order.
+pub fn boosts(kind: &str) -> Vec<(&'static str, f64)> {
+    let Some(spec) = effects::spec(kind) else { return Vec::new() };
+    spec.params
+        .iter()
+        .filter(|p| p.default.len() == 1)
+        .map(|p| {
+            let d = p.default[0];
+            let v = match p.range {
+                Some((a, b)) if a.is_finite() && b.is_finite() => {
+                    let v = a + 0.7 * (b - a);
+                    if (v - d).abs() < 1e-9 { a + 0.3 * (b - a) } else { v }
+                }
+                _ if d == 0.0 => match p.unit.as_str() {
+                    "%h" => 4.0,
+                    "deg" => 90.0,
+                    _ => 1.0,
+                },
+                _ if d > 0.0 => d * 2.5,
+                _ => d - 1.0,
+            };
+            (p.name, v)
+        })
+        .take(5)
+        .collect()
+}
+
 /// The sample project for one item and the frame to show.
-pub fn sample(kind: &str, name: &str, dir: &Path, boost: bool) -> Result<(Value, u64), String> {
+pub fn sample(kind: &str, name: &str, dir: &Path, boost: Option<(&str, f64)>) -> Result<(Value, u64), String> {
     let mut doc = base_doc(dir);
     match kind {
         "effect" => {
@@ -110,13 +138,8 @@ pub fn sample(kind: &str, name: &str, dir: &Path, boost: bool) -> Result<(Value,
                 return Err(format!("{name} needs a file and has no preview"));
             }
             let mut params = Map::new();
-            if boost {
-                if let Some(p) = spec.params.iter().find(|p| {
-                    p.range.is_some_and(|(a, b)| a.is_finite() && b.is_finite()) && p.default.len() == 1
-                }) {
-                    let (a, b) = p.range.expect("filtered");
-                    params.insert(p.name.into(), json!(a + 0.7 * (b - a)));
-                }
+            if let Some((param, v)) = boost {
+                params.insert(param.into(), json!(v));
             }
             doc["layers"][0]["effects"] = json!([ { "kind": name, "params": params } ]);
             // A little motion for the effects that read it (echoes, motion blur).
@@ -256,16 +279,25 @@ fn make(
     out: &Path,
 ) -> Result<(), String> {
     samples(dir)?;
-    let (doc, frame) = sample(kind, name, dir, false)?;
+    let (doc, frame) = sample(kind, name, dir, None)?;
     let mut img = render(r, &doc, frame)?;
     if kind == "effect" {
         if plain.is_none() {
             *plain = Some(render(r, &base_doc(dir), frame)?);
         }
-        if plain.as_ref().is_some_and(|p| mean_diff(p, &img) < 2.0) {
-            if let Ok((doc, frame)) = sample(kind, name, dir, true) {
-                if let Ok(boosted) = render(r, &doc, frame) {
-                    img = boosted;
+        let base = plain.as_ref().expect("rendered above");
+        let mut best = mean_diff(base, &img);
+        // Defaults that leave the picture as it is show nothing: try a telling value of each parameter.
+        for boost in boosts(name) {
+            if best >= 4.0 {
+                break;
+            }
+            let Ok((doc, frame)) = sample(kind, name, dir, Some(boost)) else { continue };
+            if let Ok(other) = render(r, &doc, frame) {
+                let d = mean_diff(base, &other);
+                if d > best {
+                    best = d;
+                    img = other;
                 }
             }
         }
@@ -303,7 +335,7 @@ mod tests {
                 .map(|p| ("preset", p.name)),
         );
         for (kind, name) in items {
-            let (doc, frame) = match sample(kind, &name, &d, false) {
+            let (doc, frame) = match sample(kind, &name, &d, None) {
                 Ok(x) => x,
                 // A preset that needs a variable (a texture slot) has no preview.
                 Err(e) if kind == "preset" => {
@@ -321,6 +353,8 @@ mod tests {
             assert!(errors.is_empty(), "{kind} {name}: {errors:?}");
         }
         assert_eq!(file_name("preset", "transition:fade"), "preset-transition_fade.jpg");
+        let b = boosts("exposure");
+        assert!(!b.is_empty() && b[0].1 != 0.0, "{b:?}");
         std::fs::remove_dir_all(&d).ok();
     }
 

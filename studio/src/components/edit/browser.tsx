@@ -28,11 +28,7 @@ import {
   ZapIcon,
 } from "lucide-react"
 
-import {
-  DRAG_MIME,
-  useEditor,
-  type BrowserItem,
-} from "@/components/edit/editor-context"
+import { useEditor, type BrowserItem } from "@/components/edit/editor-context"
 import { pickPicture } from "@/components/edit/kind-sections"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -96,7 +92,9 @@ function Thumb({
   icon?: React.ComponentType<{ className?: string }>
 }) {
   const ref = React.useRef<HTMLDivElement>(null)
-  const [url, setUrl] = React.useState<string | null>(src ?? null)
+  const [made, setUrl] = React.useState<string | null>(null)
+  // A given picture (a slot) follows its prop; an item's preview is made once.
+  const url = src !== undefined ? src : made
   const [failed, setFailed] = React.useState(false)
   React.useEffect(() => {
     if (src !== undefined || !kind || !name || !isTauri()) return
@@ -170,10 +168,9 @@ function Card({
             tabIndex={0}
             data-slot="browser-card"
             data-item={`${item.type}:${item.name}`}
-            draggable
-            onDragStart={(e) => {
-              e.dataTransfer.setData(DRAG_MIME, JSON.stringify(item))
-              e.dataTransfer.effectAllowed = "copy"
+            onPointerDown={(e) => {
+              if (!(e.target as HTMLElement).closest("button"))
+                ed.beginItemDrag(e, item, title)
             }}
             onDoubleClick={() => void ed.apply(item)}
             onKeyDown={(e) => {
@@ -207,8 +204,11 @@ function Card({
       <TooltipContent side="right" className="max-w-64">
         {description}
         <span className="mt-1 block opacity-70">
-          Double-click: apply to the selected layer at the playhead · drag onto
-          a clip or the viewer
+          {item.type === "slot" || item.type === "layer"
+            ? "Double-click: add it at the playhead · drag onto a track or the viewer"
+            : item.type === "transition"
+              ? "Double-click: the selected clip comes in with it · drag onto a clip"
+              : "Double-click: apply to the selected layer at the playhead · drag onto a clip or the viewer"}
         </span>
       </TooltipContent>
     </Tooltip>
@@ -217,7 +217,7 @@ function Card({
 
 function Grid({ children }: { children: React.ReactNode }) {
   return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(7.5rem,1fr))] gap-1">
+    <div className="grid grid-cols-[repeat(auto-fill,minmax(5.25rem,1fr))] gap-1">
       {children}
     </div>
   )
@@ -324,7 +324,7 @@ function MediaTab({ q }: { q: string[] }) {
                   >
                     <EllipsisIcon />
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-48">
+                  <DropdownMenuContent align="start" className="w-48">
                     <DropdownMenuItem
                       onClick={() =>
                         pickPicture().then(
@@ -404,7 +404,10 @@ function TransitionsTab({ q, presets }: { q: string[]; presets: Preset[] }) {
             key={p.name}
             item={{ type: "transition", name: kind }}
             title={pretty(kind)}
-            description={p.description}
+            description={p.description.replace(
+              /^Transition into the layer at its cut: /,
+              ""
+            )}
             thumb={<Thumb kind="transition" name={kind} />}
           />
         )
@@ -667,50 +670,59 @@ export function Browser() {
   const [query, setQuery] = React.useState("")
   const q = words(query)
   return (
-    <div className="flex h-full min-h-0 flex-col" data-slot="browser">
+    <div className="flex h-full min-h-0" data-slot="browser">
       <Tabs
         value={tab}
         onValueChange={(v) => setTab(v as Tab)}
-        orientation="horizontal"
-        className="gap-0"
+        orientation="vertical"
+        className="shrink-0 gap-0 border-r"
       >
-        <div className="border-b px-2 pt-2 pb-2">
-          <TabsList className="grid h-auto w-full grid-cols-4 gap-0.5">
-            {TABS.map((t) => (
-              <TabsTrigger key={t.id} value={t.id} className="h-7 px-1 text-xs">
-                <t.icon />
-                <span className="truncate">{t.label}</span>
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </div>
+        <TabsList
+          variant="line"
+          className="h-full w-16 items-stretch gap-0.5 p-1"
+        >
+          {TABS.map((t) => (
+            <TabsTrigger
+              key={t.id}
+              value={t.id}
+              className="h-12 flex-none flex-col justify-center gap-1 px-0 text-[10px] data-active:bg-muted"
+            >
+              <t.icon className="size-4" />
+              {t.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
       </Tabs>
-      {tab !== "audio" && (
-        <div className="px-2 pt-2">
-          <InputGroup className="h-8">
-            <InputGroupAddon>
-              <SearchIcon />
-            </InputGroupAddon>
-            <InputGroupInput
-              placeholder={`Search ${TABS.find((t) => t.id === tab)?.label.toLowerCase()}…`}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              aria-label="Search the browser"
-            />
-          </InputGroup>
-        </div>
-      )}
-      <ScrollArea className="min-h-0 flex-1">
-        <div className={cn("flex flex-col gap-1 p-1.5 pb-4")}>
-          {tab === "media" && <MediaTab q={q} />}
-          {tab === "effects" && <EffectsTab q={q} />}
-          {tab === "transitions" && <TransitionsTab q={q} presets={presets} />}
-          {tab === "presets" && <PresetsTab q={q} presets={presets} />}
-          {tab === "text" && <TextTab q={q} presets={presets} />}
-          {tab === "shapes" && <ShapesTab q={q} presets={presets} />}
-          {tab === "audio" && <AudioTab />}
-        </div>
-      </ScrollArea>
+      <div className="flex min-w-0 flex-1 flex-col">
+        {tab !== "audio" && (
+          <div className="px-2 pt-2">
+            <InputGroup className="h-8">
+              <InputGroupAddon>
+                <SearchIcon />
+              </InputGroupAddon>
+              <InputGroupInput
+                placeholder={`Search ${TABS.find((t) => t.id === tab)?.label.toLowerCase()}…`}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                aria-label="Search the browser"
+              />
+            </InputGroup>
+          </div>
+        )}
+        <ScrollArea className="min-h-0 flex-1">
+          <div className={cn("flex flex-col gap-1 p-1.5 pb-4")}>
+            {tab === "media" && <MediaTab q={q} />}
+            {tab === "effects" && <EffectsTab q={q} />}
+            {tab === "transitions" && (
+              <TransitionsTab q={q} presets={presets} />
+            )}
+            {tab === "presets" && <PresetsTab q={q} presets={presets} />}
+            {tab === "text" && <TextTab q={q} presets={presets} />}
+            {tab === "shapes" && <ShapesTab q={q} presets={presets} />}
+            {tab === "audio" && <AudioTab />}
+          </div>
+        </ScrollArea>
+      </div>
     </div>
   )
 }

@@ -1,11 +1,7 @@
 import * as React from "react"
 import { CircleAlertIcon, Grid3x3Icon, MousePointer2Icon } from "lucide-react"
 
-import {
-  DRAG_MIME,
-  useEditor,
-  type BrowserItem,
-} from "@/components/edit/editor-context"
+import { useEditor } from "@/components/edit/editor-context"
 import { TransformOverlay } from "@/components/edit/transform-overlay"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
@@ -59,7 +55,6 @@ export function Viewer() {
   const [error, setError] = React.useState<string | null>(null)
   const [zoom, setZoom] = React.useState("fit")
   const [handles, setHandles] = React.useState(true)
-  const [dropping, setDropping] = React.useState(false)
   const drawn = React.useRef<ImageBitmap | null>(null)
   const wanted = React.useRef("")
   const inflight = React.useRef(0)
@@ -99,7 +94,12 @@ export function Viewer() {
     const ctx = c.getContext("2d")
     if (!ctx) return
     ctx.imageSmoothingQuality = "high"
-    ctx.drawImage(b, 0, 0, w, h)
+    try {
+      ctx.drawImage(b, 0, 0, w, h)
+    } catch {
+      // A bitmap of an older version was closed meanwhile: the new frame is on its way.
+      drawn.current = null
+    }
   }, [])
 
   // Redraw on resize.
@@ -172,13 +172,23 @@ export function Viewer() {
     }
   }, [info, revision, frame, scale, blur, playing, draw])
 
-  const onDrop = (e: React.DragEvent) => {
-    setDropping(false)
-    const text = e.dataTransfer.getData(DRAG_MIME)
-    if (!text) return
-    e.preventDefault()
-    void ed.apply(JSON.parse(text) as BrowserItem)
-  }
+  // Browser items dropped on the picture apply to the selected layer (or the picture on screen).
+  const { registerDrop, apply, itemDrag } = ed
+  React.useEffect(
+    () =>
+      registerDrop((x, y, item) => {
+        const el = document.elementFromPoint(x, y)
+        if (!el?.closest("[data-slot=viewer]")) return false
+        void apply(item)
+        return true
+      }),
+    [registerDrop, apply]
+  )
+  const dropping =
+    !!itemDrag &&
+    !!document
+      .elementFromPoint(itemDrag.x, itemDrag.y)
+      ?.closest("[data-slot=viewer]")
 
   const errors = snapshot?.problems.filter((p) => p.error) ?? []
   return (
@@ -189,15 +199,6 @@ export function Viewer() {
         "relative flex min-h-0 flex-1 items-center justify-center bg-muted/30",
         zoom === "fit" ? "overflow-hidden" : "overflow-auto"
       )}
-      onDragOver={(e) => {
-        if (e.dataTransfer.types.includes(DRAG_MIME)) {
-          e.preventDefault()
-          e.dataTransfer.dropEffect = "copy"
-          setDropping(true)
-        }
-      }}
-      onDragLeave={() => setDropping(false)}
-      onDrop={onDrop}
     >
       {errors.length > 0 && (
         <Alert

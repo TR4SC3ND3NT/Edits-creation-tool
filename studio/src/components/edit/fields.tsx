@@ -149,7 +149,7 @@ export function UnitInput({
       <InputGroupInput
         aria-label={label}
         inputMode="decimal"
-        className="h-7 px-2 text-right text-sm tabular-nums"
+        className="h-7 px-1.5 text-right text-sm tabular-nums"
         value={focused ? text : shown}
         onFocus={(e) => {
           setFocused(true)
@@ -358,7 +358,7 @@ export function PropRow({
               type="button"
               onClick={onPick}
               className={cn(
-                "flex w-24 shrink-0 items-center gap-1 truncate text-left text-sm",
+                "flex w-20 shrink-0 items-center gap-1 truncate text-left text-sm",
                 prop.set ? "text-foreground" : "text-muted-foreground"
               )}
             />
@@ -367,6 +367,11 @@ export function PropRow({
           <span className="truncate">
             {label ?? prop.name.replaceAll("_", " ")}
           </span>
+          {value.length > 1 && unit && unit.length <= 2 ? (
+            <span className="shrink-0 text-xs text-muted-foreground">
+              {unit}
+            </span>
+          ) : null}
           {prop.shake && (
             <WavesIcon className="size-3 shrink-0 text-muted-foreground" />
           )}
@@ -436,11 +441,6 @@ export function PropRow({
           ))
         )}
       </div>
-      {value.length > 1 && unit && prop.unit !== "color" ? (
-        <span className="w-6 shrink-0 text-xs text-muted-foreground">
-          {unit}
-        </span>
-      ) : null}
       <Tooltip>
         <TooltipTrigger
           render={
@@ -497,7 +497,7 @@ export function FieldRow({
         <Tooltip>
           <TooltipTrigger
             render={
-              <span className="w-24 shrink-0 truncate text-sm text-muted-foreground" />
+              <span className="w-20 shrink-0 truncate text-sm text-muted-foreground" />
             }
           >
             {label}
@@ -507,7 +507,7 @@ export function FieldRow({
           </TooltipContent>
         </Tooltip>
       ) : (
-        <span className="w-24 shrink-0 truncate text-sm text-muted-foreground">
+        <span className="w-20 shrink-0 truncate text-sm text-muted-foreground">
           {label}
         </span>
       )}

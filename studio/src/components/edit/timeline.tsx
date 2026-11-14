@@ -41,11 +41,7 @@ import {
 } from "lucide-react"
 import { convertFileSrc } from "@tauri-apps/api/core"
 
-import {
-  DRAG_MIME,
-  useEditor,
-  type BrowserItem,
-} from "@/components/edit/editor-context"
+import { useEditor } from "@/components/edit/editor-context"
 import { KindIcon } from "@/components/edit/kind-icon"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -73,7 +69,14 @@ import {
 import { api, type Lane, type Row } from "@/lib/api"
 import { useStudio } from "@/lib/store"
 import { cn } from "@/lib/utils"
-import { fmtTime, frameAt, frameTime, tidy, toSeconds } from "@/lib/time"
+import {
+  firstFrameFrom,
+  fmtTime,
+  frameAt,
+  frameTime,
+  tidy,
+  toSeconds,
+} from "@/lib/time"
 
 const HEADER = 196
 const RULER = 26
@@ -225,8 +228,6 @@ function TrackRow({
   children,
   onClipDown,
   onTrackDown,
-  onDrop,
-  onDragState,
   keyGlyphs,
 }: {
   row: Row
@@ -243,8 +244,6 @@ function TrackRow({
   children?: React.ReactNode
   onClipDown: (e: React.PointerEvent<HTMLDivElement>) => void
   onTrackDown: (e: React.PointerEvent<HTMLDivElement>) => void
-  onDrop: (e: React.DragEvent, item: BrowserItem) => void
-  onDragState: (over: boolean) => void
   keyGlyphs: React.ReactNode
 }) {
   const s = useStudio()
@@ -326,23 +325,10 @@ function TrackRow({
         )}
       </div>
       <div
+        data-slot="track"
         className="relative"
         style={{ width: contentW }}
         onPointerDown={onTrackDown}
-        onDragOver={(e) => {
-          if (camera || !e.dataTransfer.types.includes(DRAG_MIME)) return
-          e.preventDefault()
-          e.dataTransfer.dropEffect = "copy"
-          onDragState(true)
-        }}
-        onDragLeave={() => onDragState(false)}
-        onDrop={(e) => {
-          onDragState(false)
-          const text = e.dataTransfer.getData(DRAG_MIME)
-          if (!text) return
-          e.preventDefault()
-          onDrop(e, JSON.parse(text) as BrowserItem)
-        }}
       >
         {children}
         <div
@@ -365,19 +351,22 @@ function TrackRow({
               style={{ width: Math.max(3, row.transition[1] * ppu) }}
             />
           )}
-          <div className="relative flex min-w-0 items-center gap-1 px-1.5 pt-0.5">
+          <div className="relative flex min-w-0 items-center gap-1 overflow-hidden px-1 pt-1">
+            {!camera && (
+              <span className="shrink-0 rounded-sm bg-background/85 px-1 text-[11px] leading-4 font-medium">
+                {row.id}
+              </span>
+            )}
             {row.transition && (
-              <span className="shrink-0 rounded-sm bg-background/80 px-1 text-[10px] text-foreground">
+              <span className="shrink-0 rounded-sm bg-background/85 px-1 text-[10px] leading-4">
                 ⇢ {row.transition[0].replaceAll("_", " ")}
               </span>
             )}
             {raw?.kind === "text" && (
-              <span className="truncate rounded-sm bg-background/80 px-1 text-[11px]">
+              <span className="truncate rounded-sm bg-background/85 px-1 text-[11px] leading-4">
                 “{String(raw.text ?? "").replace(/\n/g, " ")}”
               </span>
             )}
-          </div>
-          <div className="relative flex min-w-0 items-center gap-0.5 overflow-hidden px-1 pb-0.5">
             {row.effects.map((fx, i) => (
               <span
                 key={i}
@@ -416,13 +405,43 @@ export function Timeline() {
   const s = useStudio()
   const ed = useEditor()
   const { snapshot, info } = s
+  // The scroller exists once the project has loaded: watch it from then on.
+  const mounted = !!(snapshot && info)
   const scroller = React.useRef<HTMLDivElement>(null)
   const [width, setWidth] = React.useState(800)
   const [zoom, setZoom] = React.useState(1)
   const [drag, setDrag] = React.useState<Drag | null>(null)
   const [marquee, setMarquee] = React.useState<Marquee | null>(null)
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set())
-  const [dropRow, setDropRow] = React.useState<string | null>(null)
+  // Browser items dropped on a track: a picture lands where it is dropped, anything else applies to that clip.
+  const zoomRef = React.useRef({ zoom, ppu: 1, t0: 0 })
+  const latest = React.useRef({ s, ed })
+  React.useLayoutEffect(() => {
+    latest.current = { s, ed }
+  })
+  const { registerDrop } = ed
+  React.useEffect(
+    () =>
+      registerDrop((x, y, item) => {
+        const track = document
+          .elementFromPoint(x, y)
+          ?.closest<HTMLElement>("[data-slot=timeline-row]")
+        const id = track?.dataset.layer
+        const { s, ed } = latest.current
+        const row = s.snapshot?.rows.find((r) => r.id === id)
+        if (!track || !row || row.index == null) return false
+        if (item.type === "slot") {
+          const lane = track.querySelector<HTMLElement>("[data-slot=track]")
+          const { ppu, t0 } = zoomRef.current
+          const at = lane
+            ? t0 + (x - lane.getBoundingClientRect().left) / ppu
+            : s.t
+          void s.run(api.layerAdd("image", item.name, Math.max(0, at), row.id))
+        } else void ed.apply(item, row.id)
+        return true
+      }),
+    [registerDrop]
+  )
   const [scrollLeft, setScrollLeft] = React.useState(0)
 
   React.useEffect(() => {
@@ -431,10 +450,9 @@ export function Timeline() {
     const ro = new ResizeObserver(([e]) => setWidth(e.contentRect.width))
     ro.observe(el)
     return () => ro.disconnect()
-  }, [])
+  }, [mounted])
 
   // Ctrl + wheel zooms about the pointer (a native listener: React's wheel events are passive).
-  const zoomRef = React.useRef({ zoom, ppu: 1, t0: 0 })
   React.useEffect(() => {
     const el = scroller.current
     if (!el) return
@@ -454,7 +472,7 @@ export function Timeline() {
     }
     el.addEventListener("wheel", onWheel, { passive: false })
     return () => el.removeEventListener("wheel", onWheel)
-  }, [])
+  }, [mounted])
 
   const t0r = info ? Math.min(0, info.start_time) : 0
   const t1r = info ? Math.max(info.duration, info.end_time) : 1
@@ -549,7 +567,14 @@ export function Timeline() {
 
   const scrub = (e: React.PointerEvent) => {
     if (e.button !== 0) return
-    const move = (ev: { clientX: number }) => s.seek(frameAt(info, pointT(ev)))
+    // Snapping on: the playhead lands on the beat (its first frame), a clip edge or a marker.
+    const move = (ev: { clientX: number; shiftKey?: boolean }) => {
+      const t = pointT(ev)
+      if (!ed.snap) return s.seek(frameAt(info, t))
+      const sn = snapT(t, null)
+      const near = Math.abs(sn.t - t) * ppu <= SNAP_PX
+      s.seek(near ? firstFrameFrom(info, sn.t) : frameAt(info, t))
+    }
     move(e)
     const up = () => {
       window.removeEventListener("pointermove", move)
@@ -686,6 +711,9 @@ export function Timeline() {
     if (e.button !== 0) return
     e.stopPropagation()
     const id = row.index == null ? null : row.id
+    if (id) {
+      if (s.layer !== id) ed.pick(id)
+    } else s.select(null, true)
     ed.setKeyPicked({ layer: id, key: lane.key, t: from })
     const grab = pointT(e)
     follow(
@@ -748,16 +776,6 @@ export function Timeline() {
     window.addEventListener("pointerup", up)
   }
 
-  const dropOn = (e: React.DragEvent, row: Row, item: BrowserItem) => {
-    if (item.type === "slot") {
-      void s.run(
-        api.layerAdd("image", item.name, Math.max(0, pointT(e)), row.id)
-      )
-      return
-    }
-    void ed.apply(item, row.id)
-  }
-
   const toggleLanes = (id: string) =>
     setExpanded((cur) => {
       const n = new Set(cur)
@@ -816,6 +834,12 @@ export function Timeline() {
     />
   )
 
+  const dropRow = ed.itemDrag
+    ? (document
+        .elementFromPoint(ed.itemDrag.x, ed.itemDrag.y)
+        ?.closest<HTMLElement>("[data-slot=timeline-row]")?.dataset.layer ??
+      null)
+    : null
   const selectedSet = new Set(ed.selected)
   const groupDrag =
     drag &&
@@ -1086,14 +1110,22 @@ export function Timeline() {
                       : "h-1.5 border-border"
                   )}
                   style={{ left: x(k.t) }}
-                >
-                  {k.label && (
-                    <span className="absolute top-1 left-1 text-[10px] leading-none text-muted-foreground tabular-nums">
-                      {k.label}
-                    </span>
-                  )}
-                </div>
+                ></div>
               ))}
+              {ticks
+                .filter((k) => k.label)
+                .map((k) => (
+                  <span
+                    key={`l${k.t}`}
+                    className={cn(
+                      "pointer-events-none absolute top-1 text-[10px] leading-none tabular-nums",
+                      k.major ? "text-foreground" : "text-muted-foreground"
+                    )}
+                    style={{ left: x(k.t) + 3 }}
+                  >
+                    {k.label}
+                  </span>
+                ))}
               {snapshot.markers.map((m) => (
                 <div
                   key={`${m.t}${m.label}`}
@@ -1308,8 +1340,6 @@ export function Timeline() {
                   dropping={dropRow === row.id}
                   onClipDown={(e) => clipDown(e, row)}
                   onTrackDown={trackDown}
-                  onDrop={(e, item) => dropOn(e, row, item)}
-                  onDragState={(over) => setDropRow(over ? row.id : null)}
                   keyGlyphs={glyphs}
                 >
                   {rangeBox}

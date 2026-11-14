@@ -169,6 +169,8 @@ const EASES = [
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Raw = Record<string, any>
 
+const CONTENT_FIRST = new Set(["text", "shape", "solid", "particles"])
+
 const sameKey = (a: PropKey | undefined, b: PropKey | undefined) =>
   !!a && !!b && JSON.stringify(a) === JSON.stringify(b)
 
@@ -928,13 +930,17 @@ export function Inspector() {
               diamond is a key here.
             </p>
             {l && <LayerSection data={data} raw={raw} />}
-            {l && raw && <KindSection raw={raw} />}
+            {/* What a text or shape layer is comes first; for pictures, transform and effects do. */}
+            {l && raw && CONTENT_FIRST.has(l.kind) && <KindSection raw={raw} />}
             <Section title={l ? "Transform" : "Camera"}>
               {(l ? transform : data.camera).map((p) => (
                 <PropRow key={p.name} {...rowProps(p, null)} />
               ))}
             </Section>
             {l && <EffectsSection data={data} raw={raw} />}
+            {l && raw && !CONTENT_FIRST.has(l.kind) && (
+              <KindSection raw={raw} />
+            )}
             {l && <TransitionSection data={data} />}
             {l && raw && <MaskSection raw={raw} />}
             {l && raw && <MatteSection raw={raw} />}

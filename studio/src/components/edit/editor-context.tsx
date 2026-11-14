@@ -14,6 +14,7 @@ import {
   api,
   errorText,
   type EditDone,
+  type Info,
   type PropKey,
   type Row,
   type Song,
@@ -30,7 +31,16 @@ export type BrowserItem =
   | { type: "layer"; name: string } // text, shape:rect, particles, solid, adjustment
   | { type: "slot"; name: string } // a picture slot: an image layer of it
 
-export const DRAG_MIME = "application/x-edits-item"
+/** A browser card being dragged (with the pointer, not HTML drag and drop, so it works in every webview). */
+export type ItemDrag = {
+  item: BrowserItem
+  label: string
+  x: number
+  y: number
+} | null
+
+/** A place that takes dropped items: true when the drop at (x, y) was its. */
+export type DropHandler = (x: number, y: number, item: BrowserItem) => boolean
 
 type Live = { bitmap: ImageBitmap; frame: number } | null
 
@@ -60,6 +70,15 @@ type Editor = {
   song: Song | null
   analyze: () => void
   waveform: Waveform | null
+  itemDrag: ItemDrag
+  /** Start dragging a browser item from a pointer press (it becomes a drag once the pointer moves). */
+  beginItemDrag: (
+    e: React.PointerEvent,
+    item: BrowserItem,
+    label: string
+  ) => void
+  /** Take drops; returns the function that stops taking them. */
+  registerDrop: (h: DropHandler) => () => void
   shortcutsOpen: boolean
   setShortcutsOpen: (open: boolean) => void
   cutOpen: boolean
@@ -83,6 +102,14 @@ export function useEditor() {
 }
 
 const PICTURE = new Set(["image", "video", "cube", "comp"])
+
+/** `t` moved onto the quarter-beat grid when it is less than a frame from it (beats projects). */
+export function onGrid(info: Info, t: number) {
+  if (info.time_base !== "beats" || !info.bpm) return t
+  const q = Math.round(t * 4) / 4
+  const frameBeats = info.bpm / 60 / info.fps
+  return Math.abs(q - t) < frameBeats ? q : t
+}
 
 /** The top picture layer visible at `t`. */
 export function pictureAt(rows: Row[], t: number) {
@@ -123,6 +150,38 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
   const [song, setSong] = React.useState<Song | null>(null)
   const [waveform, setWaveform] = React.useState<Waveform | null>(null)
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false)
+  const [itemDrag, setItemDrag] = React.useState<ItemDrag>(null)
+  const drops = React.useRef(new Set<DropHandler>())
+  const registerDrop = React.useCallback((h: DropHandler) => {
+    drops.current.add(h)
+    return () => {
+      drops.current.delete(h)
+    }
+  }, [])
+  const beginItemDrag = React.useCallback(
+    (e: React.PointerEvent, item: BrowserItem, label: string) => {
+      if (e.button !== 0) return
+      const x0 = e.clientX
+      const y0 = e.clientY
+      let started = false
+      const move = (ev: PointerEvent) => {
+        if (!started && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 6) return
+        started = true
+        setItemDrag({ item, label, x: ev.clientX, y: ev.clientY })
+      }
+      const up = (ev: PointerEvent) => {
+        window.removeEventListener("pointermove", move)
+        window.removeEventListener("pointerup", up)
+        if (!started) return
+        setItemDrag(null)
+        for (const h of drops.current)
+          if (h(ev.clientX, ev.clientY, item)) break
+      }
+      window.addEventListener("pointermove", move)
+      window.addEventListener("pointerup", up)
+    },
+    []
+  )
   const [cutOpen, setCutOpen] = React.useState(false)
   const [accentOpen, setAccentOpen] = React.useState(false)
 
@@ -302,6 +361,8 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
   const apply = React.useCallback(
     async (item: BrowserItem, layer?: string | null) => {
       const target = layer ?? targetLayer()
+      // The playhead sits on a frame; a beat (or quarter beat) less than a frame away is meant.
+      const at = info ? onGrid(info, s.t) : s.t
       const kindOf = (id: string | null) =>
         snapshot?.layers.find((l) => l.id === id)?.kind
       switch (item.type) {
@@ -330,7 +391,7 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
               target: "selected",
               selected: target,
               at: "cut",
-              playhead: s.t,
+              playhead: at,
               values: { align: "after" },
             })
           )
@@ -348,7 +409,7 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
             target: target ? "selected" : "auto",
             selected: target,
             at: item.text && target ? "cut" : "playhead",
-            playhead: s.t,
+            playhead: at,
             values: {},
           })
           if (item.project) await selectNew(run)
@@ -363,7 +424,7 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
           return
       }
     },
-    [s, snapshot, targetLayer, selectNew, setSelected]
+    [s, info, snapshot, targetLayer, selectNew, setSelected]
   )
 
   const split = React.useCallback(() => {
@@ -497,6 +558,9 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
     song,
     analyze,
     waveform,
+    itemDrag,
+    beginItemDrag,
+    registerDrop,
     shortcutsOpen,
     setShortcutsOpen,
     cutOpen,
@@ -509,6 +573,16 @@ export function EditorProvider({ children }: { children: React.ReactNode }) {
     remove,
   }
   return (
-    <EditorContext.Provider value={value}>{children}</EditorContext.Provider>
+    <EditorContext.Provider value={value}>
+      {children}
+      {itemDrag && (
+        <div
+          className="pointer-events-none fixed z-50 -translate-x-1/2 -translate-y-[130%] rounded-md border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md"
+          style={{ left: itemDrag.x, top: itemDrag.y }}
+        >
+          {itemDrag.label}
+        </div>
+      )}
+    </EditorContext.Provider>
   )
 }

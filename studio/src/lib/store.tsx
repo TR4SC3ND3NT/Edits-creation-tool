@@ -136,7 +136,7 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
             {
               description: s.history.undo[0]?.readable ?? reason.summary,
               action: { label: "Undo", onClick: () => undoRef.current() },
-            duration: 8000,
+              duration: 8000,
             }
           )
           break
@@ -327,13 +327,17 @@ export function StudioProvider({ children }: { children: React.ReactNode }) {
   }, [])
 
   // ---- edits -------------------------------------------------------------------------------
+  const warned = React.useRef(new Set<string>())
   const run = React.useCallback(async (what: Promise<EditDone>) => {
     try {
       const done = await what
       setLastAction(done.summary)
-      if (done.warnings.length)
+      // Each warning is told once: the file's standing warnings are not news after every edit.
+      const fresh = done.warnings.filter((w) => !warned.current.has(w))
+      done.warnings.forEach((w) => warned.current.add(w))
+      if (fresh.length)
         toast.warning("Applied with warnings", {
-          description: done.warnings.slice(0, 3).join("\n"),
+          description: fresh.slice(0, 3).join("\n"),
         })
       return done
     } catch (e) {

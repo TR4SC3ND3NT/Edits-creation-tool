@@ -46,11 +46,11 @@ export function EditPage() {
         <ResizablePanelGroup orientation="vertical" className="min-h-0 flex-1">
           <ResizablePanel defaultSize="58" minSize="30">
             <ResizablePanelGroup orientation="horizontal">
-              <ResizablePanel defaultSize="23" minSize="14">
+              <ResizablePanel defaultSize="26" minSize="16">
                 <Browser />
               </ResizablePanel>
               <ResizableHandle />
-              <ResizablePanel defaultSize="49" minSize="28">
+              <ResizablePanel defaultSize="46" minSize="28">
                 <div className="flex h-full min-h-0 flex-col">
                   <Viewer />
                   <Transport />

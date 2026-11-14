@@ -240,7 +240,7 @@ export function PictureSection({ raw }: { raw: Raw }) {
       >
         <Num
           v={raw.fps}
-          dflt={0}
+          dflt={s.info?.fps ?? 0}
           unit="fps"
           step={1}
           label="fps"

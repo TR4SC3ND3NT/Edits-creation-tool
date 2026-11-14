@@ -171,11 +171,12 @@ Audio* and a search field (every word must match a name, a category or a
 description). Items are cards: a small preview and one line saying what the
 item does (hover for the whole text). The preview is the item rendered by
 `edits-render` on a sample project of two generated pictures, 192 × 108: an
-effect with its registry defaults (when they change almost nothing, its
-first parameter at 70 % of its range), a preset applied at beat 1 and shown
+effect with its registry defaults (when they change almost nothing, each
+parameter in turn at a telling value, 70 % of its range, and the clearest
+result is kept), a preset applied at beat 1 and shown
 just after (a text preset on a text layer), a transition half way. They are
 made when a card first scrolls into view, one at a time on a thread with a
-renderer of its own, and kept in `$XDG_CACHE_HOME/edits-studio/thumbs/v1/`
+renderer of its own, and kept in `$XDG_CACHE_HOME/edits-studio/thumbs/v2/`
 (else `~/.cache/...`), so each is made once per machine; a grey box shows
 until it is ready. **Double-click** a card to apply it to the selected layer
 at the playhead (with nothing selected: to the picture on screen); **drag**
