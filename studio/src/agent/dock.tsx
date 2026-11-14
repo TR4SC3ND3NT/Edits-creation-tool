@@ -2,6 +2,7 @@
 // status strip), the agent panel on the right, a draggable divider between
 // them. Ctrl+L or the header button shows and hides the panel.
 
+import { AgentLogo, isClaude } from "@/agent/agent-logo"
 import * as React from "react"
 import { BotIcon } from "lucide-react"
 
@@ -90,8 +91,12 @@ export function AgentToggle() {
           />
         }
       >
-        <BotIcon data-icon="inline-start" />
-        {thread?.busy ? `${agentName} is working` : "Agent"}
+        {isClaude(agentName) ? (
+          <AgentLogo name={agentName} className={thread?.busy ? "animate-pulse" : undefined} />
+        ) : (
+          <BotIcon data-icon="inline-start" />
+        )}
+        {thread?.busy ? `${agentName} is working` : isClaude(agentName) ? agentName : "Agent"}
       </TooltipTrigger>
       <TooltipContent>
         {open ? "Hide" : "Show"} the agent panel{" "}

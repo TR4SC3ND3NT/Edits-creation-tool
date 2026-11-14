@@ -23,6 +23,7 @@ import {
   type PresenceHit,
   type Step,
 } from "@/agent/presence"
+import { AgentLogo } from "@/agent/agent-logo"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -36,7 +37,8 @@ import {
 import { useStudio } from "@/lib/store"
 import { frameAt, lastFrame } from "@/lib/time"
 
-/** The agent's avatar: its initial with a ring in the theme's ring colour. */
+/** The agent's avatar: its mark (Claude's logo, or the initial of another
+ * agent), small, on the card colour with a thin ring. */
 export function AgentAvatar({
   name,
   size = "sm",
@@ -50,12 +52,13 @@ export function AgentAvatar({
     <Avatar
       size={size}
       className={cn(
-        "ring-2 ring-ring ring-offset-1 ring-offset-background",
+        "ring-1 ring-border",
+        size === "sm" && "size-5",
         live && "animate-pulse"
       )}
     >
-      <AvatarFallback className="bg-primary text-[10px] font-semibold text-primary-foreground">
-        {name.slice(0, 1).toUpperCase()}
+      <AvatarFallback className="bg-card text-foreground">
+        <AgentLogo name={name} className={size === "sm" ? "size-3" : "size-4"} />
       </AvatarFallback>
     </Avatar>
   )
