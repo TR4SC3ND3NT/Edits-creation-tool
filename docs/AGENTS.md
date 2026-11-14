@@ -193,7 +193,7 @@ object per line, append-only):
 ```json
 {"at":"20261114T101502.114Z","phase":"start","call":"41213-7","tool":"preset_apply","actor":"agent","label":"applying punch at b6 on layer d","project":"project.json","layers":["d"],"time":"b6","t":6.0,"client":"claude-code"}
 {"at":"20261114T101502.388Z","phase":"end","call":"41213-7","tool":"preset_apply","actor":"agent","label":"applying punch at b6 on layer d","project":"project.json","layers":["d"],"time":"b6","t":6.0,"ok":true,"ms":274,"client":"claude-code"}
-{"at":"20261114T101503.020Z","phase":"start","call":"41213-8","tool":"project_edit","actor":"agent","label":"setting d transform.position (+1 more)","project":"project.json","layers":["d"],"pointers":["/layers/@d/effects/-","/layers/@d/transform/position"],"client":"claude-code"}
+{"at":"20261114T101503.020Z","phase":"start","call":"41213-8","tool":"project_edit","actor":"agent","label":"adding glow to d (+1 more)","project":"project.json","layers":["d"],"pointers":["/layers/@d/effects/-","/layers/@d/transform/position"],"client":"claude-code"}
 {"at":"20261114T101504.511Z","phase":"start","call":"41213-9","tool":"render_frame","actor":"agent","label":"looking at frame 60","project":"project.json","t":4.92,"frame":60,"client":"claude-code"}
 ```
 

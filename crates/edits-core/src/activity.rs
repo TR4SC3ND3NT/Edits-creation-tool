@@ -256,7 +256,14 @@ pub fn target(tool: &str, args: &Value) -> Target {
                                 push_unique(&mut t.layers, l);
                             }
                             let short = short_pointer(p);
-                            what.push(if kind == "set" { format!("setting {short}") } else { format!("removing {short}") });
+                            let toks = pointer::tokens(p);
+                            let new_effect = kind == "set" && toks.len() == 4 && toks[0] == "layers" && toks[2] == "effects" && (toks[3] == "-" || toks[3].parse::<usize>().is_ok());
+                            let effect_kind = op.get("value").and_then(|v| v.get("kind")).and_then(Value::as_str);
+                            what.push(match (new_effect, effect_kind) {
+                                (true, Some(k)) => format!("adding {k} to {}", toks[1].trim_start_matches('@')),
+                                _ if kind == "set" => format!("setting {short}"),
+                                _ => format!("removing {short}"),
+                            });
                         }
                     }
                     "insert_layer" | "replace_layer" => {
@@ -414,6 +421,8 @@ mod tests {
         assert_eq!(t.layers, ["d", "#2", "flash"]);
         assert_eq!(t.pointers, ["/layers/@d/transform/scale", "/layers/2/effects/@blur/params/radius", "/layers/@flash"]);
         assert_eq!(t.label, "setting d transform.scale (+2 more)");
+        let add = target("project_edit", &json!({ "ops": [{ "op": "set", "pointer": "/layers/@d/effects/-", "value": { "kind": "glow" } }] }));
+        assert_eq!(add.label, "adding glow to d");
         let doc = json!({ "settings": { "time_base": "beats", "bpm": 120, "fps": 25, "duration": 16 },
                           "layers": [{ "id": "a" }, { "id": "b" }, { "id": "c" }] });
         let mut t = t;
