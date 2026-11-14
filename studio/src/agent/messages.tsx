@@ -456,7 +456,7 @@ export function PermissionCard({
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-sm">
           <ShieldQuestionIcon className="size-4 text-muted-foreground" />
-          {agent} asks to {item.presence ? title : `run ${title}`}
+          {item.presence ? `${agent} asks permission for ${title}` : `${agent} asks to run ${title}`}
         </CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-2">
