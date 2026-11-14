@@ -23,7 +23,7 @@ the shell. They can be mixed: the project file is the only state.
 | One frame | `edits frame p.json --at T -o f.png --scale 0.5`, then view `f.png` | `render_frame` (returns the image) |
 | Many frames in one image | `edits sheet p.json -o s.png`, then view `s.png` | `render_sheet` (returns the image) |
 | The video | `edits render p.json -o out.mp4` | `render_video`, then `job_status` |
-| Recipe of a reference edit | `edits analyze / draft / compare / probe / fit` | `reference_analyze`, `reference_read`, `reference_draft`, `reference_compare`, `reference_probe`, `project_fit` |
+| Recipe of a reference edit | `edits analyze / vision export / vision merge / draft / compare / probe / fit` | `reference_analyze`, `reference_read`, `reference_vision_export`, `reference_vision_merge`, `reference_draft`, `reference_compare`, `reference_probe`, `project_fit` |
 | Song: tempo, bars, kicks, snares, drop | `edits audio song.mp3 -o song.json --project p.json` | `audio_analyze` |
 | Pictures cut to the beat | `edits beats cut p.json --slots a,b,c --every 1 --from 0 --to 16` | `beats_cut` |
 | A hit on every beat / kick / bar | `edits beats accent p.json --preset flash --on downbeats` | `beats_accent` |
@@ -391,13 +391,31 @@ blur, tone hits, overlay, vignette) and replay it on other pictures.
    (twelve consecutive frames in one image; `-ss` is the shot's first frame
    divided by fps), view it, and build the shot by hand (a `cube` layer,
    keyed `rotation`, a second image layer).
+3b. **Look, in the fixed vocabulary** (the vision pass):
+   `edits vision export analysis/reference_analysis.json` (MCP:
+   `reference_vision_export`) writes `analysis/vision/`: `overview.jpg`, one
+   strip per shot (`shotNN.jpg`: previous frame, cut, cut+1, cut+2, reference
+   frame, last frame; second row: every frame around a flash or tone hit),
+   `shotNN_detail.jpg` (full-resolution crops for textures, borders, glows),
+   `questions.json` and `answers.json`. View the overview and every strip,
+   and fill `answers.json` with the listed words only: picture kind, framing
+   (`cube`, `tilted_card`, `inset_card`, ...), border (`glow:red`), tone
+   (`inverted`, `duotone:navy/yellow`, `burnt_white`, ...), light, motion
+   *kind* (never speeds), blur kind, overlays, entry (`flash_cut`, `whip`,
+   ...), with the tile numbers that show each label; `unsure` when in doubt.
+   Then `edits vision merge analysis/reference_analysis.json analysis/vision/answers.json`
+   (MCP: `reference_vision_merge`): invalid words are refused with the valid
+   ones; labels the signals contradict are listed: look at those frames again.
+   The draft then builds cubes, cards, glows, transitions and slot roles from
+   the labels; the measured numbers stay. ([ANALYSIS.md](../../../docs/ANALYSIS.md#the-vision-pass))
 4. **Draft**: `edits draft analysis/reference_analysis.json -o edit/project.json --proxies`
    (MCP: `reference_draft` with `proxies: true`). One image layer per shot on
    the beat grid, with the measured flashes, blur, tone hits and motion as
    keyframes. With `--proxies` the slots point at stills taken from the
    reference, so the draft renders at once and can be compared with it.
 5. **Set the slots** to the user's pictures (MCP: `project_edit` with
-   `set_slot` ops; shell: edit `slots.*.path`). Draft without `--proxies` for
+   `set_slot` ops; shell: edit `slots.*.path`), matching each slot's `role`
+   (an `emblem` slot gets an emblem, a `close_up` slot a face). Draft without `--proxies` for
    empty slots. When the pictures are new, enable the `overlay` and `finish`
    layers that `--proxies` disabled (set `enabled` to `true`), and build the
    `needs_agent` shots.
@@ -409,7 +427,11 @@ blur, tone hits, overlay, vignette) and replay it on other pictures.
    edits render edit/project.json -o edit/preview.mp4 --scale 0.5
    edits compare analysis/reference_analysis.json edit/preview.mp4
    ```
-   (MCP: `render_video`, `job_status`, then `reference_compare`.) It prints
+   (MCP: `render_video`, `job_status`, then `reference_compare`.) Add
+   `--sheet edit/side.jpg` (MCP: `sheet`) for side-by-side pairs of the
+   reference and the render at each cut, flash and reference frame, worst
+   shots first, and look: same framing, light, tone, motion direction, blur
+   kind, overlays? It prints
    scores from 0 to 1 (cuts, flashes, tone hits, exposure, blur, saturation,
    scale, tempo, overall) and the largest differences in plain language, most
    severe first, for example

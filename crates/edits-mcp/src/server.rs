@@ -40,7 +40,7 @@ const FRAME_EDGE: f64 = 540.0;
 
 pub const INSTRUCTIONS: &str = "edits renders short beat-synced video edits from one JSON project: slots (pictures) + layers (bottom to top) + keyframes + effects; time in beats, space in composition-height units. \
 Loop: project_describe, project_edit (atomic, validated; project_undo reverts), render_sheet or render_frame and look at the image, then render_video (a background job: poll job_status). \
-To reuse the recipe of a reference edit with other pictures: reference_analyze, reference_read, reference_draft, set the slots, then reference_compare and fix the largest differences. \
+To reuse the recipe of a reference edit with other pictures: reference_analyze, reference_read, reference_vision_export (look at the strips, fill answers.json), reference_vision_merge, reference_draft, set the slots, then reference_compare with a side-by-side `sheet` and fix the largest differences. \
 To make an edit from a song and pictures: audio_analyze (tempo, bars, kick/snare/hat onsets, the drop), beats_cut (one picture per beat), beats_accent and preset_apply (flashes, punches, shakes, transitions: presets_list), then look at a render_sheet. \
 Times can be written \"b12.5\", \"bar 4\", \"drop+2b\". ui_context says what the person has selected in the preview window. \
 Every path must be inside the workspace root; relative paths start there. doctor reports the root and the renderer.";
@@ -291,6 +291,34 @@ pub struct CompareArgs {
     pub video: String,
     /// How many differences to list (default 15).
     pub top: Option<u32>,
+    /// Also write side-by-side sheets here (.jpg): the reference left, the video right, at each shot's cut, flash and reference frame, worst shots first. The first page comes back as an image.
+    pub sheet: Option<String>,
+    /// Only these reference shots on the sheet.
+    pub sheet_shots: Option<Vec<u32>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VisionExportArgs {
+    /// reference_analysis.json written by reference_analyze.
+    pub analysis: String,
+    /// The reference video, if it is no longer where the analysis says.
+    pub video: Option<String>,
+    /// Output folder (default: vision/ next to the analysis).
+    pub out_dir: Option<String>,
+    /// Only these shots.
+    pub shots: Option<Vec<u32>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct VisionMergeArgs {
+    /// reference_analysis.json to merge the labels into (rewritten in place).
+    pub analysis: String,
+    /// The answers.json written by reference_vision_export, filled in.
+    pub answers: String,
+    /// Validate and cross-check only; write nothing.
+    pub dry_run: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -1181,7 +1209,17 @@ impl EditsServer {
         let video = self.ws.file(&a.video, "video")?;
         let top = a.top.unwrap_or(15).clamp(1, 60) as usize;
         let bin = self.bin(Tool::Analyze)?;
-        let args: Vec<OsString> = vec!["compare".into(), analysis.clone().into(), video.clone().into(), "--json".into()];
+        let mut args: Vec<OsString> = vec!["compare".into(), analysis.clone().into(), video.clone().into(), "--json".into()];
+        let sheet = a.sheet.as_deref().map(|s| self.ws.resolve(s, "sheet")).transpose()?;
+        if let Some(p) = &sheet {
+            if let Some(dir) = p.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", self.ws.show(dir)))?;
+            }
+            args.extend(["--sheet".into(), p.clone().into()]);
+            if let Some(list) = a.sheet_shots.as_ref().filter(|l| !l.is_empty()) {
+                args.extend(["--sheet-shots".into(), list.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",").into()]);
+            }
+        }
         let meta = json!({ "analysis": self.ws.show(&analysis), "video": self.ws.show(&video) });
         // The candidate video is analysed in full, which can outlast a client's
         // tool timeout: run it as a job and answer inline when it is quick.
@@ -1193,11 +1231,90 @@ impl EditsServer {
             return Ok(Reply::data(format!("the comparison is still running as job {job} ({:.0} s so far). Call job_status with this job id for the result.", status.elapsed_seconds), data));
         }
         let failed = data["state"] != "completed";
-        let text = match text.split_once('\n') {
+        let mut text = match text.split_once('\n') {
             Some((_, body)) if !failed => format!("{} against {}: signature-space comparison (pixels are not compared, so different pictures are fine)\n{body}", self.ws.show(&video), self.ws.show(&analysis)),
             _ => text,
         };
-        Ok(Reply { text, image: None, structured: Some(data), failed })
+        // The side-by-side sheets: list them, and show the first page.
+        // `edits-analyze` writes `<sheet>` and, for more pages, `<stem>_2.<ext>`, ...
+        let mut sheets: Vec<PathBuf> = Vec::new();
+        if let (Some(first), false) = (&sheet, failed) {
+            if first.is_file() {
+                sheets.push(first.clone());
+                let stem = first.file_stem().and_then(|s| s.to_str()).unwrap_or("sheet").to_string();
+                let ext = first.extension().and_then(|s| s.to_str()).unwrap_or("jpg").to_string();
+                for n in 2.. {
+                    let p = first.with_file_name(format!("{stem}_{n}.{ext}"));
+                    if !p.is_file() {
+                        break;
+                    }
+                    sheets.push(p);
+                }
+            }
+        }
+        if !sheets.is_empty() {
+            data["sheets"] = json!(sheets.iter().map(|p| self.ws.show(p)).collect::<Vec<_>>());
+        }
+        let mut image = None;
+        if !sheets.is_empty() {
+            text.push_str(&format!(
+                "\nside-by-side sheets (reference left, render right, worst shots first): {}\nLook at them and ask, per pair, in the vision vocabulary: same picture kind and framing? flash or glow on the same instant? same tone (inverted, threshold, duotone)? same motion and direction? same blur kind? same overlays and vignette?",
+                sheets.iter().map(|p| self.ws.show(p)).collect::<Vec<_>>().join(", ")
+            ));
+            image = images::prepare(&sheets[0], images::MAX_TOKENS, images::MAX_BYTES).ok();
+        }
+        Ok(Reply { text, image, structured: Some(data), failed })
+    }
+
+    async fn vision_export(&self, a: VisionExportArgs) -> Out {
+        let analysis = self.ws.file(&a.analysis, "analysis")?;
+        let mut args: Vec<OsString> = vec!["vision".into(), "export".into(), analysis.clone().into(), "--json".into()];
+        if let Some(v) = &a.video {
+            args.extend(["--video".into(), self.ws.file(v, "video")?.into()]);
+        }
+        if let Some(o) = &a.out_dir {
+            args.extend(["-o".into(), self.ws.resolve(o, "out_dir")?.into()]);
+        }
+        if let Some(list) = a.shots.as_ref().filter(|l| !l.is_empty()) {
+            args.extend(["--shots".into(), list.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",").into()]);
+        }
+        let data = self.run_json(Tool::Edits, args).await?;
+        let dir = PathBuf::from(data["out_dir"].as_str().unwrap_or_default());
+        let show = |name: &str| self.ws.show(&dir.join(name));
+        let mut text = format!(
+            "wrote {} images ({} megapixels) to {}. Look at overview.jpg (attached), then each shot's strip and detail, answer the questions in {} by filling {} with the listed words only (unsure when in doubt; tiles that show each label), then reference_vision_merge.\n",
+            data["images"], data["megapixels"], self.ws.show(&dir), show("questions.json"), show("answers.json")
+        );
+        for sh in data["shots"].as_array().into_iter().flatten() {
+            let signals: Vec<&str> = sh["signals"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            text.push_str(&format!("shot {} ({}): {} {} | {}\n", sh["shot"], sh["status"].as_str().unwrap_or(""), show(sh["strip"].as_str().unwrap_or("")), show(sh["detail"].as_str().unwrap_or("")), signals.join("; ")));
+        }
+        let image = images::prepare(&dir.join("overview.jpg"), images::MAX_TOKENS, images::MAX_BYTES).ok();
+        Ok(Reply { text, image, structured: Some(data), failed: false })
+    }
+
+    async fn vision_merge(&self, a: VisionMergeArgs) -> Out {
+        let analysis = self.ws.file(&a.analysis, "analysis")?;
+        let answers = self.ws.file(&a.answers, "answers")?;
+        let mut args: Vec<OsString> = vec!["vision".into(), "merge".into(), analysis.clone().into(), answers.into(), "--json".into()];
+        if a.dry_run.unwrap_or(false) {
+            args.push("--dry-run".into());
+        }
+        let data = self.run_json(Tool::Edits, args).await?;
+        let list = |k: &str| data[k].as_array().map(|v| v.iter().map(|x| x.to_string().trim_matches('"').to_string()).collect::<Vec<_>>()).unwrap_or_default();
+        let mut text = format!(
+            "{} {} shot(s) labelled, {} still all unsure; {} label(s) confirmed by the signals, {} to look at again.\n",
+            if a.dry_run.unwrap_or(false) { "dry run:" } else { "merged:" },
+            list("labelled").len(),
+            list("unanswered").len(),
+            data["agreements"],
+            list("disagreements").len()
+        );
+        for d in list("disagreements") {
+            text.push_str(&format!("look again: {d}\n"));
+        }
+        text.push_str("Next: reference_draft (it uses the labels for layer kinds, effects and presets; the measured numbers stay), then reference_compare with `sheet`.");
+        Ok(Reply::data(text, data))
     }
 
     async fn doctor_report(&self) -> Out {
@@ -1388,6 +1505,24 @@ impl EditsServer {
     )]
     async fn reference_compare(&self, Parameters(a): Parameters<CompareArgs>) -> CallToolResult {
         finish(self.compare(a).await)
+    }
+
+    #[tool(
+        name = "reference_vision_export",
+        description = "The vision pass, step 1: write per-shot labelled strips (previous frame, cut, cut+1, cut+2, reference frame, last frame, and every frame around a flash or tone hit), full-resolution detail crops, an overview of all shots (returned as an image), questions.json (fixed questions Q1-Q8 with their only allowed words: picture kind, framing and border, tone, light, motion kind, blur kind, overlays, entry) and an answers.json template. Look at the images, fill answers.json, then reference_vision_merge.",
+        annotations(title = "Export frames for the vision pass", read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn reference_vision_export(&self, Parameters(a): Parameters<VisionExportArgs>) -> CallToolResult {
+        finish(self.vision_export(a).await)
+    }
+
+    #[tool(
+        name = "reference_vision_merge",
+        description = "The vision pass, step 2: validate a filled answers.json against the fixed vocabulary (an invalid word fails with the valid ones, nothing is written), check every label against the signals (an inversion needs a negative correlation, a white flash an exposure peak, a punch a scale change) and merge the labels into the analysis as shots[].vision and slot roles. reference_draft then uses them.",
+        annotations(title = "Merge vision labels", read_only_hint = false, destructive_hint = true, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn reference_vision_merge(&self, Parameters(a): Parameters<VisionMergeArgs>) -> CallToolResult {
+        finish(self.vision_merge(a).await)
     }
 
     #[tool(

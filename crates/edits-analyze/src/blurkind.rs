@@ -161,17 +161,17 @@ pub fn median(ds: &[BlurDir]) -> BlurDir {
     BlurDir { axis, radial: med(&|d| d.radial), tangential: med(&|d| d.tangential) }
 }
 
-/// Conversions from the Gaussian-equivalent sigma the blur stage measures
-/// (% of height) to the main parameter of each kind, measured on renders of
-/// the engine's own effects (`cargo test -p edits-calib --test blurkind`
-/// checks them). The measured sigma averages the blur over orientations and,
-/// for zoom and spin, over the analysis window, so a streak is several times
-/// its equivalent sigma.
-pub const DIRECTIONAL_LENGTH_PER_SIGMA: f64 = 3.4;
+/// Fallback conversions from the Gaussian-equivalent sigma the blur stage
+/// measures (% of height) to the main parameter of each kind, for when no
+/// magnitude was measured ([`magnitude`] is the measurement). Read off renders
+/// of the engine's effects at moderate strengths; the equivalent sigma of a
+/// streak hardly grows with its length (the other orientations keep their
+/// detail), so these are rough.
+pub const DIRECTIONAL_LENGTH_PER_SIGMA: f64 = 21.0;
 /// `zoom_blur.strength` per % of height of equivalent sigma.
-pub const ZOOM_STRENGTH_PER_SIGMA: f64 = 0.16;
+pub const ZOOM_STRENGTH_PER_SIGMA: f64 = 0.8;
 /// `spin_blur.angle` (degrees) per % of height of equivalent sigma.
-pub const SPIN_DEGREES_PER_SIGMA: f64 = 9.0;
+pub const SPIN_DEGREES_PER_SIGMA: f64 = 42.0;
 
 /// The parameter of `kind` that gives the measured equivalent sigma (% of height).
 pub fn param_for(kind: &str, sigma_pct: f64) -> (&'static str, &'static str, f64) {
@@ -181,6 +181,49 @@ pub fn param_for(kind: &str, sigma_pct: f64) -> (&'static str, &'static str, f64
         "spin" => ("spin_blur", "angle", sigma_pct * SPIN_DEGREES_PER_SIGMA),
         _ => ("gaussian_blur", "radius", sigma_pct),
     }
+}
+
+/// The renderer parameter of a streak blur of `kind` that removes as much
+/// gradient energy from `reference` as the frame lost (`observed_loss`, the
+/// mean log energy loss of [`stats`]), found by blurring the reference frame
+/// itself with [`synth`] and bisecting: the picture's own detail sets how
+/// much a streak of a given length takes away, so it cancels.
+/// Directional: `length` in % of height along `angle`; zoom: `strength`;
+/// spin: `angle` in degrees.
+pub fn magnitude(kind: &str, angle: f64, observed_loss: f64, reference: &Gray) -> Option<f64> {
+    let base = orientation(reference, None);
+    let h = reference.h as f64;
+    let loss_at = |p: f64| -> f64 {
+        let blurred = match kind {
+            "directional" => synth::directional(reference, angle, p * h / 100.0),
+            "zoom" => synth::zoom(reference, p),
+            "spin" => synth::spin(reference, p),
+            _ => return 0.0,
+        };
+        stats(&ratios(&orientation(&blurred, None), &base)).loss
+    };
+    let (mut lo, mut hi) = match kind {
+        "directional" => (0.1, 40.0),
+        "zoom" => (0.005, 1.5),
+        "spin" => (0.5, 120.0),
+        _ => return None,
+    };
+    if loss_at(hi) < observed_loss {
+        return Some(hi);
+    }
+    if loss_at(lo) > observed_loss {
+        return Some(lo);
+    }
+    // Bisect in log space: the loss grows about with the log of the streak.
+    for _ in 0..10 {
+        let mid = (lo * hi).sqrt();
+        if loss_at(mid) < observed_loss {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    Some((lo * hi).sqrt())
 }
 
 /// CPU blurs of the three streaking kinds, for tests (bilinear samples

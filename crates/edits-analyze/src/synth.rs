@@ -172,7 +172,7 @@ impl Clip {
             ((z ^ (z >> 32)) & 0xFFFF) as f64 / 65535.0
         };
         let fibre = hsh((x as u64) * 7919 + (y as u64) * 104729) - 0.5;
-        let stroke = if y % 11 < 2 && (x / 5) % 3 != 0 { -1.0 } else { 0.0 };
+        let stroke = if y % 11 < 2 && !(x / 5).is_multiple_of(3) { -1.0 } else { 0.0 };
         0.8 * fibre + 0.7 * stroke + 0.2
     }
 

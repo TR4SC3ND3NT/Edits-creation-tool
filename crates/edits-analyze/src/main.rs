@@ -64,6 +64,9 @@ enum Cmd {
         /// Write only the first period of a looping edit
         #[arg(long)]
         single_loop: bool,
+        /// Ignore the vision labels merged into the analysis
+        #[arg(long)]
+        no_vision: bool,
     },
     /// Analyse a second video the same way and compare it with a reference analysis in signature space
     Compare {
@@ -76,6 +79,15 @@ enum Cmd {
         /// How many differences to list in the text report
         #[arg(long, default_value_t = 25)]
         top: usize,
+        /// Also write side-by-side sheets (reference left, video right), worst shots first, here
+        #[arg(long)]
+        sheet: Option<PathBuf>,
+        /// Only these reference shots on the sheet, e.g. 3,7
+        #[arg(long, value_delimiter = ',')]
+        sheet_shots: Vec<usize>,
+        /// The reference video for the sheet [default: the one the analysis names]
+        #[arg(long)]
+        reference_video: Option<PathBuf>,
     },
     /// The vision pass: `vision export` writes per-shot strips and a fixed questionnaire for a model, `vision merge` validates the answers and merges them into the analysis
     Vision {
@@ -134,11 +146,14 @@ fn main() -> Result<()> {
             println!("{}", pipeline::summary(&a));
             println!("wrote {} in {:.1} s", out.join("reference_analysis.json").display(), t.elapsed().as_secs_f64());
         }
-        Cmd::Draft { analysis, out, proxies, width, height, no_snap, single_loop } => {
+        Cmd::Draft { analysis, out, proxies, width, height, no_snap, single_loop, no_vision } => {
             let a = pipeline::load(&analysis)?;
             let dir = |p: &PathBuf| p.parent().filter(|d| !d.as_os_str().is_empty()).map(|d| d.to_path_buf()).unwrap_or(PathBuf::from("."));
-            let opts = draft::DraftOpts { proxies, width, height, snap: !no_snap, repeats: !single_loop, analysis_dir: dir(&analysis), project_dir: dir(&out) };
-            let project = draft::draft(&a, &opts);
+            let opts = draft::DraftOpts { proxies, width, height, snap: !no_snap, repeats: !single_loop, analysis_dir: dir(&analysis), project_dir: dir(&out), vision: !no_vision };
+            let (project, notes) = draft::draft_report(&a, &opts);
+            for n in &notes {
+                eprintln!("{n}");
+            }
             std::fs::create_dir_all(&opts.project_dir)?;
             std::fs::write(&out, project.to_json())?;
             let findings = edits_core::check::check(&project, Some(&opts.project_dir));
@@ -159,9 +174,14 @@ fn main() -> Result<()> {
             );
             anyhow::ensure!(errors == 0, "the drafted project does not pass `check`");
         }
-        Cmd::Compare { analysis, video, json, top } => {
+        Cmd::Compare { analysis, video, json, top, sheet, sheet_shots, reference_video } => {
             let a = pipeline::load(&analysis)?;
-            let c = compare::compare(&a, &video, None)?;
+            let mut c = compare::compare(&a, &video, None)?;
+            if let Some(sheet) = &sheet {
+                let opts = edits_analyze::pairs::SheetOpts { shots: sheet_shots, reference_video, ..Default::default() };
+                let (paths, _) = edits_analyze::pairs::write(&a, &video, Some(&c), sheet, &opts)?;
+                c.sheets = paths.iter().map(|p| p.display().to_string()).collect();
+            }
             if json {
                 println!("{}", edits_analyze::jsonfmt::to_string(&c)?);
             } else {

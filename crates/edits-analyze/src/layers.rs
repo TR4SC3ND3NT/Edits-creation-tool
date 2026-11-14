@@ -271,6 +271,11 @@ pub fn vignette(frames: &Frames, sigs: &[FrameSig], f0: usize, f1: usize) -> Opt
     })
 }
 
+/// Picks one of a frame's two detail maps (plain, sign-aligned).
+type Pick = dyn Fn(&(Vec<f32>, Vec<f32>)) -> &Vec<f32>;
+/// Presence, strength, coverage and the static detail of one reading.
+type Reading = (f64, f64, f64, Vec<f32>);
+
 /// A static texture found by [`texture`].
 pub struct Texture {
     /// Share of the fine detail that is common to every picture, beyond
@@ -305,6 +310,22 @@ pub fn texture(frames: &Frames, groups: &[Vec<usize>], usable: &[bool]) -> Optio
     }
     let lut = srgb_lut();
     let sigma = (h as f32 * 0.006).max(1.0);
+    // The high-pass spreads an overlay stroke over a few pixels around it:
+    // keep clear of the strokes the overlay plate holds by that much.
+    let reach = (2.0 * sigma).ceil() as usize;
+    let mut clear = usable.to_vec();
+    for y in 0..h {
+        for x in 0..w {
+            if !usable[y * w + x] {
+                for yy in y.saturating_sub(reach)..(y + reach + 1).min(h) {
+                    for xx in x.saturating_sub(reach)..(x + reach + 1).min(w) {
+                        clear[yy * w + xx] = false;
+                    }
+                }
+            }
+        }
+    }
+    let usable = &clear[..];
     // Detail of one frame, and the sign of its local background (+1 dark, -1 light).
     let detail = |f: usize| -> (Gray, Gray) {
         let rgb = frames.rgb(f);
@@ -344,9 +365,30 @@ pub fn texture(frames: &Frames, groups: &[Vec<usize>], usable: &[bool]) -> Optio
             (plain, aligned)
         })
         .collect();
+    // The same picture in two shots would pass for a texture: keep one of
+    // any two frames whose detail maps correlate strongly.
+    let corr = |a: &[f32], b: &[f32]| {
+        let (mut ab, mut aa, mut bb) = (0f64, 0f64, 0f64);
+        for (x, y) in a.iter().zip(b) {
+            ab += (*x as f64) * (*y as f64);
+            aa += (*x as f64).powi(2);
+            bb += (*y as f64).powi(2);
+        }
+        ab / (aa * bb).sqrt().max(1e-12)
+    };
+    let mut kept: Vec<(Vec<f32>, Vec<f32>)> = Vec::new();
+    for p in per {
+        if !kept.iter().any(|k| corr(&k.0, &p.0) > 0.6) {
+            kept.push(p);
+        }
+    }
+    let per = kept;
+    let n = per.len();
+    if n < 4 {
+        return None;
+    }
     let count = usable.iter().filter(|u| **u).count().max(1) as f64;
-    let chance = 1.0 / n as f64;
-    let reading = |pick: &dyn Fn(&(Vec<f32>, Vec<f32>)) -> &Vec<f32>| -> Option<(f64, f64, f64, Vec<f32>)> {
+    let reading = |pick: &Pick| -> Option<Reading> {
         let mut mean = vec![0f32; w * h];
         for p in &per {
             for (m, v) in mean.iter_mut().zip(pick(p)) {
@@ -354,7 +396,6 @@ pub fn texture(frames: &Frames, groups: &[Vec<usize>], usable: &[bool]) -> Optio
             }
         }
         let total: f64 = per.iter().map(|p| pick(p).iter().map(|v| (*v as f64).powi(2)).sum::<f64>()).sum::<f64>() / (n as f64 * count);
-        let stat: f64 = mean.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / count;
         if total <= 1e-12 {
             return None;
         }
@@ -365,21 +406,39 @@ pub fn texture(frames: &Frames, groups: &[Vec<usize>], usable: &[bool]) -> Optio
         let mut grid = [[0f64; 8]; 8];
         for by in 0..8 {
             for bx in 0..8 {
-                let (mut st, mut to, mut k) = (0.0, 0.0, 0.0);
+                // The share of detail common to the pictures is how much any two
+                // of them agree: the median over every pair of the correlation of
+                // their detail in this block (one picture shown twice moves one
+                // pair, not the median).
+                let (mut to, mut k) = (0.0, 0.0);
+                let mut idx = Vec::new();
                 for y in by * h / 8..(by + 1) * h / 8 {
                     for x in bx * w / 8..(bx + 1) * w / 8 {
                         if !usable[y * w + x] {
                             continue;
                         }
-                        st += (mean[y * w + x] as f64).powi(2);
+                        idx.push(y * w + x);
                         to += per.iter().map(|p| (pick(p)[y * w + x] as f64).powi(2)).sum::<f64>() / n as f64;
                         k += 1.0;
                     }
                 }
                 if k > 0.0 && to > 1e-12 {
-                    let pr = ((st / to - chance) / (1.0 - chance)).clamp(0.0, 1.0);
+                    let mut cs = Vec::with_capacity(n * (n - 1) / 2);
+                    for i in 0..n {
+                        for j in i + 1..n {
+                            let (a, b) = (pick(&per[i]), pick(&per[j]));
+                            let (mut ab, mut aa, mut bb) = (0f64, 0f64, 0f64);
+                            for &q in &idx {
+                                ab += (a[q] as f64) * (b[q] as f64);
+                                aa += (a[q] as f64).powi(2);
+                                bb += (b[q] as f64).powi(2);
+                            }
+                            cs.push(ab / (aa * bb).sqrt().max(1e-12));
+                        }
+                    }
+                    let pr = median(&cs).clamp(0.0, 1.0);
                     grid[by][bx] = pr;
-                    blocks.push((pr, ((st - to * chance).max(0.0) / (1.0 - chance) / k).sqrt(), k));
+                    blocks.push((pr, (pr * to / k).sqrt(), k));
                 }
             }
         }
@@ -389,11 +448,9 @@ pub fn texture(frames: &Frames, groups: &[Vec<usize>], usable: &[bool]) -> Optio
         let covered: Vec<&(f64, f64, f64)> = blocks.iter().filter(|b| b.0 > 0.06).collect();
         let coverage = covered.len() as f64 / blocks.len().max(1) as f64;
         let strength = if covered.is_empty() { 0.0 } else { (covered.iter().map(|b| b.1 * b.1 * b.2).sum::<f64>() / covered.iter().map(|b| b.2).sum::<f64>()).sqrt() };
-        let _ = stat;
         // The plate keeps the detail where the blocks show a texture and fades the
         // pictures' residue elsewhere (block weights, bilinear between block centres).
         let wgt = |p: f64| ((p - 0.03) / 0.1).clamp(0.0, 1.0);
-        let mut mean = mean;
         for y in 0..h {
             let gy = ((y as f64 + 0.5) * 8.0 / h as f64 - 0.5).clamp(0.0, 7.0);
             let (y0, fy) = (gy.floor() as usize, gy.fract());
@@ -417,6 +474,23 @@ pub fn texture(frames: &Frames, groups: &[Vec<usize>], usable: &[bool]) -> Optio
     } else {
         Texture { presence: plain.0, strength: plain.1, coverage: plain.2, blend: "soft_light", detail: plain.3 }
     })
+}
+
+/// Leave out of `usable` the pixels where the static texture is (more than
+/// 0.03 stops of detail), grown by a pixel.
+pub fn mask_texture(usable: &mut [bool], w: usize, h: usize, detail: &[f32]) {
+    let hit: Vec<bool> = detail.iter().map(|d| d.abs() > 0.03).collect();
+    for y in 0..h {
+        for x in 0..w {
+            if hit[y * w + x] {
+                for yy in y.saturating_sub(1)..(y + 2).min(h) {
+                    for xx in x.saturating_sub(1)..(x + 2).min(w) {
+                        usable[yy * w + xx] = false;
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// The texture as a plate. For `soft_light`: mid grey plus the static

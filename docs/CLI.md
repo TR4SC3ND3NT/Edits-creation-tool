@@ -30,7 +30,9 @@ preview of the full one.
 | [`demo`](#demo) | Write a self-contained demo project |
 | [`analyze`](#analyze) | Extract the recipe of a finished edit into `reference_analysis.json` |
 | [`draft`](#draft) | Recipe → project with one empty slot per picture |
-| [`compare`](#compare) | Score a video against a recipe in signature space (any pictures) |
+| [`compare`](#compare) | Score a video against a recipe in signature space (any pictures); side-by-side pairs |
+| [`vision export`](#vision-export-and-vision-merge) | Per-shot strips and a fixed questionnaire for a model to answer |
+| [`vision merge`](#vision-export-and-vision-merge) | Validate the answers, check them against the signals, merge them into the analysis |
 | [`probe`](#probe) | Per-frame signatures of a video |
 | [`fit`](#fit) | Tune a project's effect values until its render matches a reference |
 | [`audio`](#audio) | Song → tempo, beat grid, bars, kick/snare/hat onsets, energy, sections, the drop |
@@ -324,7 +326,7 @@ cubes, insets): look at those frames yourself.
 ## draft
 
 ```
-edits draft <dir>/reference_analysis.json -o project.json [--proxies] [--width W --height H] [--no-snap] [--single-loop] [--json]
+edits draft <dir>/reference_analysis.json -o project.json [--proxies] [--width W --height H] [--no-snap] [--single-loop] [--no-vision] [--json]
 ```
 
 Writes a project that replays the analysed recipe: beats time base, the
@@ -332,12 +334,24 @@ reference's audio, one slot per picture (empty, or with `--proxies` the
 reference's own stills so it renders at once), one layer per shot with its
 measured motion and effects, the overlay and the vignette. Key times snap to
 the quarter beat unless `--no-snap`. The project passes `check`, or the
-command fails.
+command fails. With vision labels merged into the analysis it also picks
+layer kinds, effects and presets the signals could not decide (cubes, cards,
+glows, transitions, slot roles) and prints one line per change
+(`--no-vision` ignores the labels; `--json` lists them under `vision`):
+
+```
+wrote edit/project.json: 37 layers, 18 slots, 14 markers, 33.86 beats at 123.531 bpm; check: 0 errors, 17 warnings
+  shot 3: cube (faces p03 and the next picture) turning about y
+  shot 8: inset card (scale x0.72)
+  shot 8: outline for the glow border (outside)
+  shot 10: gradient_map duotone with the measured colours
+  shot 13: labelled cube, but the track held as a flat picture: not drafted, look again
+```
 
 ## compare
 
 ```
-edits compare <dir>/reference_analysis.json <video> [--json] [--top 25]
+edits compare <dir>/reference_analysis.json <video> [--json] [--top 25] [--sheet side.jpg] [--sheet-shots 3,7] [--reference-video ref.mp4]
 ```
 
 Analyses `<video>` the same way and compares it with the reference in
@@ -351,6 +365,49 @@ overall 0.67  blur 0.54  cuts 0.94  exposure 0.40  flashes 0.72  saturation 0.28
 ...
   9. [exposure 8.7] shot 14 (beats 13.19-14.02): exposure starts at 6.83 stops, reference 2.46 stops
 ```
+
+`--sheet side.jpg` also writes side-by-side pages (`side.jpg`, `side_2.jpg`,
+...): the reference and the video at each shot's cut, strongest flash, first
+tone hit, reference frame and last frame, reference left (blue bar), video
+right (orange bar), worst shots first. The report and the JSON (`sheets`)
+list them. What to ask of the pairs: [ANALYSIS.md](ANALYSIS.md#compare).
+
+## vision export and vision merge
+
+```
+edits vision export <dir>/reference_analysis.json [--video ref.mp4] [-o <dir>/vision] [--shots 3,7] [--tile-height 180] [--json]
+edits vision merge  <dir>/reference_analysis.json <dir>/vision/answers.json [-o merged.json] [--dry-run] [--json]
+```
+
+`export` writes, per shot, a labelled strip (`shot03.jpg`: previous frame,
+cut, cut+1, cut+2, reference frame, last frame, and every frame around a
+flash or tone hit), a detail image (`shot03_detail.jpg`, centre and left edge
+at full resolution), `overview.jpg`, `questions.json` (the questions Q1-Q8,
+their only allowed words, the tiles, what the signals measured) and an
+`answers.json` template (kept if it exists):
+
+```
+wrote 17 shot strip(s) and detail crop(s), an overview and the questionnaire to analysis/vision (35 images, 13.4 megapixels)
+1. look at analysis/vision/overview.jpg
+2. for each shot, look at its strip (and its detail crop for textures, borders and glows):
+   shot  3 frames 36-48 needs_agent shot03.jpg  not tracked (needs_agent): ...; exposure flashes: frame 36 4.6 stops
+3. answer the questions in analysis/vision/questions.json by editing analysis/vision/answers.json (fixed words only; unsure when in doubt)
+4. edits vision merge <analysis> <answers.json>, then draft
+```
+
+`merge` refuses any word outside the vocabulary (the error lists the valid
+ones, nothing is written), checks each label against the signals and writes
+the labels into the analysis (in place, or `-o`):
+
+```
+labelled 17 shot(s); 0 still all unsure
+50 label(s) confirmed by the signals, 7 to look at again
+  look again: shot 13: framing cube, but the track held as a flat 2D move
+slot roles: p01=full_art, p02=full_art, p03=panel_colour, ... p10=emblem, p12=close_up
+wrote analysis/reference_analysis.json
+```
+
+The vocabulary and what `draft` does with each word: [ANALYSIS.md](ANALYSIS.md#the-vision-pass).
 
 ## probe
 

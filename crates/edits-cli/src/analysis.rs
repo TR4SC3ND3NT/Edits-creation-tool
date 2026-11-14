@@ -58,6 +58,9 @@ pub struct DraftArgs {
     /// Write only the first period of a looping edit
     #[arg(long)]
     pub single_loop: bool,
+    /// Ignore the vision labels merged into the analysis (`edits vision merge`)
+    #[arg(long)]
+    pub no_vision: bool,
     /// Print a JSON summary
     #[arg(long)]
     pub json: bool,
@@ -74,6 +77,15 @@ pub struct CompareArgs {
     /// How many differences to list in the text report
     #[arg(long, default_value_t = 25)]
     pub top: usize,
+    /// Also write side-by-side sheets (reference left, video right, at the cuts, flashes and reference frames), worst shots first, here (.jpg or .png; more pages get _2, _3...)
+    #[arg(long, value_name = "IMAGE")]
+    pub sheet: Option<PathBuf>,
+    /// Only these reference shots on the sheet, e.g. 3,7
+    #[arg(long, value_delimiter = ',')]
+    pub sheet_shots: Vec<usize>,
+    /// The reference video for the sheet [default: the one the analysis names]
+    #[arg(long)]
+    pub reference_video: Option<PathBuf>,
 }
 
 #[derive(Args, Clone)]
@@ -267,8 +279,9 @@ fn draft_project(a: DraftArgs) -> Result<ExitCode> {
         repeats: !a.single_loop,
         analysis_dir: parent_dir(&a.analysis),
         project_dir: parent_dir(&a.out),
+        vision: !a.no_vision,
     };
-    let project = draft::draft(&an, &opts);
+    let (project, notes) = draft::draft_report(&an, &opts);
     std::fs::create_dir_all(&opts.project_dir)?;
     std::fs::write(&a.out, project.to_json())?;
     let findings = check::check(&project, Some(&opts.project_dir));
@@ -286,6 +299,7 @@ fn draft_project(a: DraftArgs) -> Result<ExitCode> {
             "bpm": project.settings.bpm,
             "errors": errors,
             "warnings": findings.len() - errors,
+            "vision": notes,
         }));
     } else {
         println!(
@@ -299,6 +313,9 @@ fn draft_project(a: DraftArgs) -> Result<ExitCode> {
             errors,
             findings.len() - errors
         );
+        for n in &notes {
+            println!("  {n}");
+        }
     }
     ensure!(errors == 0, "the drafted project does not pass `check`");
     Ok(ExitCode::SUCCESS)
@@ -306,7 +323,12 @@ fn draft_project(a: DraftArgs) -> Result<ExitCode> {
 
 fn compare_video(a: CompareArgs) -> Result<ExitCode> {
     let an = pipeline::load(&a.analysis)?;
-    let c = compare::compare(&an, &a.video, None)?;
+    let mut c = compare::compare(&an, &a.video, None)?;
+    if let Some(sheet) = &a.sheet {
+        let opts = edits_analyze::pairs::SheetOpts { shots: a.sheet_shots.clone(), reference_video: a.reference_video.clone(), ..Default::default() };
+        let (paths, _) = edits_analyze::pairs::write(&an, &a.video, Some(&c), sheet, &opts)?;
+        c.sheets = paths.iter().map(|p| p.display().to_string()).collect();
+    }
     if a.json {
         println!("{}", edits_analyze::jsonfmt::to_string(&c)?);
     } else {

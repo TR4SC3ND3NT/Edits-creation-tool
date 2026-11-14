@@ -33,6 +33,13 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+/// A frame of a strip and what it shows.
+type TileSpec = (usize, String);
+/// A colour named by an answer: (key, sRGB).
+type NamedColor = (String, [f64; 3]);
+/// Labels per shot and for the whole edit.
+pub type Labels = (BTreeMap<usize, ShotVision>, Option<GlobalVision>);
+
 pub const QUESTIONS_FORMAT: &str = "edits.vision_questions/1";
 pub const ANSWERS_FORMAT: &str = "edits.vision_answers/1";
 
@@ -163,7 +170,7 @@ fn color_names() -> String {
 
 /// One answer word checked against its question: the bare word and, for
 /// words with an argument, the colours it names (key, colour).
-fn check_word(q: &Question, raw: &str) -> std::result::Result<(String, Vec<(String, [f64; 3])>), String> {
+fn check_word(q: &Question, raw: &str) -> std::result::Result<(String, Vec<NamedColor>), String> {
     let raw = raw.trim();
     let (word, arg) = match raw.split_once(':') {
         Some((w, a)) => (w.trim().to_ascii_lowercase(), Some(a.trim())),
@@ -278,7 +285,7 @@ fn beat_of(a: &Analysis, f: usize) -> f64 {
 }
 
 /// Tiles of one shot: the fixed six, then every frame around its events.
-fn tiles_for(a: &Analysis, s: &Shot) -> (Vec<(usize, String)>, Vec<(usize, String)>) {
+fn tiles_for(a: &Analysis, s: &Shot) -> (Vec<TileSpec>, Vec<TileSpec>) {
     let last = s.f1 - 1;
     let mut main: Vec<(usize, String)> = Vec::new();
     let push = |v: &mut Vec<(usize, String)>, f: usize, what: &str| {
@@ -387,7 +394,7 @@ pub fn export(a: &Analysis, analysis_path: &Path, opts: &ExportOpts) -> Result<E
         bail!("no shot to export: the analysis has shots 1..{}", a.shots.len());
     }
     // Frames to decode at tile size, and the reference frames at full size.
-    let mut plan: Vec<(usize, Vec<(usize, String)>, Vec<(usize, String)>)> = Vec::new();
+    let mut plan: Vec<(usize, Vec<TileSpec>, Vec<TileSpec>)> = Vec::new();
     let mut need: BTreeSet<usize> = BTreeSet::new();
     for s in &wanted {
         let (m, e) = tiles_for(a, s);
@@ -434,7 +441,7 @@ pub fn export(a: &Analysis, analysis_path: &Path, opts: &ExportOpts) -> Result<E
         for (k, c) in cells.into_iter().enumerate() {
             rows.push(c);
             if k + 1 == nm {
-                while rows.len() % cols != 0 {
+                while !rows.len().is_multiple_of(cols) {
                     rows.push(Cell { image: image::RgbImage::from_pixel(1, th, image::Rgb(contact::BACKGROUND)), label: String::new(), accent: Some(contact::BACKGROUND) });
                 }
             }
@@ -647,7 +654,7 @@ fn words(v: &Value, q: &Question, path: &str, errors: &mut Vec<String>, colors: 
 }
 
 /// Validate an answers document and turn it into labels per shot and global labels.
-pub fn parse_answers(a: &Analysis, doc: &Value) -> std::result::Result<(BTreeMap<usize, ShotVision>, Option<GlobalVision>), Vec<String>> {
+pub fn parse_answers(a: &Analysis, doc: &Value) -> std::result::Result<Labels, Vec<String>> {
     let mut errors = Vec::new();
     if doc.get("format").and_then(Value::as_str) != Some(ANSWERS_FORMAT) {
         errors.push(format!("format: expected \"{ANSWERS_FORMAT}\" (the answers.json written by `vision export`)"));
@@ -768,7 +775,7 @@ fn cross_check(s: &Shot, v: &ShotVision) -> (Vec<String>, Vec<String>) {
     check("inverted", has(&v.tone, "inverted"), ev("invert") > 0, if ev("invert") > 0 { "inversion measured".into() } else { "no negative luminance correlation was measured (a whole-shot inversion cannot be: draft adds it)".into() });
     check("threshold", has(&v.tone, "threshold"), ev("threshold") > 0, if ev("threshold") > 0 { "threshold measured".into() } else { "no two-tone hit was measured".into() });
     check("posterized", has(&v.tone, "posterized"), ev("posterize") > 0, if ev("posterize") > 0 { "posterize measured".into() } else { "no posterise hit was measured".into() });
-    check("duotone", has(&v.tone, "duotone") || has(&v.tone, "tinted"), ev("duotone") > 0, if ev("duotone") > 0 { "duotone measured".into() } else { "no duotone was measured".into() });
+    check(if has(&v.tone, "duotone") { "duotone" } else { "tinted" }, has(&v.tone, "duotone") || has(&v.tone, "tinted"), ev("duotone") > 0, if ev("duotone") > 0 { "duotone measured".into() } else { "no duotone was measured".into() });
     check("white_flash", has(&v.light, "white_flash"), max_flash >= 0.8, if max_flash >= 0.8 { format!("flash peak {max_flash:.1} stops") } else { "no exposure peak of 0.8 stops or more".into() });
     check("shake", has(&v.motion, "shake"), s.shake.is_some(), if s.shake.is_some() { "shake residual measured".into() } else { "no shake residual (or the shot is not tracked)".into() });
     for m in ["punch_in", "push_in", "zoom_out"] {
@@ -808,6 +815,10 @@ pub fn merge(a: &mut Analysis, answers: &Value) -> std::result::Result<MergeRepo
     let (labels, global) = parse_answers(a, answers)?;
     let mut rep = MergeReport::default();
     for (id, mut v) in labels {
+        // Tile numbers as frames, numbered as `export` numbers them.
+        let (main, extra) = tiles_for(a, &a.shots[id - 1]);
+        let order: Vec<usize> = main.iter().chain(extra.iter()).map(|t| t.0).collect();
+        v.frames = v.tiles.iter().map(|(k, ns)| (k.clone(), ns.iter().filter_map(|n| order.get(n.wrapping_sub(1)).copied()).collect())).collect();
         let s = &mut a.shots[id - 1];
         if unsure(&v) {
             rep.unanswered.push(id);
@@ -821,7 +832,7 @@ pub fn merge(a: &mut Analysis, answers: &Value) -> std::result::Result<MergeRepo
         s.vision = Some(v);
     }
     if let Some(mut g) = global {
-        if !g.overlays.is_empty() && a.layers.overlay.is_none() && a.layers.texture.as_ref().map(|t| t.presence.value < 0.15).unwrap_or(true) {
+        if !g.overlays.is_empty() && a.layers.overlay.is_none() && a.layers.texture.is_none() {
             let m = format!("global: overlay {} seen, but no static strokes or texture were measured: draft adds a texture layer the person must supply", g.overlays.join(", "));
             g.checks.push(format!("look again: {m}"));
             rep.disagreements.push(m);

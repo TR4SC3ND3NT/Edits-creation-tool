@@ -50,9 +50,13 @@ pub struct Analyzed {
     /// Overlay plate at analysis resolution.
     pub plate: Plate,
     pub sigs: Vec<FrameSig>,
+    /// Pixels the measurements used: not under the overlay strokes or the static texture.
+    pub usable: Vec<bool>,
 }
 
 struct ShotWork {
+    card: Option<CardBox>,
+    blur_kind: Option<BlurKind>,
     f0: usize,
     f1: usize,
     ref_frame: usize,
@@ -198,6 +202,89 @@ fn inset_panel(frames: &Frames, ref_frame: usize, usable: &[bool]) -> bool {
         (v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / v.len().max(1) as f64).sqrt()
     };
     ring.len() > 100 && sd(&ring) < 0.05 && crate::img::mean(&ring) < 0.12 && sd(&centre) > 0.12
+}
+
+/// The kind of a shot's blur from the gradient orientations it took away
+/// (median over the blurred frames, see `blurkind`), and for a streak its
+/// own parameter at the most blurred frame, by blurring the reference frame
+/// the same way until it loses as much detail.
+fn classify_blur(frames: &Frames, ref_frame: usize, meas: &[FrameMeasure], tracked: bool, usable: &[bool]) -> Option<BlurKind> {
+    let h = frames.h as f64;
+    let blurred: Vec<(usize, &FrameMeasure)> = meas.iter().enumerate().filter(|(_, m)| 100.0 * m.blur.sigma_px / h > 0.25 && m.blur_dir.is_some()).collect();
+    let dirs: Vec<blurkind::BlurDir> = blurred.iter().filter_map(|(_, m)| m.blur_dir).collect();
+    if dirs.is_empty() {
+        return None;
+    }
+    let (kind, c, st) = blurkind::classify(&blurkind::median(&dirs))?;
+    let c = round_to(c * if tracked { 1.0 } else { 0.6 } * (dirs.len() as f64 / 3.0).min(1.0), 2);
+    let (mut peak, mut per_sigma) = (None, None);
+    if kind != "gaussian" {
+        // The most blurred frame that a flash has not clipped.
+        let best = blurred.iter().filter(|(_, m)| m.exp.clipped < 0.1).max_by(|a, b| blurkind::stats(&a.1.blur_dir.unwrap()).loss.total_cmp(&blurkind::stats(&b.1.blur_dir.unwrap()).loss));
+        if let Some((_, m)) = best {
+            let reference = blur::fill_masked(&linear_luma_image(frames.rgb(ref_frame), frames.w, frames.h), usable);
+            let loss = blurkind::stats(&m.blur_dir.unwrap()).loss;
+            if let Some(p) = blurkind::magnitude(kind, st.angle, loss, &reference) {
+                let sigma = 100.0 * m.blur.sigma_px / h;
+                peak = Some(round_to(p, 3));
+                per_sigma = (sigma > 0.05).then(|| round_to(p / sigma, 3));
+            }
+        }
+    }
+    Some(BlurKind {
+        kind: kind.into(),
+        confidence: c,
+        angle: (kind == "directional").then(|| round_to(st.angle, 0)),
+        axis_contrast: round_to(st.axis_contrast, 3),
+        radial_tangential: round_to(st.rt, 3),
+        frames: dirs.len(),
+        peak,
+        per_sigma,
+    })
+}
+
+/// Where the picture sits in a frame that shows a card or a cube on a dark
+/// background: the box holding the middle 96% of the pixels that stand
+/// clearly above the background (the level of the frame's outer ring).
+/// `None` when the picture fills the frame (or nothing stands out).
+pub fn card_box(frames: &Frames, ref_frame: usize, usable: &[bool]) -> Option<CardBox> {
+    let g = frames.gray(ref_frame);
+    let (w, h) = (g.w, g.h);
+    let m = (h as f64 * 0.05) as usize;
+    let ring: Vec<f64> = (0..h)
+        .flat_map(|y| (0..w).map(move |x| (x, y)))
+        .filter(|(x, y)| (*y < m || *y >= h - m || *x < m || *x >= w - m) && usable[y * w + x])
+        .map(|(x, y)| g.d[y * w + x] as f64)
+        .collect();
+    if ring.len() < 50 {
+        return None;
+    }
+    let bg = crate::img::percentile(&ring, 0.75);
+    let (mut xs, mut ys) = (Vec::new(), Vec::new());
+    for y in 0..h {
+        for x in 0..w {
+            if usable[y * w + x] && g.d[y * w + x] as f64 > bg + 0.12 {
+                xs.push(x as f64);
+                ys.push(y as f64);
+            }
+        }
+    }
+    if xs.len() < (w * h) / 50 {
+        return None;
+    }
+    let (x0, x1) = (crate::img::percentile(&xs, 0.02), crate::img::percentile(&xs, 0.98));
+    let (y0, y1) = (crate::img::percentile(&ys, 0.02), crate::img::percentile(&ys, 0.98));
+    let hh = h as f64;
+    let (bw, bh) = ((x1 - x0) / hh, (y1 - y0) / hh);
+    // A picture that fills (nearly) all of the frame is not a card.
+    if bh > 0.9 && bw > 0.9 * w as f64 / hh {
+        return None;
+    }
+    Some(CardBox {
+        center: [round_to(((x0 + x1) / 2.0 - (w as f64 - 1.0) / 2.0) / hh, 3), round_to(((y0 + y1) / 2.0 - (hh - 1.0) / 2.0) / hh, 3)],
+        size: [round_to(bw, 3), round_to(bh, 3)],
+        background: round_to(bg, 3),
+    })
 }
 
 /// Everything measured on one frame against its shot's reference frame.
@@ -393,7 +480,9 @@ fn process_shot(frames: &Frames, sigs: &[FrameSig], toggles: &[bool], usable: &[
             m.exp.stops -= base;
         }
     }
-    ShotWork { f0, f1, ref_frame, track, tracked, reasons, meas }
+    let card = if tracked { None } else { card_box(frames, ref_frame, usable) };
+    let blur_kind = classify_blur(frames, ref_frame, &meas, tracked, usable);
+    ShotWork { f0, f1, ref_frame, track, tracked, reasons, meas, card, blur_kind }
 }
 
 struct Timing<'a> {
@@ -602,19 +691,8 @@ fn build_shot(id: usize, w: &ShotWork, sigs: &[FrameSig], dup: &[bool], t: &Timi
         if clipped > 0.3 {
             conf *= 0.7;
         }
-        // The kind, from the gradient orientations the blur took away.
-        let dirs: Vec<blurkind::BlurDir> = w.meas.iter().filter(|m| 100.0 * m.blur.sigma_px / frame_h as f64 > 0.25).filter_map(|m| m.blur_dir).collect();
-        if let Some((kind, c, st)) = (!dirs.is_empty()).then(|| blurkind::classify(&blurkind::median(&dirs))).flatten() {
-            let c = round_to(c * if w.tracked { 1.0 } else { 0.6 } * (dirs.len() as f64 / 3.0).min(1.0), 2);
-            blur_kind = Some(BlurKind {
-                kind: kind.into(),
-                confidence: c,
-                angle: (kind == "directional").then(|| round_to(st.angle, 0)),
-                axis_contrast: round_to(st.axis_contrast, 3),
-                radial_tangential: round_to(st.rt, 3),
-                frames: dirs.len(),
-            });
-        }
+        // The kind, from the gradient orientations the blur took away (see `process_shot`).
+        blur_kind = w.blur_kind.clone();
         let classified = blur_kind.as_ref().map(|k| k.confidence >= 0.4).unwrap_or(false);
         let directional = !blurred.is_empty() && aniso > 0.45 && !classified;
         if directional {
@@ -820,6 +898,7 @@ fn build_shot(id: usize, w: &ShotWork, sigs: &[FrameSig], dup: &[bool], t: &Timi
         events,
         shake: shake_out,
         blur_kind,
+        card: w.card.clone(),
         samples,
         vision: None,
     }
@@ -945,7 +1024,7 @@ pub fn analyze_frames(frames: &Frames, audio: Option<(&[f32], u32)>, mut source:
         }
         (Plate { w: frames.w, h: frames.h, rgb: vec![0; frames.w * frames.h * 3] }, None)
     };
-    let usable = if overlay.is_some() { layers::usable_mask(&plate) } else { vec![true; frames.w * frames.h] };
+    let mut usable = if overlay.is_some() { layers::usable_mask(&plate) } else { vec![true; frames.w * frames.h] };
     let vignette = if a1 > a0 { layers::vignette(frames, &sigs, a0, a1) } else { None };
 
     timer.lap("layers (overlay, vignette)");
@@ -954,6 +1033,20 @@ pub fn analyze_frames(frames: &Frames, audio: Option<(&[f32], u32)>, mut source:
     bounds.extend(cut_frames.iter().copied());
     bounds.push(a1);
     let ranges: Vec<(usize, usize)> = bounds.windows(2).map(|w| (w[0], w[1])).filter(|(a, b)| b > a).collect();
+    // A static texture: fine detail common to one frame of every shot (three
+    // fifths in, past the cut's flash). Where it is, the pixels are left out of
+    // the measurements like the overlay strokes: a sharp texture over a
+    // blurred picture would hide the blur, in the reference and in a render alike.
+    let groups: Vec<Vec<usize>> = ranges.iter().map(|(a, b)| a + (b - a) * 3 / 5).filter(|f| !ingest::is_blank(&sigs[*f])).map(|f| vec![f]).collect();
+    let texture = layers::texture(frames, &groups, &usable).and_then(|t| {
+        if timer.on {
+            eprintln!("  texture presence {:.3}, strength {:.3} stops, coverage {:.2}, {} over {} pictures", t.presence, t.strength, t.coverage, t.blend, groups.len());
+        }
+        let info = layers::texture_info(&t)?;
+        layers::mask_texture(&mut usable, frames.w, frames.h, &t.detail);
+        Some(info)
+    });
+    timer.lap("texture");
     let flat = match &vignette {
         Some(v) => FlatField::from_profile(frames.w, frames.h, &v.profile),
         None => FlatField::flat(frames.w, frames.h),
@@ -988,15 +1081,7 @@ pub fn analyze_frames(frames: &Frames, audio: Option<(&[f32], u32)>, mut source:
         shots_out[i].slot = slots[si].id.clone();
     }
 
-    // A static texture: fine detail common to one frame of every picture.
-    let groups: Vec<Vec<usize>> = slots.iter().map(|s| vec![s.ref_frame]).collect();
-    let texture = layers::texture(frames, &groups, &usable).and_then(|t| {
-        if timer.on {
-            eprintln!("  texture presence {:.3}, strength {:.3} stops, coverage {:.2}, {} over {} pictures", t.presence, t.strength, t.coverage, t.blend, groups.len());
-        }
-        layers::texture_info(&t)
-    });
-    timer.lap("slots, texture");
+    timer.lap("slots");
     // Signature curves.
     let mut sig = Signature { f0: a0, ..Default::default() };
     for w in &work {
@@ -1026,7 +1111,7 @@ pub fn analyze_frames(frames: &Frames, audio: Option<(&[f32], u32)>, mut source:
         notes,
         vision: None,
     };
-    Analyzed { analysis, plate, sigs }
+    Analyzed { analysis, plate, sigs, usable }
 }
 
 /// Saturation as the signature records it: the neutral 1 where the
@@ -1058,7 +1143,7 @@ impl ShotContext {
     /// The context [`analyze_frames`] used for `done`.
     pub fn of(done: &Analyzed) -> ShotContext {
         let a = &done.analysis;
-        let usable = if a.layers.overlay.is_some() { layers::usable_mask(&done.plate) } else { vec![true; done.plate.w * done.plate.h] };
+        let usable = done.usable.clone();
         let (a0, a1) = (a.ingest.analysed_f0, a.ingest.analysed_f1.min(done.sigs.len()));
         let global_sat = if a1 > a0 { median(&(a0..a1).map(|i| done.sigs[i].sat as f64).collect::<Vec<_>>()) } else { 0.0 };
         ShotContext { beats: a.beats.clone(), usable, vignette: a.layers.vignette.as_ref().map(|v| v.profile.clone()), global_sat }

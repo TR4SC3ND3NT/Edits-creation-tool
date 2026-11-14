@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 const SERVER: &str = env!("CARGO_BIN_EXE_edits-mcp");
 
-const TOOLS: [&str; 25] = [
+const TOOLS: [&str; 27] = [
     "audio_analyze",
     "beats_accent",
     "beats_cut",
@@ -43,6 +43,8 @@ const TOOLS: [&str; 25] = [
     "reference_draft",
     "reference_probe",
     "reference_read",
+    "reference_vision_export",
+    "reference_vision_merge",
     "render_frame",
     "render_sheet",
     "render_video",
@@ -466,6 +468,28 @@ fn recipe_of_a_reference_edit_analyze_draft_compare() {
         assert_eq!(scores[name], json!(1.0), "{name}: {said}");
     }
     assert!(cmp["structuredContent"]["comparison"]["overall"].as_f64().unwrap() > 0.8, "{said}");
+
+    // vision: strips and a questionnaire to answer, then validated labels merged into the analysis
+    let (said, exported) = c.ok("reference_vision_export", json!({ "analysis": "ref/analysis/reference_analysis.json" }));
+    assert!(said.contains("questions.json") && said.contains("shot 1"), "{said}");
+    assert!(exported["content"].as_array().unwrap().iter().any(|b| b["type"] == "image"), "the overview comes back: {said}");
+    assert!(root.0.join("ref/analysis/vision/shot01.jpg").is_file() && root.0.join("ref/analysis/vision/answers.json").is_file());
+    let mut answers: Value = serde_json::from_str(&std::fs::read_to_string(root.0.join("ref/analysis/vision/answers.json")).unwrap()).unwrap();
+    answers["shots"][0]["picture"] = json!("portrait");
+    std::fs::write(root.0.join("ref/analysis/vision/answers.json"), answers.to_string()).unwrap();
+    let refused = c.err("reference_vision_merge", json!({ "analysis": "ref/analysis/reference_analysis.json", "answers": "ref/analysis/vision/answers.json" }));
+    assert!(refused.contains("portrait") && refused.contains("close_up"), "{refused}");
+    answers["shots"][0]["picture"] = json!("close_up");
+    answers["shots"][0]["light"] = json!(["white_flash"]);
+    std::fs::write(root.0.join("ref/analysis/vision/answers.json"), answers.to_string()).unwrap();
+    let (said, merged) = c.ok("reference_vision_merge", json!({ "analysis": "ref/analysis/reference_analysis.json", "answers": "ref/analysis/vision/answers.json" }));
+    assert!(said.contains("merged: 1 shot(s) labelled"), "{said}");
+    assert_eq!(merged["structuredContent"]["labelled"], json!([1]));
+
+    // compare with a side-by-side sheet: written, listed, and the first page returned
+    let (said, cmp) = c.ok("reference_compare", json!({ "analysis": "ref/analysis/reference_analysis.json", "video": "ref/reference.mp4", "sheet": "ref/side.jpg" }));
+    assert!(said.contains("side-by-side sheets") && said.contains("ref/side.jpg"), "{said}");
+    assert!(cmp["content"].as_array().unwrap().iter().any(|b| b["type"] == "image"), "{said}");
 
     // fit: a job that reports what it would change; a dry run writes nothing.
     let before = std::fs::read_to_string(root.0.join("edit/project.json")).unwrap();

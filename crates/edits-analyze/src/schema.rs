@@ -308,11 +308,25 @@ pub struct Shot {
     /// Kind of the blur (gaussian, directional, zoom, spin) from gradient-orientation statistics.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blur_kind: Option<BlurKind>,
+    /// For a shot that could not be tracked: where a card, cube or inset sits on its reference frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<CardBox>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub samples: Option<Samples>,
     /// What an agent saw in the shot's frames, merged by `vision merge`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision: Option<ShotVision>,
+}
+
+/// The box a card, cube or inset picture fills on a dark background.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CardBox {
+    /// Centre, frame heights from the frame centre (x right, y down).
+    pub center: [f64; 2],
+    /// Width and height, frame heights.
+    pub size: [f64; 2],
+    /// Gamma-encoded luminance (0..1) of the background around it.
+    pub background: f64,
 }
 
 /// The kind of a shot's blur, told apart by which gradient orientations it
@@ -333,6 +347,15 @@ pub struct BlurKind {
     pub radial_tangential: f64,
     /// Blurred frames the decision rests on.
     pub frames: usize,
+    /// The kind's own parameter at the most blurred frame, found by blurring
+    /// the reference frame until it loses as much detail
+    /// (`directional_blur.length` % of height, `zoom_blur.strength`, `spin_blur.angle` degrees).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak: Option<f64>,
+    /// That parameter per % of height of the Gaussian-equivalent radius the
+    /// blur curve records at the same frame (draft scales the curve by it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_sigma: Option<f64>,
 }
 
 /// What an agent saw in one shot, answering the fixed questions Q1-Q8 of
@@ -376,6 +399,9 @@ pub struct ShotVision {
     /// Evidence: label -> the tile numbers (1-based) of the strip that show it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tiles: BTreeMap<String, Vec<usize>>,
+    /// The same evidence as frame numbers (resolved by `vision merge`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub frames: BTreeMap<String, Vec<usize>>,
     /// How the labels compare with the signals, written by `vision merge`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checks: Vec<String>,
