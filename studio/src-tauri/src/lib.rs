@@ -10,13 +10,17 @@
 //! commands the frontend calls are in `commands`.
 
 mod commands;
+mod edit_commands;
+mod editor;
 mod engine;
 mod inspect;
 mod project;
 mod reference;
 mod render;
 mod renders;
+mod song;
 mod studio;
+mod thumbs;
 mod uictx;
 
 use serde::Serialize;
@@ -161,6 +165,8 @@ pub fn run(startup: Startup) {
                 render::RenderService::spawn(edits_render::RenderOptions::default(), 384 << 20);
             let studio = studio::Studio::new(render, emit);
             app.manage(studio.clone());
+            app.manage(Arc::new(song::SongService::default()));
+            app.manage(thumbs::Thumbs::new(thumbs::cache_dir()));
             // `ui.json` is rewritten on a heartbeat while the window is open.
             let weak = Arc::downgrade(&studio);
             std::thread::Builder::new()
@@ -223,6 +229,23 @@ pub fn run(startup: Startup) {
             commands::report_load,
             commands::compare_status,
             commands::compare_start,
+            edit_commands::preview_ops,
+            edit_commands::preview_prop,
+            edit_commands::key_move,
+            edit_commands::layer_split,
+            edit_commands::layers_remove,
+            edit_commands::layers_shift,
+            edit_commands::layer_new,
+            edit_commands::picture_add,
+            edit_commands::slot_replace,
+            edit_commands::thumbnail,
+            edit_commands::song_status,
+            edit_commands::song_analyze,
+            edit_commands::waveform,
+            edit_commands::beats_cut,
+            edit_commands::beats_accent,
+            edit_commands::project_new,
+            edit_commands::project_from_reference,
         ])
         .on_page_load(|webview, payload| {
             if webview.label() == "main" && matches!(payload.event(), PageLoadEvent::Finished) {

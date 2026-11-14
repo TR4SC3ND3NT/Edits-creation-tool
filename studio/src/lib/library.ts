@@ -44,7 +44,7 @@ export const CATEGORY_LABEL: Record<string, string> = {
 export function unitLabel(unit: string) {
   switch (unit) {
     case "%h":
-      return "% h"
+      return "%h"
     case "deg":
       return "°"
     case "x":

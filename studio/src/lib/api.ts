@@ -47,6 +47,13 @@ export type Row = {
   blend: string | null
   marks: Mark[]
   transition: [string, number] | null
+  lanes: Lane[]
+}
+
+export type Lane = {
+  key: PropKey
+  name: string
+  keys: [number, "linear" | "hold" | "eased"][]
 }
 
 export type LayerBrief = {
@@ -88,6 +95,7 @@ export type Snapshot = {
   slots: {
     name: string
     path: string | null
+    file: string | null
     exists: boolean
     fit: string
     used_by: string[]
@@ -362,6 +370,52 @@ export type UiInputs = {
   note_at: string | null
 }
 
+export type SongMarks = {
+  bpm: number
+  beats: number[]
+  downbeats: number[]
+  kicks: [number, number][]
+  snares: [number, number][]
+  hats: [number, number][]
+  sections: [string, number, number][]
+  drop: number | null
+  notes: string[]
+  summary: string
+}
+
+export type Song = {
+  audio: string | null
+  running: boolean
+  error: string | null
+  marks: SongMarks | null
+}
+
+export type Waveform = { rate: number; peaks: number[] }
+
+export type CutRequest = {
+  slots: string[]
+  every?: number | null
+  on?: string | null
+  from: string
+  to: string
+  min_strength: number
+  prefix: string
+}
+
+export type AccentRequest = {
+  preset: string
+  on: string
+  target: string
+  selected: string | null
+  from: string
+  to: string
+  min_strength: number
+  every_nth: number
+  values: Record<string, unknown>
+}
+
+export type DryRun = { count: number; label: string }
+
 const call = <T>(command: string, args?: Record<string, unknown>) =>
   trackedInvoke<T>(command, args)
 
@@ -446,6 +500,65 @@ export const api = {
   compareStatus: () => call<CompareRun>("compare_status"),
   compareStart: (analysis: string, video: string) =>
     call<void>("compare_start", { analysis, video }),
+  // Previews while dragging: not tracked (one per pointer move).
+  previewOps: (ops: unknown[], frame: number, scale: number) =>
+    invoke<ArrayBuffer>("preview_ops", { ops, frame, scale }),
+  previewProp: (
+    layer: string | null,
+    key: PropKey,
+    t: number,
+    value: number[],
+    frame: number,
+    scale: number
+  ) =>
+    invoke<ArrayBuffer>("preview_prop", {
+      layer,
+      key,
+      t,
+      value,
+      frame,
+      scale,
+    }),
+  keyMove: (layer: string | null, key: PropKey, from: number, to: number) =>
+    call<EditDone>("key_move", { layer, key, from, to }),
+  layerSplit: (id: string, t: number) =>
+    call<EditDone>("layer_split", { id, t }),
+  layersRemove: (ids: string[], ripple: boolean) =>
+    call<EditDone>("layers_remove", { ids, ripple }),
+  layersShift: (ids: string[], dt: number) =>
+    call<EditDone>("layers_shift", { ids, dt }),
+  layerNew: (kind: string, at: number, above: string | null) =>
+    call<EditDone>("layer_new", { kind, at, above }),
+  pictureAdd: (
+    path: string,
+    at: number,
+    layer: boolean,
+    above: string | null
+  ) => call<EditDone>("picture_add", { path, at, layer, above }),
+  slotReplace: (slot: string, path: string) =>
+    call<EditDone>("slot_replace", { slot, path }),
+  // Many per scroll of the browser: not tracked.
+  thumbnail: (kind: string, name: string) =>
+    invoke<string>("thumbnail", { kind, name }),
+  songStatus: () => call<Song>("song_status"),
+  songAnalyze: () => call<Song>("song_analyze"),
+  waveform: () => call<Waveform | null>("waveform"),
+  beatsCutDry: (request: CutRequest) =>
+    call<DryRun>("beats_cut", { request, dry: true }),
+  beatsCut: (request: CutRequest) =>
+    call<EditDone>("beats_cut", { request, dry: false }),
+  beatsAccentDry: (request: AccentRequest) =>
+    call<DryRun>("beats_accent", { request, dry: true }),
+  beatsAccent: (request: AccentRequest) =>
+    call<EditDone>("beats_accent", { request, dry: false }),
+  projectNew: (request: {
+    dir: string
+    pictures: string[]
+    audio: string | null
+    aspect: string
+  }) => call<string>("project_new", { request }),
+  projectFromReference: (video: string, dir: string) =>
+    call<string>("project_from_reference", { video, dir }),
 }
 
 export function errorText(e: unknown): string {

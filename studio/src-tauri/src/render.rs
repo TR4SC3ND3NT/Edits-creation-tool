@@ -55,9 +55,21 @@ pub struct ProjectMsg {
     pub base_dir: PathBuf,
 }
 
+/// A frame of a version of the project that is not on disk: what an edit
+/// being dragged (a slider, a transform handle) would look like. Rendered
+/// before anything else, never cached; a newer preview replaces one that has
+/// not started.
+pub struct PreviewJob {
+    pub project: Arc<Project>,
+    pub frame: u64,
+    pub scale: f32,
+    pub reply: Reply,
+}
+
 #[derive(Default)]
 struct Inbox {
     project: Option<ProjectMsg>,
+    preview: Option<PreviewJob>,
     current: Option<Job>,
     prefetch: VecDeque<Job>,
     quit: bool,
@@ -225,6 +237,31 @@ impl RenderService {
         rx
     }
 
+    /// Render a frame of an unsaved version of the project (a preview while
+    /// dragging). The answer arrives on the returned channel.
+    pub fn preview(
+        &self,
+        project: Arc<Project>,
+        frame: u64,
+        scale: f32,
+    ) -> mpsc::Receiver<Result<Arc<Vec<u8>>, String>> {
+        let (tx, rx) = mpsc::channel();
+        let (lock, cv) = &*self.shared;
+        if let Ok(mut inbox) = lock.lock() {
+            let job = PreviewJob {
+                project,
+                frame,
+                scale: scale.clamp(0.05, 1.0),
+                reply: tx,
+            };
+            if let Some(old) = inbox.preview.replace(job) {
+                let _ = old.reply.send(Err("superseded".into()));
+            }
+        }
+        cv.notify_one();
+        rx
+    }
+
     /// Drop the frames waiting to be prefetched (after a seek, or on pause).
     pub fn clear_prefetch(&self) {
         let (lock, _) = &*self.shared;
@@ -290,12 +327,15 @@ fn run(
         }
     };
     let mut prepared: Option<u64> = None;
+    // The newest saved version, to prepare again after a preview.
+    let mut last: Option<ProjectMsg> = None;
     let (lock, cv) = shared;
     loop {
-        let (project, job) = {
+        let (project, preview, job) = {
             let Ok(mut inbox) = lock.lock() else { return };
             while !inbox.quit
                 && inbox.project.is_none()
+                && inbox.preview.is_none()
                 && inbox.current.is_none()
                 && inbox.prefetch.is_empty()
             {
@@ -308,14 +348,40 @@ fn run(
                 return;
             }
             let project = inbox.project.take();
-            let job = if project.is_some() {
+            let preview = if project.is_some() {
+                None
+            } else {
+                inbox.preview.take()
+            };
+            let job = if project.is_some() || preview.is_some() {
                 None
             } else {
                 inbox.current.take().or_else(|| inbox.prefetch.pop_front())
             };
-            (project, job)
+            (project, preview, job)
         };
+        if let Some(pv) = preview {
+            let Some(r) = renderer.as_mut() else {
+                let _ = pv.reply.send(Err("no renderer".into()));
+                continue;
+            };
+            let base = last.as_ref().map(|m: &ProjectMsg| m.base_dir.clone()).unwrap_or_default();
+            // The renderer now holds the preview; the saved version is prepared again before its next frame.
+            prepared = None;
+            r.set_motion_blur_samples(Some(1));
+            let result = r
+                .prepare(&pv.project, &base)
+                .map_err(|e| format!("{e:#}"))
+                .and_then(|_| {
+                    r.render_frame(pv.frame, pv.scale)
+                        .map_err(|e| format!("{e:#}"))
+                })
+                .and_then(|img| encode_jpeg(&img));
+            let _ = pv.reply.send(result.map(Arc::new));
+            continue;
+        }
         if let Some(msg) = project {
+            last = Some(msg.clone());
             let Some(r) = renderer.as_mut() else { continue };
             match r.prepare(&msg.project, &msg.base_dir) {
                 Ok(()) => {
@@ -346,6 +412,13 @@ fn run(
             let _ = job.reply.send(Err(format!("no renderer: {why}")));
             continue;
         };
+        if prepared.is_none() {
+            if let Some(msg) = last.as_ref().filter(|m| m.revision == job.key.revision) {
+                if r.prepare(&msg.project, &msg.base_dir).is_ok() {
+                    prepared = Some(msg.revision);
+                }
+            }
+        }
         if prepared != Some(job.key.revision) {
             let _ = job.reply.send(Err(format!(
                 "stale: revision {} is not loaded",

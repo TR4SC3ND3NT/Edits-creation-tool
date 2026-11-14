@@ -28,9 +28,58 @@ edits-studio [project.json] [--page edit|overview|reference|library|activity|ren
              [--select LAYER] [--at FRAME]
 ```
 
-Without a project it opens on an empty page with **Open project…**. The
+Without a project it opens on a first page with three cards: **Open
+project**, **New from pictures + song** and **New from reference**. The
 renderer's adapter is chosen by `EDITS_ADAPTER` (`auto`, `hardware`,
 `software`), as for `edits render`.
+
+## Design note: why the Edit page looks the way it does
+
+The Edit page copies the layout that the desktop edit apps converged on,
+so that someone who has used one of them finds things where they expect:
+
+| | CapCut Desktop | Premiere Pro | DaVinci Resolve (Cut / Edit) | After Effects | Alight Motion | Edits Studio |
+| --- | --- | --- | --- | --- | --- | --- |
+| Library of media, effects, transitions, text | left panel, tabs across the top | Project and Effects panels, left | Media Pool / Effects Library, left | Effects & Presets panel | "+" sheet | **left browser**, tabs Media · Effects · Transitions · Presets · Text · Shapes · Audio |
+| Picture | centre | Program monitor, centre | Viewer, centre | Composition panel | top | **centre viewer** with guides, zoom and transform handles |
+| Properties of the selection | right "details" panel, grouped (Basic, Animation, Speed...) | Effect Controls: Motion, Opacity, then each effect, with stopwatches and keyframes | Inspector: Video, Audio, Effects, Transition tabs | Timeline twirl-downs | property sheet per layer | **right inspector**, sections Layer · kind · Transform · Effects · Transition in · Masks · Track matte · Keys |
+| Time | full-width timeline at the bottom | timeline at the bottom | timeline at the bottom | timeline at the bottom | timeline at the bottom | **full-width timeline** at the bottom |
+
+The rest follows the same apps:
+
+- **Applying an effect.** Drag it from the library onto a clip (all of
+  them) or double-click it to apply it to the selected clip (Resolve's Cut
+  page, CapCut). The studio does both, and a drop on the viewer applies to
+  the selected layer or the picture on screen. A transition is dropped on
+  the clip that should come in through it.
+- **Keyframes.** A diamond next to every animatable value (CapCut,
+  Premiere, Resolve): hollow when the value is animated elsewhere, filled
+  when a key is at the playhead, a click adds or removes that key. Keys
+  show as small diamonds on the clip and, when a track is opened (the
+  chevron, After Effects' twirl-down), on one lane per property where each
+  key can be dragged, picked and deleted. Shapes say the ease that leaves
+  the key (diamond linear, square hold, dot eased), as After Effects' key
+  icons do. There is no graph editor yet; the Keys section sets the ease.
+- **Beats.** CapCut's auto beat and Alight Motion's beat markers put
+  marks on the music; here the song analysis (`edits audio`) puts beats,
+  downbeats, kicks, snares, sections and the drop on a lane above the
+  waveform, and moves snap to them. **Beat cut** and **Accent** are the
+  "one picture per beat" and "an effect on every kick" that those apps do
+  by hand.
+- **Clips** show a strip of their picture, their effects as chips and their
+  transition as a shaded wedge at the start, as in CapCut.
+- **Snapping** (CapCut's magnet, `N`) to beats, the playhead, markers and
+  other clips' edges; off, moves snap to frames.
+- **Keys** are the editors' common set: Space, J / K / L, S split, Delete,
+  Ctrl+Z, I / O for in and out points, Ctrl + wheel to zoom; `?` lists them.
+- **Live preview.** Dragging a slider, a colour or a transform handle
+  renders the frame at half size as you drag and writes once when you let
+  go, so one drag is one entry in the history.
+
+The look is stock shadcn/ui (`base-nova`, neutral, dark): the timeline and
+the viewer are drawn by the studio but only with the theme's tokens
+(`--background`, `--muted`, `--border`, `--primary`, `--ring`), so they look
+like the rest of the window; no colour of their own.
 
 ## Build and run on Linux
 
@@ -108,41 +157,69 @@ the sidebar's renderer menu does too.
 
 ### Edit
 
-The frame viewer with its transport, the inspector on the right, the
-timeline below; the dividers between them can be dragged. A line at the
-bottom says what your last edit did (`d: position → [0.2, 0, 0]`) or why it
-was refused.
+Four parts, the dividers between them can be dragged: the **browser** on
+the left, the **viewer** with its transport in the middle, the
+**inspector** on the right and the **timeline** across the bottom (see the
+design note above). A line at the bottom says what your last edit did
+(`d: position → [0.2, 0, 0]`) or why it was refused, and `?` opens the list
+of keys.
 
-What a screenshot of the demo at 1400 × 900 with layer `d` selected at frame
-60 shows: on the left of the sidebar-inset page the picture (the
-striped-sun picture `d`) centred on a muted stage in a bordered, rounded box;
-under it the transport `00:02.40 / 00:03.90`, badges `b4.92` and `f60`, a
-group of outline icon buttons (start, frame back, play, frame forward, last
-frame), the loop toggle, and on the right a *Blur* toggle and a `0.5×`
-select. The inspector reads `d` with an `image d` badge, a switch and a `…`
-menu, then tabs *Properties · Effects 3 · Keys*, `Values at frame 60 ·
-b4.92`, the *Layer* fields (in · out `4` `8` beats, blend `normal`, slot `d`),
-*Transition in* (`None: the layer cuts in at its in.` and an *Add transition*
-select) and *Transform* (position `0 0 0` units, scale `1.05` ×, ...). The
-timeline below has a toolbar (*+ Layer*, a `snap ¼ beat` badge, `5 layers ·
-8 beats · 123 BPM · 25 fps`, zoom out, zoom in, *Fit*), a ruler numbered by
-bars (`1`, `1.2`, `1.3`, `1.4`, `2`, ...), a Markers lane, and one row per
-layer, the top of the picture first (`camera`, `finish`, `tex`, `d`, `cube`,
-`a`), each with its kind's icon, its id and its kind, and a muted rounded bar
-from `in` to `out` naming its effects (`zoom_blur · saturation · invert`)
-with its keys as small glyphs; the selected row is highlighted and its bar
-outlined; a thin primary-coloured playhead runs through all rows.
+SCREENSHOT_EDIT
+
+**Browser.** Tabs *Media, Effects, Transitions, Presets, Text, Shapes,
+Audio* and a search field (every word must match a name, a category or a
+description). Items are cards: a small preview and one line saying what the
+item does (hover for the whole text). The preview is the item rendered by
+`edits-render` on a sample project of two generated pictures, 192 × 108: an
+effect with its registry defaults (when they change almost nothing, its
+first parameter at 70 % of its range), a preset applied at beat 1 and shown
+just after (a text preset on a text layer), a transition half way. They are
+made when a card first scrolls into view, one at a time on a thread with a
+renderer of its own, and kept in `$XDG_CACHE_HOME/edits-studio/thumbs/v1/`
+(else `~/.cache/...`), so each is made once per machine; a grey box shows
+until it is ready. **Double-click** a card to apply it to the selected layer
+at the playhead (with nothing selected: to the picture on screen); **drag**
+it onto a clip of the timeline (that clip) or onto the viewer.
+
+- *Media*: the project's slots with their pictures, how many layers use
+  each, and a menu: **Replace picture…** (a file dialog; the slot's `path`
+  changes, every layer that shows it follows) and *Add at b4*. **Add
+  pictures…** adds files as new slots and image layers at the playhead.
+  Double-clicking a slot adds an image layer of it.
+- *Effects*: the registry by category (those that need a file, `custom`
+  and `lut`, are left out).
+- *Transitions*: every transition; applying one writes the
+  `transition:<kind>` preset at the target clip's cut (`align: after`), so
+  the clip comes in through it and the clip before stays until it is done.
+- *Presets*: hits, zooms, motion, looks, 3D... (presets that add their own
+  layers say *adds layer*).
+- *Text*: **Title** adds a text layer one bar long at the playhead and
+  selects it; the text animations (`pop_in`, `typewriter`, ...) go on the
+  selected text layer from its start.
+- *Shapes*: rectangle, ellipse, star, line and particle layers, and the
+  ready-made shape and particle presets.
+- *Audio*: the song, the analysis summary, **Analyse song**, **Beat cut…**,
+  **Accent…** and the song's sections (click one to go there).
 
 **Viewer.** The frame under the playhead, rendered by `edits-render` exactly
 as `edits frame` renders it at that scale, on a worker thread, sent to the
 page as JPEG and drawn on a canvas. While paused it renders the frame you are
 on (with the project's motion blur unless *Blur* is off); while playing it
 asks for a few frames ahead of the playhead and shows the newest one that is
-ready, with a `showing frame N` badge when that is not the frame the
-transport reads. Frames are cached by revision, frame, scale and blur (384 MB
-of JPEGs on the Rust side, 240 decoded frames in the page). A red alert at
-the top says when the file on disk has errors; the last valid version stays
-on screen.
+ready. Frames are cached by revision, frame, scale and blur (384 MB of JPEGs
+on the Rust side, 240 decoded frames in the page). At the top right:
+transform handles on or off, guides (rule of thirds, 90 % and 80 % safe
+areas) and the zoom (*Fit*, 50 %, 100 % of the project's pixels, then the
+stage scrolls). The selected layer has a box with handles: drag inside it to
+move it (Shift: along one axis), a corner to scale it, the knob above it to
+turn it (Shift: 15° steps); the value shows next to the centre. Values are
+in composition units (the frame is 1 high), as in the file. While you drag,
+the frame is rendered with the new value at half the preview size, without
+writing anything (`preview_prop`: the project with that one change, given to
+the render thread ahead of every other frame, never cached); on release the
+value is written once, as the inspector writes it: a key at the playhead
+when the property is keyed, else the constant. A red alert at the top says
+when the file on disk has errors; the last valid version stays on screen.
 
 **Transport.** The time, the beat (`b4.92`, hover for the bar) and the frame;
 start, a frame back, play/pause, a frame forward, last frame; loop; motion
@@ -151,44 +228,98 @@ Playback follows a real-time clock; the project's `audio` plays from
 `audio.offset` plus the playhead (through the webview's `<audio>`, so through
 GStreamer on Linux) and is re-synced on every seek and loop.
 
-**Timeline.** Click or drag on the ruler, the markers lane or an empty part
-of a row to move the playhead. Click a row to select its layer (the camera
-row selects the camera). Drag a bar to move the layer in time with all its
-keys, its first or last 8 pixels to change `in` or `out`, a key glyph to move
-every key of that layer at that time; a dashed ghost shows where it lands,
-nothing is written until you let go, and then it is one edit. Times snap to
-quarter beats (to frames in a seconds project, or with Alt). The eye at the
-end of a row header disables or enables the layer. Ctrl + wheel zooms;
-*+ Layer* adds a solid, an adjustment layer, an image layer of a slot or a
-cube with a slot, one bar long at the playhead, above the selected layer.
-Key glyphs: a diamond for a `linear` segment, a square for `hold`, a dot for
-any other ease (grey for effect keys); hover for the time and the properties.
-A transition into a layer is a wedge at the start of its bar.
+**Inspector.** With nothing selected: an empty state, the file's problems,
+and the project's settings with a button for the camera. With a layer, its
+id, kind, an on/off switch and a menu (duplicate, bring forward, send
+backward, delete), then collapsible sections:
 
-**Inspector.** With nothing selected: an empty state, the problems of the
-file, the project's settings and a button for the camera. With a layer:
+- *Layer*: in and out (beats or s), blend (every mode), opacity, visible
+  (off: drawn only as a track matte).
+- The kind's own: *Picture* (image, video: the slot as a picture, a slot
+  select, **Replace picture…**; for video speed, time remap, frame blend,
+  reverse, loop, volume; posterize fps), *Text* (the words, font, size in
+  %h, weight, align, tracking, line height, fill, stroke) and *Animators*
+  (each with its selector, on/off, remove), *Shapes* (each shape with fill,
+  stroke and width, size or points, its operators, on/off, remove; + adds a
+  rectangle, ellipse, star or line), *Particles* (sprite, rate, life, speed,
+  direction, spread, size, drag, seed, gravity, colour), *Solid* (colour),
+  *Cube* (a slot per face, size W H D), *Comp* (comp, offset, speed, loop).
+- *Transform*: position, scale, rotation, anchor.
+- *Effects*: a card per effect in the order they apply; drag a card by its
+  handle to reorder, the switch turns it off, the menu moves or removes it,
+  the chevron folds it; + adds one from the registry.
+- *Transition in*: kind, duration, ease and what it does; or *Add
+  transition…*.
+- *Masks*: each mask's mode, feather and inverted; + adds an ellipse,
+  rectangle or rounded mask. *Track matte*: the source layer and mode.
+- *Keys*: the keys of the property whose name you clicked: time (click to
+  go there), value, the ease that leaves it (a select), remove.
 
-- *Properties*: in and out, blend (every blend mode), slot (image and video
-  layers), colour (solid layers), the transition in (kind, duration, its
-  description, remove; or *Add transition*, which applies the
-  `transition:<kind>` preset at the layer's cut with `align: after`), and
-  the transform. Each property is a row: its name (dim when the file does not
-  set it; hover for its documentation, default and keys; click to *pick* it),
-  its value at the playhead (a slider and a number for values with a range, a
-  number per component otherwise, its unit), and **Key here** (the diamond,
-  filled when a key is at the playhead).
-- *Effects*: a card per effect in the order they apply, with its category, its
-  one-line description, a switch, a menu (move up, move down, remove), every
-  parameter of the registry with its unit and range, and its options as
-  selects. *Add effect* is a searchable list of the registry by category.
-- *Keys*: the keys of the picked property in a table (time, value, the ease
-  that leaves it as a select of every ease name, remove), and badges for every
-  animated property of the layer.
+Every animatable value is a row: its name (dim when the file does not set
+it; hover for its documentation, default and keys; click to pick it for
+*Keys*), its value at the playhead (a slider and a number for values with a
+range, a field per axis with X / Y / Z inside it otherwise, a swatch for
+colours that opens R G B (A) sliders and a hex field) with its unit (`%h`,
+`°`, `×`, `beats`), and the **key diamond**: filled when a key is at the
+playhead (click removes it), outlined when the value is animated, faint when
+it is not (click adds a key there holding the value). Dragging a slider or a
+colour previews it live like the handles. Typing a value (Enter or leaving
+the field; ↑ / ↓ step it, Shift ×10) or letting go of a slider writes the
+change once: a constant changes; a keyframed property gets a key at the
+playhead, or that key changes. Plain fields of the layer (text, colours of
+shapes, masks...) are one `set` each. The logic of values and keys is the
+egui window's (`engine/editing.rs`).
 
-Typing a value (Enter or leaving the field) or letting go of a slider writes
-the change once: a constant changes; a keyframed property gets a key at the
-playhead, or that key changes; an effect parameter the file does not set is
-written as a constant. The logic is the egui window's (`engine/editing.rs`).
+**Timeline.** A toolbar: **Add** (a picture, text, shape, particles, solid,
+adjustment layer, cube, at the playhead), split and delete, *Ripple*, the
+snap magnet, **Beat cut** and **Accent**, the in/out range when set, and
+zoom out, zoom in, fit, keys. Then:
+
+- the ruler in bars and beats (`1`, `1.2`, `1.3`...), with the project's
+  markers; click or drag it to move the playhead;
+- *Beats*: with the song analysis, its sections as bands, downbeats as tall
+  ticks, beats as short ones, kicks as dots along the bottom and snares as
+  small diamonds along the top (fainter when weaker), and the drop; without
+  it, the project's own grid and an **Analyse** button;
+- the waveform of the audio (peaks of the file decoded by ffmpeg, 100 a
+  second, in project time);
+- one track per layer, top of the picture first (`data-slot="timeline-row"`):
+  a chevron (when the layer has keys), its kind's icon, id and what it is,
+  the eye to turn it off; and its clip: a strip of its picture, its
+  transition as a shaded region at the start with `⇢ fade`, its text, its
+  effects as chips, its keys as small diamonds along the bottom.
+
+Click a clip to select it (Shift or Ctrl adds or removes it from the
+selection); drag on empty track space for a marquee (a plain click there
+moves the playhead and deselects). Drag a clip to move it in time with all
+its keys (all selected clips move together), its first or last 8 pixels to
+trim `in` or `out`, a key diamond on a clip to move every key of the layer
+at that time. With the magnet on (`N`), times snap to the song's beats, the
+playhead, markers and other clips' edges within 8 pixels, else to quarter
+beats; off, to frames. A dashed ghost shows where it lands; nothing is
+written until you let go, and then it is one edit. The chevron opens one
+lane per animated property; drag a key there to move that key alone, click
+it to pick it (Delete removes it). **S** splits the selected clip at the
+playhead into two that meet there (a video plays on through a time remap);
+Delete removes the selected clips, and with *Ripple* the later clips move
+back to close the gap. Drop a browser card on a clip to apply it to that
+clip; drop a slot to add a picture there. Ctrl + wheel zooms about the
+pointer.
+
+**Beat cut** and **Accent** are the dialogs of `edits beats cut` and `edits
+beats accent` (the same `edits_core::beatops` and `preset` functions). Beat
+cut: the pictures to cycle through (ticked, in order), *Every N beats* (½,
+1, 2, a bar) or *On the song* (beats, offbeats, downbeats, kicks, snares,
+hats, with a minimum strength), *From* and *To* (any time: `b8`, `bar 3`,
+`drop`; empty: start and end; the in/out range fills them), the layer names.
+Accent: the preset, *On* (the same, and the drop), keep every one, every
+other or every fourth, on which layer (the picture on screen, the selected
+layer, or the whole frame through an `accents` adjustment layer), the range
+and the minimum strength. Both say what they will do before you press the
+button (`Adds 8 layers.`, `punch at 6 times.`, or why not, in red), and do
+it as one edit. **Analyse song** runs the library behind `edits audio` on a
+thread and keeps the result in `<project folder>/.edits/song.audio.json`
+(the egui window's file), where the agent can pass it as `audio`.
 
 ### Overview
 
@@ -297,13 +428,18 @@ layer; apply any preset at the playhead.
 | Key | What it does |
 | --- | --- |
 | Space | Play or pause |
+| J / K / L | Back one beat / stop / play (Edit page) |
 | Left / Right | One frame back / forward (pauses); with Shift, one beat |
 | Home / End | First / last frame |
-| L | Loop on or off |
+| Shift+L | Loop on or off (L alone, on other pages) |
+| S | Split the selected clip (or the picture under the playhead) at the playhead (Edit page) |
+| I / O, [ / ], X | In / out point at the playhead, go to them, clear them (Edit page) |
+| N | Snapping to beats and edges on or off (Edit page) |
+| ? | The list of keys (Edit page) |
 | Ctrl+Z / Ctrl+Shift+Z, Ctrl+Y | Undo / redo the newest edit in the shared history, yours or the agent's |
 | Ctrl+K | Command palette |
 | Ctrl+1 ... Ctrl+6 | Edit, Overview, Reference, Presets & Effects, Activity, Renders |
-| Delete, Backspace | Delete the selected layer |
+| Delete, Backspace | Delete the selected clips, or the key picked on a lane (with *Ripple* on, later clips close the gap) |
 | Esc | Deselect |
 | D | Dark or light theme |
 | Ctrl+D | The debug panel (dev builds) |
@@ -387,17 +523,21 @@ example after picking `position` on layer `d` at frame 60:
 ## Known limits of the studio
 
 - Not editable in the studio: project settings, markers, audio, layer ids and
-  names, cube faces, text, particles, shapes, masks, shake and loop modifiers
-  (their values under the shake can be edited), custom shaders' `source`,
-  slot paths; the agent or a text editor does those and the studio follows.
-- No song analysis lane, cut-on-beats or accent dialogs yet; the egui window
-  has them. The agent is not told that there is a note: say "see my note" in
-  your chat.
-- No preview of a preset or of a value while dragging a slider: the change is
-  rendered once it is written.
-- No waveform on the timeline. Audio plays through the webview: it needs
-  GStreamer, and it follows the wall clock, not the sound card's.
-- The camera's keys are shown on the timeline but not dragged there.
+  names, text animator values, shape operators and paths, particle bursts
+  and emitters, mask shapes and positions (mode, feather and inversion
+  are), shake and loop modifiers (their values under the shake can be
+  edited), custom shaders' `source`; values keyed inside those show as
+  *animated* and are edited by the agent or a text editor, which the studio
+  follows.
+- No graph editor: eases are chosen per key in *Keys*. Transform handles
+  work in the layer's plane (they ignore the camera's perspective and the
+  layer's X and Y rotation), and the box of a text, shape or particle layer
+  is an estimate.
+- The agent is not told that there is a note: say "see my note" in your
+  chat.
+- Audio plays through the webview: it needs GStreamer, and it follows the
+  wall clock, not the sound card's.
+- The camera's keys move one by one on its lanes, not together on its row.
 - Tested on X11 under Xvfb at 1400 × 900 with Mesa lavapipe, driven with
   `xdotool`: opening the demo, typing a value in the inspector (written as
   actor `window`, `ui.json` updated), an agent's `project_edit` while open

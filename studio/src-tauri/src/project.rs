@@ -209,6 +209,8 @@ pub struct RowDto {
     pub blend: Option<String>,
     pub marks: Vec<MarkDto>,
     pub transition: Option<(String, f64)>,
+    /// Every animated property with its keys, for the keyframe lanes.
+    pub lanes: Vec<crate::editor::LaneDto>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -246,6 +248,8 @@ pub struct SlotDto {
     pub path: Option<String>,
     pub exists: bool,
     pub fit: String,
+    /// The file, absolute (for thumbnails).
+    pub file: Option<String>,
     /// Layers that show it.
     pub used_by: Vec<String>,
 }
@@ -380,6 +384,10 @@ impl Open {
                         blend: r.blend,
                         marks: marks(&r.marks, tolerance),
                         transition: r.transition,
+                        lanes: match r.layer {
+                            Some(i) => crate::editor::layer_lanes(p, &p.layers[i]),
+                            None => crate::editor::camera_lanes(p),
+                        },
                     })
                     .collect()
             })
@@ -427,6 +435,7 @@ impl Open {
                         name: name.clone(),
                         exists: s.path.as_ref().is_some_and(|f| dir.join(f).is_file()),
                         path: s.path.clone(),
+                        file: s.path.as_ref().map(|f| dir.join(f).display().to_string()),
                         fit: serde_json::to_value(s.fit)
                             .ok()
                             .and_then(|v| v.as_str().map(str::to_string))

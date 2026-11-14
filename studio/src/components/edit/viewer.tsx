@@ -1,25 +1,65 @@
 import * as React from "react"
-import { CircleAlertIcon } from "lucide-react"
+import { CircleAlertIcon, Grid3x3Icon, MousePointer2Icon } from "lucide-react"
 
+import {
+  DRAG_MIME,
+  useEditor,
+  type BrowserItem,
+} from "@/components/edit/editor-context"
+import { TransformOverlay } from "@/components/edit/transform-overlay"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Spinner } from "@/components/ui/spinner"
+import { Toggle } from "@/components/ui/toggle"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { cachedFrame, isPending, loadFrame, nearestCached } from "@/lib/frames"
 import { useStudio } from "@/lib/store"
 import { lastFrame } from "@/lib/time"
+import { cn } from "@/lib/utils"
 
 /** Frames asked for ahead of the playhead while playing. */
 const AHEAD = 4
 
-/** The frame under the playhead, rendered by `edits-render` on the Rust side. */
+/** Rule of thirds, and the action (90 %) and title (80 %) safe areas. */
+function Guides() {
+  return (
+    <div className="pointer-events-none absolute inset-0" data-slot="guides">
+      {[1, 2].map((i) => (
+        <React.Fragment key={i}>
+          <div
+            className="absolute inset-y-0 border-l border-foreground/30"
+            style={{ left: `${(i * 100) / 3}%` }}
+          />
+          <div
+            className="absolute inset-x-0 border-t border-foreground/30"
+            style={{ top: `${(i * 100) / 3}%` }}
+          />
+        </React.Fragment>
+      ))}
+      <div className="absolute inset-[5%] border border-dashed border-foreground/30" />
+      <div className="absolute inset-[10%] border border-dashed border-foreground/20" />
+    </div>
+  )
+}
+
+/** The frame under the playhead, rendered by `edits-render` on the Rust side, with guides, transform handles and drops from the browser. */
 export function Viewer() {
   const { snapshot, info, frame, playing, scale, blurPaused } = useStudio()
+  const ed = useEditor()
   const stage = React.useRef<HTMLDivElement>(null)
   const canvas = React.useRef<HTMLCanvasElement>(null)
   const [box, setBox] = React.useState({ w: 0, h: 0 })
   const [shown, setShown] = React.useState<number | null>(null)
   const [loading, setLoading] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  const [zoom, setZoom] = React.useState("fit")
+  const [handles, setHandles] = React.useState(true)
+  const [dropping, setDropping] = React.useState(false)
   const drawn = React.useRef<ImageBitmap | null>(null)
   const wanted = React.useRef("")
   const inflight = React.useRef(0)
@@ -36,11 +76,14 @@ export function Viewer() {
 
   const aspect = info ? info.width / info.height : 1
   const fit = React.useMemo(() => {
-    const pad = 24
+    const pad = 20
     const w = Math.max(0, box.w - pad * 2)
     const h = Math.max(0, box.h - pad * 2)
-    return w / h > aspect ? { w: h * aspect, h } : { w, h: w / aspect }
-  }, [box, aspect])
+    const f = w / h > aspect ? { w: h * aspect, h } : { w, h: w / aspect }
+    if (zoom === "fit" || !info) return f
+    const z = Number(zoom) / (window.devicePixelRatio || 1)
+    return { w: info.width * z, h: info.height * z }
+  }, [box, aspect, zoom, info])
 
   const draw = React.useCallback((b: ImageBitmap | null) => {
     const c = canvas.current
@@ -62,8 +105,21 @@ export function Viewer() {
   // Redraw on resize.
   React.useEffect(() => draw(drawn.current), [fit, draw])
 
+  // While a control is dragged, its preview replaces the frame.
+  const live = ed.live
+  React.useEffect(() => {
+    if (live && live.frame === frame) draw(live.bitmap)
+  }, [live, frame, draw])
+
   const revision = snapshot?.revision ?? 0
   const blur = !playing && blurPaused && !!info?.motion_blur
+  // A preview that ended without an edit: back to the frame as it is.
+  React.useEffect(() => {
+    if (live) return
+    const hit = cachedFrame({ revision, frame, scale, blur })
+    if (hit) draw(hit)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live])
   React.useEffect(() => {
     if (!info || !revision) return
     const req = { revision, frame, scale, blur }
@@ -116,16 +172,37 @@ export function Viewer() {
     }
   }, [info, revision, frame, scale, blur, playing, draw])
 
+  const onDrop = (e: React.DragEvent) => {
+    setDropping(false)
+    const text = e.dataTransfer.getData(DRAG_MIME)
+    if (!text) return
+    e.preventDefault()
+    void ed.apply(JSON.parse(text) as BrowserItem)
+  }
+
   const errors = snapshot?.problems.filter((p) => p.error) ?? []
   return (
     <div
       ref={stage}
-      className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-muted/30"
+      data-slot="viewer"
+      className={cn(
+        "relative flex min-h-0 flex-1 items-center justify-center bg-muted/30",
+        zoom === "fit" ? "overflow-hidden" : "overflow-auto"
+      )}
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes(DRAG_MIME)) {
+          e.preventDefault()
+          e.dataTransfer.dropEffect = "copy"
+          setDropping(true)
+        }
+      }}
+      onDragLeave={() => setDropping(false)}
+      onDrop={onDrop}
     >
       {errors.length > 0 && (
         <Alert
           variant="destructive"
-          className="absolute top-3 right-3 left-3 z-10 w-auto"
+          className="absolute top-12 right-3 left-3 z-10 w-auto"
         >
           <CircleAlertIcon />
           <AlertTitle>
@@ -141,19 +218,77 @@ export function Viewer() {
           </AlertDescription>
         </Alert>
       )}
+      <div className="absolute top-2 right-2 z-20 flex items-center gap-1 rounded-lg border bg-background/90 p-0.5 backdrop-blur">
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Toggle
+                size="sm"
+                pressed={handles}
+                onPressedChange={setHandles}
+                aria-label="Transform handles"
+              />
+            }
+          >
+            <MousePointer2Icon />
+          </TooltipTrigger>
+          <TooltipContent>
+            Handles on the selected layer: drag to move, a corner to scale, the
+            knob to rotate
+          </TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Toggle
+                size="sm"
+                pressed={ed.guides}
+                onPressedChange={ed.setGuides}
+                aria-label="Guides"
+              />
+            }
+          >
+            <Grid3x3Icon />
+          </TooltipTrigger>
+          <TooltipContent>Rule of thirds and safe areas</TooltipContent>
+        </Tooltip>
+        <ToggleGroup
+          multiple={false}
+          size="sm"
+          value={[zoom]}
+          onValueChange={(v) => v[0] && setZoom(v[0])}
+          aria-label="Zoom"
+        >
+          <ToggleGroupItem value="fit" className="px-2 text-xs">
+            Fit
+          </ToggleGroupItem>
+          <ToggleGroupItem value="0.5" className="px-2 text-xs">
+            50%
+          </ToggleGroupItem>
+          <ToggleGroupItem value="1" className="px-2 text-xs">
+            100%
+          </ToggleGroupItem>
+        </ToggleGroup>
+      </div>
       <div
-        className="relative overflow-hidden rounded-lg border bg-background shadow-xs"
+        className={cn(
+          "relative shrink-0 rounded-md border bg-background shadow-xs",
+          dropping && "ring-2 ring-ring"
+        )}
         style={{ width: fit.w, height: fit.h }}
       >
-        <canvas ref={canvas} className="size-full" />
+        <canvas ref={canvas} className="size-full rounded-md" />
+        {ed.guides && <Guides />}
+        {handles && <TransformOverlay width={fit.w} height={fit.h} />}
         {shown == null && (
           <div className="absolute inset-0 flex items-center justify-center text-sm text-muted-foreground">
             <Spinner className="mr-2" /> Rendering…
           </div>
         )}
       </div>
-      <div className="absolute bottom-3 left-3 flex items-center gap-2">
-        {shown != null && shown !== frame && (
+      <div className="absolute bottom-2 left-2 flex items-center gap-2">
+        {live && <Badge variant="secondary">preview</Badge>}
+        {!live && shown != null && shown !== frame && (
           <Badge variant="secondary" className="tabular-nums">
             showing frame {shown}
           </Badge>
