@@ -278,6 +278,20 @@ fn stateless_lifecycle_tools_edit_and_render() {
     assert!(why.contains("NOT applied") && why.contains("has no parameter \"radus\"") && why.contains("/layers/@a/effects/2/params/radus"), "{why}");
     assert_eq!(std::fs::read_to_string(&project).unwrap(), after_edit);
 
+    // every call is in the activity log next to the project: a start and an end line
+    let log = std::fs::read_to_string(root.0.join("demo/.edits/activity.jsonl")).unwrap();
+    let entries = edits_core::activity::parse(&log);
+    let edits: Vec<_> = entries.iter().filter(|e| e.tool == "project_edit").collect();
+    assert_eq!(edits.len(), 4, "{log}");
+    let (start, end) = (edits[0], edits[1]);
+    assert_eq!((start.phase, end.phase, start.call == end.call), (edits_core::activity::Phase::Start, edits_core::activity::Phase::End, true));
+    assert_eq!(start.label, "setting finish vignette.amount (+1 more)");
+    assert_eq!(start.layers, ["finish", "wash"]);
+    assert_eq!(start.pointers[0], "/layers/@finish/effects/@vignette/params/amount");
+    assert_eq!((end.ok, start.project.as_deref(), start.actor.as_str()), (Some(true), Some("project.json"), "agent"));
+    assert_eq!(edits[3].ok, Some(false));
+    assert!(edits[3].error.as_deref().unwrap_or("").contains("NOT applied"), "{log}");
+
     // paths outside the workspace are refused before anything runs
     let outside = c.err("project_describe", json!({ "project": "../../etc/passwd" }));
     assert!(outside.contains("outside the workspace root"), "{outside}");

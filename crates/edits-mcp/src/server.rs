@@ -1474,6 +1474,29 @@ impl EditsServer {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for EditsServer {
+    /// Every call goes through the router as `tool_handler` would route it,
+    /// with a line in the activity log at its start and at its end.
+    async fn call_tool(&self, request: rmcp::model::CallToolRequestParams, context: rmcp::service::RequestContext<rmcp::RoleServer>) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+        let args = Value::Object(request.arguments.clone().unwrap_or_default());
+        let client = context.peer.peer_info().map(|i| i.client_info.name.clone());
+        let call = crate::activity::start(&self.ws, &request.name, &args, client);
+        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        let result = self.tool_router.call(tcc).await;
+        if let Some(call) = call {
+            match &result {
+                Ok(rmcp::model::CallToolResponse::Complete(r)) => {
+                    let failed = r.is_error == Some(true);
+                    let error = failed.then(|| r.content.iter().find_map(|c| c.as_text().map(|t| t.text.clone()))).flatten();
+                    let job = r.structured_content.as_ref().and_then(|v| v.get("job")).and_then(Value::as_str).map(str::to_string);
+                    call.end(!failed, error, job);
+                }
+                Ok(_) => call.end(true, None, None),
+                Err(e) => call.end(false, Some(e.message.to_string()), None),
+            }
+        }
+        result
+    }
+
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("edits-mcp", env!("CARGO_PKG_VERSION")))
