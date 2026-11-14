@@ -217,10 +217,19 @@ frame with this layer composited normally. The progress goes from 0 to 1,
 through `ease` (any ease name, default `linear`); after the end, the layer is
 simply there, so the last frame of a transition is the plain cut. The layer
 it comes from must stay visible until the transition ends (`check` warns
-when nothing beneath lasts that long). `edits transitions` lists the 22
+when nothing beneath lasts that long). `edits transitions` lists the 52
 kinds and their parameters; [EFFECTS.md](EFFECTS.md#transitions) describes
 them. The preset `transition:<kind>` writes this field and moves the two
 layers so that they overlap around the cut.
+
+A transition that reads a map (`luma_wipe`) takes `"source": "slot:<name>"`,
+a picture slot of the project, next to `kind`; without it, it reads the
+outgoing picture. Any other transition with a `source` is an error of
+`check`.
+
+```json
+"transition": { "kind": "luma_wipe", "duration": 1, "source": "slot:ramp", "params": { "softness": 0.2 } }
+```
 
 ## Times as text
 

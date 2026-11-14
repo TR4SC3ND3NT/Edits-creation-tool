@@ -245,6 +245,10 @@ pub struct Transition {
     /// Easing of the progress.
     #[serde(default)]
     pub ease: Ease,
+    /// For a transition that reads a map (`luma_wipe`): `slot:<name>`, a
+    /// picture slot of the project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

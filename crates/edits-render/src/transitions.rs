@@ -6,7 +6,10 @@
 //! through sRGB (the space they were written for; the renderer works in
 //! linear light), and their entry point is wrapped. Each declares its own
 //! uniform struct (`progress`, `ratio`, then its parameters); the table
-//! below says where each parameter goes in it.
+//! below says where each parameter goes in it, and converts the ones whose
+//! unit in edits differs from the shader's (`K`: % of height to frame
+//! heights, degrees to the shader's angle unit). A transition that reads a
+//! map (`luma_wipe`) declares one more texture, bound at binding 4.
 
 use edits_core::ResolvedTransition;
 
@@ -18,6 +21,8 @@ pub(crate) enum Ty {
     V3,
     V4,
     IV2,
+    /// A float multiplied by this factor (a unit conversion).
+    K(f32),
 }
 
 /// One transition: its WGSL and where its parameters go in its uniform struct.
@@ -29,8 +34,8 @@ pub(crate) struct Def {
 }
 
 macro_rules! def {
-    ($kind:literal, $file:literal, [$(($n:literal, $t:ident, $o:literal)),* $(,)?]) => {
-        Def { kind: $kind, source: include_str!(concat!("shaders/transitions/", $file, ".wgsl")), fields: &[$(($n, Ty::$t, $o)),*] }
+    ($kind:literal, $file:literal, [$(($n:literal, $t:ident $(($k:expr))?, $o:literal)),* $(,)?]) => {
+        Def { kind: $kind, source: include_str!(concat!("shaders/transitions/", $file, ".wgsl")), fields: &[$(($n, Ty::$t $(($k))?, $o)),*] }
     };
 }
 
@@ -57,6 +62,38 @@ pub(crate) const DEFS: &[Def] = &[
     def!("rotate_scale_fade", "RotateScaleFade", [("center", V2, 8), ("rotations", F, 16), ("scale", F, 20), ("back_color", V4, 32)]),
     def!("pixelize", "Pixelize", [("squares_min", IV2, 8), ("steps", I, 16)]),
     def!("film_burn", "FilmBurn", [("seed", F, 8)]),
+    // Wave 2, crates.io gl-transitions 2.0.3.
+    def!("zoom_out", "SimpleZoomOut", [("zoom_quickness", F, 8), ("fade", I, 12)]),
+    def!("directional_eased", "DirectionalEased", [("direction", V2, 8)]),
+    def!("linear_wipe", "DirectionalWipe", [("direction", V2, 8), ("smoothness", F, 16)]),
+    def!("clock_wipe", "ClockWipe", [("start_angle", F, 8)]),
+    def!("radial_wipe", "RadialWipe", [("smoothness", F, 8)]),
+    def!("circle_open", "CircleOpen", [("smoothness", F, 8), ("opening", I, 12)]),
+    def!("heart_wipe", "HeartWipe", [("center", V2, 8), ("smoothness", F, 16), ("pulse", F, 20), ("glow_color", V3, 32), ("glow", F, 44)]),
+    // The star's rotation is in fifths of a turn (72 degrees) in the shader.
+    def!("star_wipe", "StarWipe", [("border", K(0.01), 8), ("rotation", K(1.0 / 72.0), 12), ("border_color", V4, 16), ("center", V2, 32)]),
+    def!("diamond_wipe", "DiamondWipe", [("center", V2, 8), ("smoothness", F, 16)]),
+    def!("random_squares", "RandomSquares", [("squares", IV2, 8), ("smoothness", F, 16)]),
+    def!("noise_dissolve", "NoiseDissolve", []),
+    def!("luma_wipe", "LumaWipe", [("softness", F, 8), ("invert", I, 12)]),
+    def!("window_blinds", "WindowBlinds", []),
+    def!("window_slices", "WindowSlices", [("count", F, 8), ("smoothness", F, 12)]),
+    def!("grid_flip", "GridFlip", [("tiles", IV2, 8), ("pause", F, 16), ("gap", F, 20), ("background", V4, 32), ("randomness", F, 48)]),
+    def!("inside_cube", "InsideCube", [("direction", V2, 8), ("fov", F, 16), ("shading", F, 20), ("background", V4, 32)]),
+    def!("simple_flip", "SimpleFlip", []),
+    def!("book_flip", "BookFlip", [("perspective", F, 8), ("shading", F, 12), ("curl", F, 16)]),
+    def!("fold", "Fold", []),
+    def!("doorway", "Doorway", [("reflection", F, 8), ("perspective", F, 12), ("depth", F, 16)]),
+    def!("horizontal_open", "HorizontalOpen", []),
+    def!("split_slide", "SplitSlideInHorizontal", [("reverse", I, 8)]),
+    def!("ripple", "Ripple", [("frequency", F, 8), ("speed", F, 12)]),
+    def!("water_drop", "WaterDrop", [("frequency", F, 8), ("speed", F, 12), ("center", V2, 16), ("refraction", K(0.01), 24), ("highlight", F, 28)]),
+    def!("glitch_bands", "GlitchBands", [("horizontal", F, 8), ("vertical", F, 12)]),
+    def!("glitch_flicker", "GlitchFlicker", [("flickers", F, 8), ("rgb_offset", K(0.01), 12), ("blocks", F, 16), ("ghost", F, 20), ("red_cyan", F, 24), ("scanlines", F, 28)]),
+    def!("vhs_tracking", "VhsTracking", [("bands", I, 8), ("noise", F, 12), ("bleed", F, 16), ("wobble", F, 20)]),
+    def!("tv_static", "TvStatic", [("offset", F, 8)]),
+    def!("stretch_slide", "StretchSlide", [("direction", V2, 8), ("stretch", F, 16), ("bounce", F, 20)]),
+    def!("squeeze", "Squeeze", [("color_separation", K(0.01), 8)]),
 ];
 
 pub(crate) fn def(kind: &str) -> Option<&'static Def> {
@@ -135,6 +172,9 @@ pub(crate) fn source(d: &Def) -> String {
                 Some("@group(1) @binding(1)")
             } else if next.starts_with("var _sampler") {
                 Some("@group(1) @binding(2)")
+            } else if next.starts_with("var ") && next.contains(": texture_2d<f32>") {
+                // A map (LumaWipe's `luma`): the transition layout's fifth binding.
+                Some("@group(1) @binding(4)")
             } else {
                 None
             };
@@ -169,16 +209,17 @@ pub(crate) fn uniforms(d: &Def, t: &ResolvedTransition, ratio: f32, out: &mut [u
     for (name, ty, offset) in d.fields {
         let v = t.params.get(*name).cloned().unwrap_or_default();
         let at = |i: usize| v.get(i).or(v.last()).copied().unwrap_or(0.0);
-        let (n, int) = match ty {
-            Ty::F => (1, false),
-            Ty::I => (1, true),
-            Ty::V2 => (2, false),
-            Ty::V3 => (3, false),
-            Ty::V4 => (4, false),
-            Ty::IV2 => (2, true),
+        let (n, int, k) = match ty {
+            Ty::F => (1, false, 1.0),
+            Ty::I => (1, true, 1.0),
+            Ty::V2 => (2, false, 1.0),
+            Ty::V3 => (3, false, 1.0),
+            Ty::V4 => (4, false, 1.0),
+            Ty::IV2 => (2, true, 1.0),
+            Ty::K(k) => (1, false, *k),
         };
         for c in 0..n {
-            let bytes = if int { (at(c).round() as i32).to_le_bytes() } else { (at(c) as f32).to_le_bytes() };
+            let bytes = if int { (at(c).round() as i32).to_le_bytes() } else { (at(c) as f32 * k).to_le_bytes() };
             put(offset + 4 * c, bytes);
         }
     }
@@ -200,6 +241,20 @@ mod tests {
             assert!(src.contains("fn edits_glt_main(") && !src.contains("fn main("), "{}", spec.kind);
             assert!(!src.contains("@group(0) @binding(1)") && !src.contains("textureSampleLevel(_from, _sampler, vec2"), "{}", spec.kind);
             assert!(d.source.contains("// License: MIT"), "{} keeps its licence header", spec.kind);
+            let reads_map = spec.source != edits_core::effects::SourceKind::None;
+            assert_eq!(src.contains("@group(1) @binding(4)"), reads_map, "{}: a map is bound if and only if the transition reads one", spec.kind);
         }
+    }
+
+    #[test]
+    fn unit_conversions_reach_the_uniforms() {
+        let d = def("star_wipe").unwrap();
+        let params = [("border".to_string(), vec![2.0]), ("rotation".to_string(), vec![36.0])].into_iter().collect();
+        let t = ResolvedTransition { kind: "star_wipe", progress: 0.25, params, map: None };
+        let mut out = [0u8; 64];
+        uniforms(d, &t, 1.5, &mut out);
+        let f = |o: usize| f32::from_le_bytes(out[o..o + 4].try_into().unwrap());
+        assert_eq!((f(0), f(4)), (0.25, 1.5));
+        assert!((f(8) - 0.02).abs() < 1e-7 && (f(12) - 0.5).abs() < 1e-7, "% of height to frame heights, degrees to fifths of a turn");
     }
 }

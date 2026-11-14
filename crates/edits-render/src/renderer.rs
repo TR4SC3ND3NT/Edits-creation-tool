@@ -286,6 +286,10 @@ pub struct Renderer {
     pub(crate) custom: HashMap<String, wgpu::RenderPipeline>,
     /// Transition pipelines by kind, compiled on first use.
     transition_pipes: HashMap<&'static str, wgpu::RenderPipeline>,
+    /// Transitions: "from", "to", the two samplers and a map (`luma_wipe`).
+    tr_layout: wgpu::BindGroupLayout,
+    tr_pipeline_layout: wgpu::PipelineLayout,
+    tr_binds: HashMap<(u64, u64, u64), wgpu::BindGroup>,
     /// Video decoders and decoded frames.
     videos: Videos,
     /// What ffprobe said about each video file (path, size, modification time).
@@ -407,6 +411,15 @@ impl Renderer {
             bind_group_layouts: &[Some(&uniform_layout), Some(&fx_layout)],
             immediate_size: 0,
         });
+        let tr_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("edits transition textures"),
+            entries: &[texture_entry(0), texture_entry(1), sampler_entry(2), sampler_entry(3), texture_entry(4)],
+        });
+        let tr_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("edits transitions"),
+            bind_group_layouts: &[Some(&uniform_layout), Some(&tr_layout)],
+            immediate_size: 0,
+        });
         let identity_lut = make_lut(device, &gpu.queue, 2, &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [1.0, 1.0, 1.0]], 1);
 
         let source = concat!(include_str!("shaders/common.wgsl"), include_str!("shaders/passes.wgsl"), include_str!("shaders/mask.wgsl"), include_str!("shaders/time.wgsl"));
@@ -498,6 +511,9 @@ impl Renderer {
             pictures: HashMap::new(),
             custom: HashMap::new(),
             transition_pipes: HashMap::new(),
+            tr_layout,
+            tr_pipeline_layout,
+            tr_binds: HashMap::new(),
             videos: Videos::default(),
             probes: HashMap::new(),
             video_textures: Vec::new(),
@@ -612,6 +628,8 @@ impl Renderer {
                 }
             }
             used.extend(crate::fxlib::slots_used(l));
+            // A transition's map (`luma_wipe`).
+            used.extend(l.transition.as_ref().and_then(|t| t.source.as_deref()).and_then(|s| s.strip_prefix("slot:")));
         }
         let mut slots = HashMap::new();
         let mut kept: Vec<String> = Vec::new();
@@ -684,6 +702,7 @@ impl Renderer {
         self.video_textures.retain(|((key, ..), _)| clip_keys.contains(&key.as_str()));
         self.binds.clear();
         self.fx_binds.clear();
+        self.tr_binds.clear();
         let loaded = self.load_fx_inputs(project, base_dir)?;
         let mut scene = Scene { project: project.clone(), slots, clips, custom, loaded, fonts, comps: HashMap::new() };
         scene.comps = crate::comp::comp_scenes(&scene, max)?;
@@ -809,7 +828,7 @@ impl Renderer {
         let source = crate::transitions::source(def);
         let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some(def.kind), source: wgpu::ShaderSource::Wgsl(source.into()) });
-        let pipeline = make_pipeline(device, &self.pipeline_layout, &module, "edits_tr_vs", "edits_tr_fs", WORK_FORMAT, None, 1, false);
+        let pipeline = make_pipeline(device, &self.tr_pipeline_layout, &module, "edits_tr_vs", "edits_tr_fs", WORK_FORMAT, None, 1, false);
         if let Some(err) = pollster::block_on(scope.pop()) {
             bail!("transition \"{kind}\" does not compile on this adapter: {}", err.to_string().trim());
         }
@@ -817,13 +836,33 @@ impl Renderer {
         Ok(pipeline)
     }
 
-    /// One transition pass: `from` and `to` into `target`.
-    pub(crate) fn transition_pass(&mut self, target: &Tex, from: &Tex, to: &Tex, tr: &edits_core::ResolvedTransition) -> Result<()> {
+    /// One transition pass: `from` and `to` into `target`, with `map` (or,
+    /// without one, `from`) as the map of a transition that reads one.
+    pub(crate) fn transition_pass(&mut self, target: &Tex, from: &Tex, to: &Tex, map: Option<&Tex>, tr: &edits_core::ResolvedTransition) -> Result<()> {
         let pipeline = self.transition_pipeline(tr.kind)?;
         let def = crate::transitions::def(tr.kind).expect("checked by transition_pipeline");
         let mut uni = Uni::zeroed();
         crate::transitions::uniforms(def, tr, target.w as f32 / target.h as f32, bytemuck::bytes_of_mut(&mut uni));
-        let bind = self.bind(from, Some(to), Samp::Linear);
+        let map = map.unwrap_or(from);
+        let key = (from.id, to.id, map.id);
+        let bind = match self.tr_binds.get(&key) {
+            Some(g) => g.clone(),
+            None => {
+                let g = self.gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: None,
+                    layout: &self.tr_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&from.view) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&to.view) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.linear) },
+                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.mirror) },
+                        wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&map.view) },
+                    ],
+                });
+                self.tr_binds.insert(key, g.clone());
+                g
+            }
+        };
         let offset = self.push_uniform(&uni);
         self.name(|| format!("transition {}", tr.kind));
         self.raw_pass(&pipeline, &target.view, None, None, Some(wgpu::Color::TRANSPARENT), &[(bind, offset, 3)]);
@@ -920,6 +959,7 @@ impl Renderer {
     /// Forget the bind groups of a texture that is no longer used.
     pub(crate) fn forget_texture(&mut self, id: u64) {
         self.binds.retain(|k, _| k.0 != id && k.1 != id);
+        self.tr_binds.retain(|k, _| k.0 != id && k.1 != id && k.2 != id);
     }
 
     /// The largest side of a texture on this adapter.
@@ -1281,6 +1321,7 @@ impl Renderer {
             self.pool.clear();
             self.binds.clear();
             self.fx_binds.clear();
+            self.tr_binds.clear();
             self.pool_size = (w, h);
         }
         self.stats = FrameStats { passes: 0, samples, rendered_samples: samples, width: w, height: h };
