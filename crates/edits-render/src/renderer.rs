@@ -267,6 +267,8 @@ pub struct Renderer {
     fx_pipes: HashMap<(&'static str, Vec<u8>), wgpu::RenderPipeline>,
     /// Bound when an effect has no lookup table of its own.
     identity_lut: Lut,
+    /// Tables of built-in effects (curves, palettes) by content (see `fx_table`).
+    fx_tables: HashMap<Vec<u32>, Lut>,
     pipes: Pipes,
     ubuf: wgpu::Buffer,
     ubind: wgpu::BindGroup,
@@ -407,7 +409,7 @@ impl Renderer {
             bind_group_layouts: &[Some(&uniform_layout), Some(&fx_layout)],
             immediate_size: 0,
         });
-        let identity_lut = make_lut(device, &gpu.queue, 2, &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [1.0, 1.0, 1.0]], 1);
+        let identity_lut = make_lut(device, &gpu.queue, [2; 3], &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [1.0, 1.0, 1.0]], 1);
 
         let source = concat!(include_str!("shaders/common.wgsl"), include_str!("shaders/passes.wgsl"), include_str!("shaders/mask.wgsl"), include_str!("shaders/time.wgsl"));
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -483,6 +485,7 @@ impl Renderer {
             fx_binds: HashMap::new(),
             fx_pipes: HashMap::new(),
             identity_lut,
+            fx_tables: HashMap::new(),
             pipes,
             ubuf,
             ubind,
@@ -763,7 +766,31 @@ impl Renderer {
             bail!("a 3D lookup table needs size^3 entries with a size of 2 to 256 (got {} entries for size {size})", rgb.len());
         }
         let id = self.new_id();
-        Ok(make_lut(&self.gpu.device, &self.gpu.queue, size, rgb, id))
+        Ok(make_lut(&self.gpu.device, &self.gpu.queue, [size; 3], rgb, id))
+    }
+
+    /// A table a built-in effect reads with `fxl_table` (rows of `width`
+    /// entries, see `fxlib::Table`), uploaded once per distinct content: an
+    /// animated curve uploads a table per frame it changes in. The last 64
+    /// are kept.
+    pub(crate) fn fx_table(&mut self, width: u32, rgb: &[[f32; 3]]) -> Result<Lut> {
+        let rows = rgb.len() as u32 / width.max(1);
+        if !(2..=2048).contains(&width) || rows == 0 || rows > 256 || rgb.len() != (width * rows) as usize {
+            bail!("an effect table needs rows of 2 to 2048 entries (got {} entries in rows of {width})", rgb.len());
+        }
+        let key: Vec<u32> = std::iter::once(width).chain(rgb.iter().flatten().map(|v| v.to_bits())).collect();
+        if let Some(lut) = self.fx_tables.get(&key) {
+            return Ok(lut.clone());
+        }
+        if self.fx_tables.len() >= 64 {
+            let gone: Vec<u64> = self.fx_tables.values().map(|l| l.id).collect();
+            self.fx_binds.retain(|k, _| !gone.contains(&k.2));
+            self.fx_tables.clear();
+        }
+        let id = self.new_id();
+        let lut = make_lut(&self.gpu.device, &self.gpu.queue, [width, rows, 1], rgb, id);
+        self.fx_tables.insert(key, lut.clone());
+        Ok(lut)
     }
 
     /// One effect pass: `pipeline` (a built-in or custom effect) reads `src`
@@ -1564,10 +1591,13 @@ pub(crate) struct Lut {
     pub view: wgpu::TextureView,
 }
 
-fn make_lut(device: &wgpu::Device, queue: &wgpu::Queue, size: u32, rgb: &[[f32; 3]], id: u64) -> Lut {
+/// A 3D table of `size` (width, height, depth) linear RGB entries, the first
+/// coordinate varying fastest.
+fn make_lut(device: &wgpu::Device, queue: &wgpu::Queue, size: [u32; 3], rgb: &[[f32; 3]], id: u64) -> Lut {
+    let extent = wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: size[2] };
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("edits lut"),
-        size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: size },
+        size: extent,
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D3,
@@ -1584,8 +1614,8 @@ fn make_lut(device: &wgpu::Device, queue: &wgpu::Queue, size: u32, rgb: &[[f32; 
     queue.write_texture(
         wgpu::TexelCopyTextureInfo { texture: &texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
         &bytes,
-        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(8 * size), rows_per_image: Some(size) },
-        wgpu::Extent3d { width: size, height: size, depth_or_array_layers: size },
+        wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(8 * size[0]), rows_per_image: Some(size[1]) },
+        extent,
     );
     Lut { id, view: texture.create_view(&wgpu::TextureViewDescriptor::default()) }
 }

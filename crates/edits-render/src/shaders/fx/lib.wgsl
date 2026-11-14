@@ -90,3 +90,64 @@ fn fxl_generate(b: vec4<f32>, s: vec3<f32>, mode: u32, amount: f32) -> vec4<f32>
     }
     return vec4<f32>(mix(base, o, amount) * b.a, b.a);
 }
+
+// Entry `x` (0..1, clamped) of row `row` of the effect's table: rows of a
+// few hundred entries, linearly interpolated, that `fxlib` computes on the
+// CPU (curves, palettes, hue bands) and binds where `lut` binds its cube.
+fn fxl_table(x: f32, row: u32) -> vec3<f32> {
+    let d = textureDimensions(edits_lut_texture);
+    let w = f32(d.x);
+    let u = (clamp(x, 0.0, 1.0) * (w - 1.0) + 0.5) / w;
+    let v = (f32(row) + 0.5) / f32(d.y);
+    return textureSampleLevel(edits_lut_texture, src_sampler, vec3<f32>(u, v, 0.5), 0.0).rgb;
+}
+
+// Hue (0..1 turns), saturation and value of a colour, and back. The
+// standard formulas: hue 0 is red; greys have hue 0 and saturation 0.
+fn fxl_rgb2hsv(c: vec3<f32>) -> vec3<f32> {
+    let hi = max(c.r, max(c.g, c.b));
+    let lo = min(c.r, min(c.g, c.b));
+    let d = hi - lo;
+    var h = 0.0;
+    if d > 1e-6 {
+        if hi == c.r {
+            h = (c.g - c.b) / d;
+        } else if hi == c.g {
+            h = (c.b - c.r) / d + 2.0;
+        } else {
+            h = (c.r - c.g) / d + 4.0;
+        }
+        h = fract(h / 6.0 + 1.0);
+    }
+    return vec3<f32>(h, select(0.0, d / hi, hi > 1e-6), hi);
+}
+fn fxl_hsv2rgb(c: vec3<f32>) -> vec3<f32> {
+    let k = clamp(abs(fract(vec3<f32>(c.x) + vec3<f32>(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - vec3<f32>(3.0)) - vec3<f32>(1.0), vec3<f32>(0.0), vec3<f32>(1.0));
+    return c.z * mix(vec3<f32>(1.0), k, c.y);
+}
+// Hue (0..1 turns), saturation and lightness, and back (for colours in 0..1).
+fn fxl_rgb2hsl(c: vec3<f32>) -> vec3<f32> {
+    let hi = max(c.r, max(c.g, c.b));
+    let lo = min(c.r, min(c.g, c.b));
+    let l = 0.5 * (hi + lo);
+    let d = hi - lo;
+    let s = select(0.0, d / max(1.0 - abs(2.0 * l - 1.0), 1e-6), d > 1e-6);
+    return vec3<f32>(fxl_rgb2hsv(c).x, s, l);
+}
+fn fxl_hsl2rgb(c: vec3<f32>) -> vec3<f32> {
+    let k = clamp(abs(fract(vec3<f32>(c.x) + vec3<f32>(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - vec3<f32>(3.0)) - vec3<f32>(1.0), vec3<f32>(0.0), vec3<f32>(1.0));
+    let chroma = (1.0 - abs(2.0 * c.z - 1.0)) * c.y;
+    return vec3<f32>(c.z) + chroma * (k - vec3<f32>(0.5));
+}
+// A smooth step from 0 at `lo` to 1 at `lo + width`; a hard step (1 above
+// `lo`) when `width` is 0.
+fn fxl_ramp(x: f32, lo: f32, width: f32) -> f32 {
+    if width <= 1e-6 {
+        return select(0.0, 1.0, x > lo);
+    }
+    return smoothstep(lo, lo + width, x);
+}
+// Rec. 709 weights on display values: how a `luma` track matte measures brightness.
+fn fxl_matte_luma(d: vec3<f32>) -> f32 {
+    return dot(d, vec3<f32>(0.2126, 0.7152, 0.0722));
+}

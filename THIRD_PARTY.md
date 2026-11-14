@@ -51,6 +51,35 @@ prelude in `shaders/fx/prelude.wgsl`) is ours. So are `shockwave`, `tile`,
 where a header names another project for a look (three.js, pmndrs
 postprocessing, ISF), no code was taken from it.
 
+## Colour and keying passes
+
+| Our file | Source | Licence | What was taken |
+| --- | --- | --- | --- |
+| `crates/edits-render/src/shaders/fx/chroma_key.wgsl` | GPUImage, https://github.com/BradLarson/GPUImage, `framework/Source/GPUImageChromaKeyFilter.m` | BSD-3-Clause | The YCbCr conversion (0.2989, 0.5866, 0.1145; Cr x 0.7132, Cb x 0.5647), the chroma distance and the smoothstep from `tolerance` to `tolerance + softness`; the default tolerance 0.4 and softness 0.1. On display values; amount, matte view and a hard cut at softness 0 are ours. |
+| `crates/edits-render/src/shaders/fx/white_balance.wgsl` | GPUImage, `GPUImageWhiteBalanceFilter.m` | BSD-3-Clause | The YIQ matrices, the tint as a shift of Q clamped to +-0.5226, the overlay with the warming filter (0.93, 0.54, 0) mixed by the temperature. Temperature and tint as -1..1 (ours); the matrices applied as written. |
+| `crates/edits-render/src/shaders/fx/highlights_shadows.wgsl` | GPUImage, `GPUImageHighlightShadowFilter.m` | BSD-3-Clause | The shadow and highlight curves on the luminance (weights 0.3, 0.3, 0.3) and the rescaling of the colour to the new luminance. `highlights` counted up from 0 and the clamped luminance are ours. |
+| `crates/edits-render/src/shaders/fx/channel_mixer.wgsl` | GPUImage, `GPUImageColorMatrixFilter.m`; EffectCraft, https://github.com/storytold/effectcraft, `crates/effects/src/color_fx.rs` (Channel Mixer) | BSD-3-Clause; MIT OR Apache-2.0 (used under MIT) | A colour matrix mixed with the original by an intensity (GPUImage); a constant per row and no negative output (EffectCraft). The HSV mode is ours. |
+| `crates/edits-render/src/shaders/fx/solarize.wgsl` | GPUImage, `GPUImageSolarizeFilter.m` | BSD-3-Clause | The luminance weights (0.2125, 0.7154, 0.0721) and \|step - value\| as the inversion. The `above` side, softness and amount are ours. |
+| `crates/edits-render/src/shaders/fx/haze.wgsl` | GPUImage, `GPUImageHazeFilter.m` | BSD-3-Clause | (value - d x colour) / (1 - d) with d = distance + slope x y. The colour parameter and the unpremultiplied input are ours. |
+| `crates/edits-render/src/shaders/fx/bleach_bypass.wgsl` | three.js, https://github.com/mrdoob/three.js, `examples/jsm/shaders/BleachBypassShader.js` | MIT | The overlay of the colour with its luminance, multiply below 0.45 and screen above 0.55, mixed by opacity. |
+| `crates/edits-render/src/shaders/fx/technicolor.wgsl` | three.js, `examples/jsm/shaders/TechnicolorShader.js` | MIT | Red kept, green and blue replaced by their average. Amount and alpha are ours. |
+| `presets/sepia.json` | three.js `examples/jsm/shaders/SepiaShader.js` (after glfx.js `src/filters/adjust/sepia.js`) | MIT | The sepia matrix (0.393, 0.769, 0.189 / 0.349, 0.686, 0.168 / 0.272, 0.534, 0.131), used as `channel_mixer` rows. |
+| `crates/edits-render/src/shaders/fx/lift_gamma_gain.wgsl` | Vidvox ISF-Files, https://github.com/Vidvox/ISF-Files, `ISF/LGG.fs` (credit "VIDVOX") | MIT | Lift as value + lift x (1 - value), then gain, then gamma, then saturation about the Rec. 709 luminance. Neutral values 0, 1, 1 instead of 0.5, 0.25, 0.25 x 4, gamma above 1 brightening, no clamping are ours. |
+| `presets/thermal.json` | Vidvox ISF-Files, `ISF/Thermal Camera.fs` (credit "VIDVOX") | MIT | The thermal colours: black, purple, blue, cyan, green, yellow, orange, red (as linear stops of `gradient_map`). |
+| `crates/edits-render/src/shaders/fx/spill_suppress.wgsl` | EffectCraft, `crates/effects/src/keying.rs` (Spill Suppressor) | MIT OR Apache-2.0 (used under MIT) | Fast: the key's primary channel limited to the larger of the other two; better: the chroma along the key colour's chroma removed. |
+| `crates/edits-render/src/shaders/fx/luma_key.wgsl` | EffectCraft, `crates/effects/src/keying.rs` (Luma Key) | MIT OR Apache-2.0 (used under MIT) | The four key types (darker, brighter, similar, dissimilar within a tolerance). The softness ramp in place of edge thin and feather is ours. |
+| `crates/edits-render/src/shaders/fx/unmult.wgsl` | EffectCraft, `crates/effects/src/keying2.rs` (Unmult) | MIT OR Apache-2.0 (used under MIT) | Alpha from the brightest channel (black) or the mirrored darkest (white), ramped from a level over a softness share of the rest, and the background taken back out of the colour. On linear light. |
+| `crates/edits-render/src/shaders/fx/difference_matte.wgsl` | EffectCraft, `crates/effects/src/keying2.rs` (Difference Matte) | MIT OR Apache-2.0 (used under MIT) | The largest channel (and alpha) difference against the clean plate, keyed up to a tolerance with a softness ramp. No blur before the difference. |
+| `crates/edits-render/src/shaders/fx/replace_color.wgsl` | EffectCraft, `crates/effects/src/color_fx.rs` (Change to Color) | MIT OR Apache-2.0 (used under MIT) | The match on hue, lightness and saturation with a tolerance each and a softness, the change options (hue; hue and lightness; hue and saturation; all) and setting versus transforming. |
+| `crates/edits-render/src/shaders/fx/leave_color.wgsl` | EffectCraft, `crates/effects/src/color_fx.rs` (Leave Color) | MIT OR Apache-2.0 (used under MIT) | Likeness by hue (greys never match) or RGB distance / sqrt 3, kept within the tolerance, greyed by amount over the softness. |
+| `crates/edits-render/src/shaders/fx/colorama.wgsl`, `crates/edits-render/src/fxlib/color.rs` (`colorama_table`) | EffectCraft, `crates/effects/src/color_fx.rs` (Colorama) | MIT OR Apache-2.0 (used under MIT) | The phase sources, cycles and phase shift, the cyclic palette evaluation and the palettes hue cycle, fire, ice, grey ramp and pastel. The table, the end-of-cycle rule and the custom colour list are ours. |
+| `crates/edits-render/src/shaders/fx/hsl.wgsl` | EffectCraft, `crates/effects/src/color_fx.rs` (Hue/Saturation: `adjust_sat`, `adjust_light`, greys weighted by saturation x 20) | MIT OR Apache-2.0 (used under MIT) | The saturation and lightness steps. The eight hue bands and their smooth blending in a table are ours. |
+| `crates/edits-render/src/fxlib/color.rs` (`Curve`, `curves_table`), `crates/edits-render/src/shaders/fx/curves.wgsl` | glfx.js, https://github.com/evanw/glfx.js, `src/filters/adjust/curves.js`; EffectCraft, `crates/effects/src/color2.rs` (Curves) | MIT; MIT OR Apache-2.0 (used under MIT) | Written from their documented method, not their code: a natural cubic spline through the control points, the master curve before each channel's, baked into a table the shader reads. The spline code (Thomas algorithm), flat ends and the slope-1 continuation above 1 are ours. |
+
+The tables of `curves`, `hsl`, `colorama` and `gradient_map`'s `stops` mode
+(`fxl_table` in `shaders/fx/lib.wgsl`, `Renderer::fx_table`), the HSV / HSL
+helpers and the `stops` mode itself are ours.
+
 ## Multi-pass light effects and blend modes
 
 | Our file | Source | Licence | What was taken |
@@ -199,7 +228,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-The ported files credit "zoidberg" as their author, as the ISF files do.
+The ported files credit "zoidberg" (or, for `LGG.fs` and `Thermal Camera.fs`, "VIDVOX") as their author, as the ISF files do.
 
 ### GPUImage (BSD-3-Clause)
 
@@ -219,6 +248,32 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 ```
 Copyright (c) 2021 Advanced Micro Devices, Inc. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
+### three.js (MIT)
+
+```
+The MIT License
+
+Copyright © 2010-2026 three.js authors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

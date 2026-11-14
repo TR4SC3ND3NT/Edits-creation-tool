@@ -1,0 +1,45 @@
+{
+  "format": "edits.preset/1",
+  "name": "fade_film",
+  "description": "Faded film (CapCut's Fade): lifted blacks, softer whites and muted colour.",
+  "tags": [
+    "look",
+    "colour",
+    "retro"
+  ],
+  "variables": {
+    "fade": {
+      "type": "number",
+      "default": 0.12,
+      "min": 0,
+      "max": 0.5,
+      "doc": "Display value black is lifted to; white comes down by half as much."
+    },
+    "saturation": {
+      "type": "number",
+      "default": 0.8,
+      "min": 0,
+      "max": 2,
+      "doc": "Saturation after the fade (1 keeps it)."
+    }
+  },
+  "apply": [
+    {
+      "effect": {
+        "kind": "levels",
+        "params": {
+          "out_black": "$fade",
+          "out_white": "=1 - $fade / 2"
+        }
+      }
+    },
+    {
+      "effect": {
+        "kind": "saturation",
+        "params": {
+          "amount": "$saturation"
+        }
+      }
+    }
+  ]
+}

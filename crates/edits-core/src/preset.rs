@@ -141,6 +141,10 @@ builtin!(
     "pop_in",
     "random_flicker",
     "wave",
+    "sepia",
+    "xray",
+    "fade_film",
+    "thermal",
 );
 
 /// Parse and check one preset file's text.
@@ -1270,6 +1274,25 @@ mod tests {
             let project: Project = serde_json::from_value(out).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(!crate::check::has_errors(&crate::check::check(&project, None)), "{name}");
         }
+    }
+
+    #[test]
+    fn colour_look_presets_add_effects_that_check() {
+        let d = doc();
+        let tc = ctx(&d);
+        for (name, kinds) in [("sepia", &["channel_mixer"][..]), ("xray", &["invert", "saturation", "tint"]), ("fade_film", &["levels", "saturation"]), ("thermal", &["gradient_map"])] {
+            let (out, _) = apply(&d, &find(name, None).unwrap(), &Target::Layer("a".into()), &[1.0], &Map::new(), &tc).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let fxs: Vec<&str> = out["layers"][0]["effects"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+            assert_eq!(fxs, kinds, "{name}");
+            let project: Project = serde_json::from_value(out).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let findings = crate::check::check(&project, None);
+            assert!(findings.iter().all(|f| f.severity != crate::check::Severity::Error && !f.path.contains("effects")), "{name}: {findings:?}");
+        }
+        // Variables reach the effect: fade_film's out_white is 1 - fade / 2.
+        let mut vars = Map::new();
+        vars.insert("fade".into(), json!(0.2));
+        let (out, _) = apply(&d, &find("fade_film", None).unwrap(), &Target::Layer("a".into()), &[1.0], &vars, &tc).unwrap();
+        assert_eq!(out["layers"][0]["effects"][0]["params"]["out_white"], json!(0.9));
     }
 
     #[test]
