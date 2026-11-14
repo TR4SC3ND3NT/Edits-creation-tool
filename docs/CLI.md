@@ -455,10 +455,18 @@ Built in: `flash`, `flash_burn`, `punch`, `zoom_out`, `push_in`, `shake`,
 split-screen panel), the
 particle layers `sakura`, `sparkles`, `dust`, `beat_burst`, the shape layers
 `speed_lines` (anime speed lines, radial or horizontal), `burst_lines` (manga
-focus lines on a beat) and `ring_pulse` (a ring bursting out), and the text
-animations `typewriter`, `pop_in`, `random_flicker`, `wave` (target: a text
-layer; `auto` takes the text layer on screen at `--at`). The file
-format is in [FORMAT.md](FORMAT.md#presets-editspreset1).
+focus lines on a beat) and `ring_pulse` (a ring bursting out); in, out
+and combo animations `fade_in`, `fade_out`, `bounce_in`, `drop_in`,
+`rotate_in`, `swirl_in`, `wipe_in`, `squish`, `swing`, `rock`, `pendulum`,
+`pulse_loop`, `party_rotate`, `party_flip`; time presets `freeze`,
+`boomerang`, `hesitate` and the CapCut speed curves `velocity_montage`,
+`velocity_hero`, `velocity_bullet`, `velocity_jump_cut`, `velocity_flash_in`,
+`velocity_flash_out` (they retime keyed motion or a video's playback, and push
+a still picture); and the text animations `typewriter`, `pop_in`,
+`random_flicker`, `wave`, `fade_letters`, `flip_letters`, `slide_letters`,
+`jitter_text`, `explode`, `word_pop`, `line_reveal`, `gradient_text`,
+`scramble` (target: a text layer; `auto` takes the text layer on screen at
+`--at`). The file format is in [FORMAT.md](FORMAT.md#presets-editspreset1).
 
 ## apply
 

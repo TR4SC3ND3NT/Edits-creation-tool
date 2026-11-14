@@ -192,8 +192,35 @@ impl<'a> Evaluator<'a> {
                     }
                 }
             }
+            if let Modifier::Oscillate(osc) = m {
+                let amp = self.prop(&osc.amplitude, t);
+                if out.is_empty() {
+                    out = vec![0.0; amp.len().max(1)];
+                }
+                let w = osc.wave.at(self.oscillate_cycles(osc, t));
+                for (c, o) in out.iter_mut().enumerate() {
+                    *o += amp.get(c).or(amp.last()).copied().unwrap_or(0.0) * w;
+                }
+            }
         }
         out
+    }
+
+    /// Cycles of an `oscillate` modifier at project time `t`: its frequency
+    /// times the beats (120 BPM without a tempo) or seconds since `from`, plus `phase`.
+    pub fn oscillate_cycles(&self, osc: &Oscillate, t: f64) -> f64 {
+        let p = self.project;
+        let secs = p.to_seconds(t) - p.to_seconds(osc.from);
+        let elapsed = match osc.per {
+            OscPer::Second => secs,
+            OscPer::Beat => secs * p.settings.bpm.filter(|b| *b > 0.0).unwrap_or(120.0) / 60.0,
+        };
+        let c = osc.frequency * elapsed + osc.phase;
+        if c.is_finite() {
+            c
+        } else {
+            0.0
+        }
     }
 
     fn keys(&self, a: &Anim, t: f64) -> Vec<f64> {
@@ -307,6 +334,7 @@ impl<'a> Evaluator<'a> {
                 }),
                 tracking: a.tracking.as_ref().map(|p| self.num(p, t)),
                 blur: a.blur.as_ref().map(|p| self.num(p, t)),
+                character_offset: a.character_offset.as_ref().filter(|_| !a.character_random).map(|p| self.num(p, t)),
             };
             let (unit, n) = units_of(&text.text, glyphs, a.selector.units());
             let selection: Vec<f64> = match &a.selector {
@@ -330,8 +358,23 @@ impl<'a> Evaluator<'a> {
                     unit.iter().map(|&u| wiggly_value(u, secs, w.seed, &at)).collect()
                 }
             };
-            for (g, s) in out.iter_mut().zip(selection) {
+            // Random character offsets: each character its own share, drawn again `character_rate` times a second.
+            let random = a.character_offset.as_ref().filter(|_| a.character_random).map(|p| {
+                let rate = a.character_rate.unwrap_or(12.0);
+                // Counted from the start of the output frame, so that the motion blur samples of a frame show one letter, not two.
+                let fps = self.project.settings.fps;
+                let secs = self.project.to_seconds(t);
+                let secs = if fps.is_finite() && fps > 0.0 { (secs * fps + 1e-6).floor() / fps } else { secs };
+                let step = if rate.is_finite() && rate > 0.0 { (secs * rate + 1e-6).floor() as i64 } else { 0 };
+                (self.num(p, t), step)
+            });
+            for ((g, s), r) in out.iter_mut().zip(selection).zip(glyphs) {
                 apply(g, &props, s);
+                if let Some((n, step)) = random {
+                    if s.is_finite() {
+                        g.char_offset += s * n * offset_share(r.char_index, step, a.character_seed);
+                    }
+                }
             }
         }
         out
@@ -445,7 +488,7 @@ pub fn noise(x: f64, seed: u32, channel: u32) -> f64 {
     (n(x, 0) + 0.5 * n(x * 2.03 + 17.0, 101)) / 1.5
 }
 
-fn hash(i: i64, seed: u32, channel: u32) -> f64 {
+pub(crate) fn hash(i: i64, seed: u32, channel: u32) -> f64 {
     let mut h = (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
         ^ ((seed as u64) << 32 | channel as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
     h ^= h >> 33;
@@ -475,6 +518,43 @@ mod tests {
         assert!((p.to_seconds(4.0) - 2.0).abs() < 1e-9);
         assert!((p.from_seconds(2.0) - 4.0).abs() < 1e-9);
         assert_eq!(p.frame_count(), 100);
+    }
+
+    #[test]
+    fn oscillate_has_its_period_amplitude_and_shape() {
+        let p = project(); // 120 BPM: a beat is half a second
+        let e = Evaluator::new(&p);
+        let osc = |json: &str| -> Prop { serde_json::from_str(json).unwrap() };
+        // A sine of 2 per beat: one cycle per half beat, peaking at an eighth of a beat after `from`.
+        let sine = osc(r#"{"base":10,"modifiers":[{"kind":"oscillate","amplitude":3,"frequency":2,"from":1}]}"#);
+        assert!((e.num(&sine, 1.0) - 10.0).abs() < 1e-9);
+        assert!((e.num(&sine, 1.125) - 13.0).abs() < 1e-9);
+        assert!((e.num(&sine, 1.375) - 7.0).abs() < 1e-9);
+        for k in 0..40 {
+            let t = k as f64 * 0.037;
+            assert!((e.num(&sine, t) - e.num(&sine, t + 0.5)).abs() < 1e-9, "period of half a beat");
+            assert!((e.num(&sine, t) - 10.0).abs() <= 3.0 + 1e-9, "within the amplitude");
+            assert_eq!(e.num(&sine, t), e.num(&sine, t), "deterministic");
+        }
+        // Per second: 1 cycle per second is half a cycle per beat here.
+        let secs = osc(r#"{"base":0,"modifiers":[{"kind":"oscillate","amplitude":1,"frequency":1,"per":"second","wave":"square"}]}"#);
+        assert_eq!(e.num(&secs, 0.5), 1.0);
+        assert_eq!(e.num(&secs, 1.5), -1.0);
+        assert_eq!(e.num(&secs, 2.5), 1.0);
+        // Triangle and saw; a phase of a quarter cycle; a per-component amplitude.
+        let tri = osc(r#"{"base":[0,0],"modifiers":[{"kind":"oscillate","amplitude":[2,0],"wave":"triangle","phase":0.25}]}"#);
+        assert_eq!(e.prop(&tri, 0.0), vec![2.0, 0.0]);
+        assert_eq!(e.prop(&tri, 0.25), vec![0.0, 0.0]);
+        assert_eq!(e.prop(&tri, 0.5), vec![-2.0, 0.0]);
+        let saw = osc(r#"{"base":0,"modifiers":[{"kind":"oscillate","amplitude":1,"wave":"saw"}]}"#);
+        assert_eq!(e.num(&saw, 0.0), -1.0);
+        assert!((e.num(&saw, 0.75) - 0.5).abs() < 1e-12);
+        // A keyed amplitude is an envelope: nothing once it reaches 0.
+        let env = osc(r#"{"base":1,"modifiers":[{"kind":"oscillate","amplitude":{"keys":[{"t":0,"v":5},{"t":2,"v":0}]},"phase":0.25}]}"#);
+        assert!((e.num(&env, 0.0) - 6.0).abs() < 1e-9 && (e.num(&env, 1.0) - 3.5).abs() < 1e-9);
+        assert_eq!(e.num(&env, 3.25), 1.0);
+        // Unknown fields are refused.
+        assert!(serde_json::from_str::<Prop>(r#"{"base":0,"modifiers":[{"kind":"oscillate","amplitude":1,"speed":2}]}"#).is_err());
     }
 
     #[test]

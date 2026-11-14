@@ -141,6 +141,41 @@ builtin!(
     "pop_in",
     "random_flicker",
     "wave",
+    // In and out animations, combos and loops.
+    "fade_in",
+    "fade_out",
+    "bounce_in",
+    "drop_in",
+    "rotate_in",
+    "swirl_in",
+    "wipe_in",
+    "squish",
+    "swing",
+    "rock",
+    "pendulum",
+    "pulse_loop",
+    "party_rotate",
+    "party_flip",
+    // Time: freezes, replays and speed curves.
+    "freeze",
+    "boomerang",
+    "hesitate",
+    "velocity_montage",
+    "velocity_hero",
+    "velocity_bullet",
+    "velocity_jump_cut",
+    "velocity_flash_in",
+    "velocity_flash_out",
+    // Letters.
+    "fade_letters",
+    "flip_letters",
+    "slide_letters",
+    "jitter_text",
+    "explode",
+    "word_pop",
+    "line_reveal",
+    "gradient_text",
+    "scramble",
 );
 
 /// Parse and check one preset file's text.
@@ -169,7 +204,7 @@ pub fn parse(text: &str, origin: &str) -> Result<Preset, String> {
 
 fn action_kind(a: &Value) -> Result<&'static str, String> {
     let obj = a.as_object().ok_or("an action is an object such as { \"pulse\": { ... } }")?;
-    let known = ["pulse", "effect", "layer", "set", "shake", "retime", "animator"];
+    let known = ["pulse", "effect", "layer", "set", "shake", "oscillate", "retime", "animator"];
     let found: Vec<&'static str> = known.iter().copied().filter(|k| obj.contains_key(*k)).collect();
     match found.as_slice() {
         [one] if obj.len() == 1 => Ok(one),
@@ -765,6 +800,7 @@ impl Run<'_> {
         match kind {
             "pulse" => self.pulse(&spec),
             "shake" => self.shake(&spec),
+            "oscillate" => self.oscillate(&spec),
             "effect" => {
                 let i = self.target("an effect")?;
                 let effect = subst(&Value::Object(spec), &self.env, &self.vars)?;
@@ -1002,6 +1038,45 @@ impl Run<'_> {
         Ok(())
     }
 
+    /// An `oscillate` modifier on a property (as in a pulse) counted from
+    /// `at`, whose amplitude follows `keys`. Hits with the same wave, rate,
+    /// phase and start share one modifier.
+    fn oscillate(&mut self, spec: &Map<String, Value>) -> Result<(), String> {
+        let (ptr, missing, label) = self.locate(spec)?;
+        let (_, prop) = self.prop_at(&ptr, &missing)?;
+        let field = |k: &str, d: Value| -> Result<Value, String> { subst(spec.get(k).unwrap_or(&d), &self.env, &self.vars) };
+        let number = |k: &str, d: f64| -> Result<f64, String> { field(k, json!(d))?.as_f64().ok_or_else(|| format!("\"{k}\" must be a number")) };
+        let frequency = number("frequency", 1.0)?;
+        let phase = number("phase", 0.0)?;
+        let per: OscPer = serde_json::from_value(field("per", json!("beat"))?).map_err(|_| "\"per\" is \"beat\" or \"second\"".to_string())?;
+        let wave: Wave = serde_json::from_value(field("wave", json!("sine"))?).map_err(|_| "\"wave\" is sine, triangle, square or saw".to_string())?;
+        let keys = spec.get("keys").and_then(Value::as_array).ok_or("an oscillate needs \"keys\" for its amplitude")?.clone();
+        let from = (self.at * 1e6).round() / 1e6;
+        let mut anim = match prop {
+            Prop::Const(v) => Anim { keys: Vec::new(), base: Some(v), modifiers: Vec::new() },
+            Prop::Anim(a) => a,
+        };
+        let same = |o: &Oscillate| o.wave == wave && o.per == per && (o.frequency - frequency).abs() < 1e-9 && (o.phase - phase).abs() < 1e-9 && (o.from - from).abs() < 1e-9;
+        let mi = match anim.modifiers.iter().position(|m| matches!(m, Modifier::Oscillate(o) if same(o))) {
+            Some(i) => i,
+            None => {
+                anim.modifiers.push(Modifier::Oscillate(Box::new(Oscillate { amplitude: Prop::Const(Value_::Num(0.0)), frequency, per, wave, phase, from })));
+                anim.modifiers.len() - 1
+            }
+        };
+        let Modifier::Oscillate(o) = &anim.modifiers[mi] else { unreachable!() };
+        let amp = o.amplitude.clone();
+        let new = self.keys_from(&amp, &keys)?;
+        let merged: Prop = serde_json::from_value(self.merge(&amp, new)?).map_err(|e| e.to_string())?;
+        if let Modifier::Oscillate(o) = &mut anim.modifiers[mi] {
+            o.amplitude = merged;
+        }
+        let v = serde_json::to_value(Prop::Anim(anim)).map_err(|e| e.to_string())?;
+        pointer::set(&mut self.doc, &ptr, v)?;
+        self.changes.push(format!("oscillated {label} ({} wave) from {from}", wave.name()));
+        Ok(())
+    }
+
     fn add_layer(&mut self, spec: &Map<String, Value>) -> Result<(), String> {
         let mut layer = subst(spec.get("layer").ok_or("\"layer\" needs a \"layer\" object")?, &self.env, &self.vars)?;
         let target_id = self.target.map(|i| self.layer_id(i));
@@ -1049,6 +1124,12 @@ impl Run<'_> {
         };
         let value = subst(spec.get("value").ok_or("\"set\" needs a \"value\"")?, &self.env, &self.vars)?;
         let full = format!("/layers/{li}{ptr}");
+        // `.../-` appends to a list, made when the layer has none yet.
+        if let Some(list) = full.strip_suffix("/-") {
+            if self.doc.pointer(list).is_none() {
+                pointer::set(&mut self.doc, list, json!([]))?;
+            }
+        }
         pointer::set(&mut self.doc, &full, value.clone())?;
         let id = self.layer_id(li);
         self.changes.push(format!("set {id}{ptr} = {}", crate::jsonfmt::brief(&value, 60)));
@@ -1067,8 +1148,38 @@ impl Run<'_> {
             Some(c) => serde_json::from_value(subst(c, &self.env, &self.vars)?).map_err(|e| format!("bad curve: {e}"))?,
             None => Ease::Bezier([0.8, 0.0, 0.2, 1.0]),
         };
+        // Or where the replay is at evenly spaced moments, straight in between.
+        let progress: Option<Vec<f64>> = match spec.get("progress") {
+            Some(p) => {
+                let p = subst(p, &self.env, &self.vars)?;
+                let list: Option<Vec<f64>> = p.as_array().map(|a| a.iter().filter_map(Value::as_f64).collect()).filter(|l: &Vec<f64>| l.len() >= 2 && l.len() == p.as_array().map_or(0, Vec::len));
+                Some(list.ok_or("\"progress\" is a list of at least two numbers: where the replay is (0 at the start of the window, 1 at its end) at evenly spaced moments")?)
+            }
+            None => None,
+        };
         let (w0, w1) = (self.at, self.at + length);
+        let frames = length / self.tc.frame_len().max(1e-9);
+        let n = match &progress {
+            Some(p) => (p.len() - 1) * 12usize.div_ceil(p.len() - 1),
+            None => 12,
+        };
+        let src_at = |s: usize| -> f64 {
+            let u = s as f64 / n as f64;
+            let f = match &progress {
+                Some(p) => {
+                    let x = u * (p.len() - 1) as f64;
+                    let k = (x.floor() as usize).min(p.len() - 2);
+                    p[k] + (p[k + 1] - p[k]) * (x - k as f64)
+                }
+                None => ease::apply(&curve, u, frames),
+            };
+            w0 + length * f
+        };
         let mut retimed = 0;
+        if self.layer(i).get("kind").and_then(Value::as_str) == Some("video") {
+            self.retime_video(i, w0, w1, n, &src_at)?;
+            retimed += 1;
+        }
         for name in ["position", "scale", "rotation", "opacity", "anchor"] {
             let ptr = format!("/layers/{i}/transform/{name}");
             let Some(raw) = self.doc.pointer(&ptr).cloned() else { continue };
@@ -1079,13 +1190,10 @@ impl Run<'_> {
             if !moving {
                 continue;
             }
-            const N: usize = 12;
-            let frames = length / self.tc.frame_len().max(1e-9);
             let mut keys: Vec<Key> = a.keys.iter().filter(|k| k.t < w0 - 1e-9).cloned().collect();
-            for s in 0..=N {
-                let u = s as f64 / N as f64;
-                let src = w0 + length * ease::apply(&curve, u, frames);
-                let v = self.orig(&prop, src);
+            for s in 0..=n {
+                let u = s as f64 / n as f64;
+                let v = self.orig(&prop, src_at(s));
                 keys.push(Key { t: w0 + length * u, v: if v.len() == 1 { Value_::Num(v[0]) } else { Value_::Vec(v) }, ease: Ease::default() });
             }
             let ease_after = a.keys.iter().rev().find(|k| k.t <= w1 + 1e-9).map(|k| k.ease.clone()).unwrap_or_default();
@@ -1109,6 +1217,43 @@ impl Run<'_> {
                 None => self.changes.push(format!("nothing moves on {} between {w0} and {w1}: nothing to retime", self.layer_id(i))),
             }
         }
+        Ok(())
+    }
+
+    /// Retime a video layer's playback: a `time_remap` that shows, at the
+    /// `n + 1` moments of the window, the source the layer showed at
+    /// `src_at` of them, and elsewhere what it showed before.
+    fn retime_video(&mut self, i: usize, w0: f64, w1: f64, n: usize, src_at: &dyn Fn(usize) -> f64) -> Result<(), String> {
+        let layer: Layer = serde_json::from_value(self.layer(i).clone()).map_err(|e| format!("the layer does not parse: {e}"))?;
+        let LayerKind::Video(video) = &layer.kind else { return Ok(()) };
+        let ev = Evaluator::new(&self.project);
+        let f = |t: f64| (ev.source_seconds(&layer, video, t) * 1e6).round() / 1e6;
+        let end = layer.end.unwrap_or(self.tc.duration);
+        let eps = 1e-6;
+        // Where the old playback is sampled outside the window: the old
+        // remap's keys, or the ends (a constant speed plays straight), or
+        // every eighth of a beat (a keyed speed).
+        let mut outside: Vec<f64> = match (&video.time_remap, &video.speed) {
+            (Some(Prop::Anim(a)), _) => a.keys.iter().map(|k| k.t).collect(),
+            (Some(Prop::Const(_)), _) | (None, None) | (None, Some(Prop::Const(_))) => vec![layer.start, end],
+            (None, Some(Prop::Anim(_))) => {
+                let step = self.tc.beat_len() / 8.0;
+                let count = ((end - layer.start) / step).ceil().clamp(1.0, 4096.0) as usize;
+                (0..=count).map(|k| (layer.start + k as f64 * step).min(end)).collect()
+            }
+        };
+        outside.extend([w0, w1]);
+        let mut keys: Vec<Key> = outside.iter().filter(|t| **t < w0 - eps || **t > w1 + eps).map(|&t| Key { t, v: Value_::Num(f(t)), ease: Ease::default() }).collect();
+        for s in 0..=n {
+            let t = ((w0 + (w1 - w0) * s as f64 / n as f64) * 1e6).round() / 1e6;
+            keys.push(Key { t, v: Value_::Num(f(src_at(s))), ease: Ease::default() });
+        }
+        keys.sort_by(|a, b| a.t.total_cmp(&b.t));
+        keys.dedup_by(|a, b| (a.t - b.t).abs() < eps);
+        let v = serde_json::to_value(Prop::Anim(Anim { keys, base: None, modifiers: Vec::new() })).map_err(|e| e.to_string())?;
+        pointer::set(&mut self.doc, &format!("/layers/{i}/time_remap"), v)?;
+        let id = self.layer_id(i);
+        self.changes.push(format!("retimed the playback of {id} over {w0}..{w1} (a time_remap; the clip's own sound no longer plays)"));
         Ok(())
     }
 }
@@ -1265,8 +1410,9 @@ mod tests {
         let err = apply(&d, &p, &Target::Auto, &[7.0], &Map::new(), &tc).unwrap_err();
         assert!(err.contains("no text layer"), "{err}");
         // Every text preset adds animators that check cleanly.
-        for name in ["pop_in", "random_flicker", "wave"] {
-            let (out, _) = apply(&d, &find(name, None).unwrap(), &Target::Auto, &[2.0], &Map::new(), &tc).unwrap();
+        for p in builtin().iter().filter(|p| p.layer_kind.as_deref() == Some("text")) {
+            let name = &p.name;
+            let (out, _) = apply(&d, p, &Target::Auto, &[2.0], &Map::new(), &tc).unwrap_or_else(|e| panic!("{name}: {e}"));
             let project: Project = serde_json::from_value(out).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(!crate::check::has_errors(&crate::check::check(&project, None)), "{name}");
         }
@@ -1333,6 +1479,66 @@ mod tests {
         assert_eq!(amount(1.9), 0.0);
         assert!(amount(2.0) > 0.5 && amount(3.0) > 0.5);
         assert!(amount(2.9) < 0.05, "the first flash has decayed: {}", amount(2.9));
+    }
+
+    #[test]
+    fn a_swing_oscillates_inside_its_envelope_and_hits_add_up() {
+        let d = doc();
+        let p = find("swing", None).unwrap();
+        // Two swings of two beats from beat 4: eased in over the first half swing, out over the last.
+        let (out, _) = apply(&d, &p, &Target::Layer("b".into()), &[4.0], &Map::new(), &ctx(&d)).unwrap();
+        let project: Project = serde_json::from_value(out.clone()).unwrap();
+        let ev = Evaluator::new(&project);
+        let turn = |t: f64| ev.vec3(&project.layers[1].transform.rotation, t)[2];
+        assert_eq!(turn(4.0), 0.0);
+        assert!((turn(5.5) + 6.0).abs() < 1e-9, "full swing three quarters in: {}", turn(5.5));
+        assert!((turn(6.5) - 6.0).abs() < 1e-9, "{}", turn(6.5));
+        assert!(turn(8.0).abs() < 1e-9 && turn(3.0) == 0.0);
+        assert!((0..80).all(|k| turn(4.0 + k as f64 * 0.05).abs() <= 6.0 + 1e-9));
+        // The picture is zoomed in while it swings, and back after.
+        let scale = |t: f64| ev.num(&project.layers[1].transform.scale, t);
+        assert!(scale(6.0) > 1.15 && (scale(8.0) - 1.2).abs() < 1e-9, "{} {}", scale(6.0), scale(8.0));
+        // A second swing from another beat is a modifier of its own.
+        let (again, _) = apply(&out, &p, &Target::Layer("b".into()), &[6.0], &Map::new(), &ctx(&d)).unwrap();
+        let project: Project = serde_json::from_value(again).unwrap();
+        let Prop::Anim(a) = &project.layers[1].transform.rotation else { panic!("not keyed") };
+        assert_eq!(a.modifiers.iter().filter(|m| matches!(m, Modifier::Oscillate(_))).count(), 2);
+        assert!(!crate::check::has_errors(&crate::check::check(&project, None)));
+    }
+
+    #[test]
+    fn a_wipe_appends_a_mask_and_retime_follows_its_progress() {
+        let d = doc();
+        let wipe = find("wipe_in", None).unwrap();
+        let (out, _) = apply(&d, &wipe, &Target::Layer("b".into()), &[4.0], &Map::new(), &ctx(&d)).unwrap();
+        let (out, _) = apply(&out, &wipe, &Target::Layer("b".into()), &[5.0], &Map::new(), &ctx(&d)).unwrap();
+        assert_eq!(out["layers"][1]["masks"].as_array().map(Vec::len), Some(2), "a list made, then added to");
+        // Hesitate replays the ramp of b (1 at 4 to 1.2 at 8) stepping back twice: at 4.8 it shows 4.6.
+        let (out, _) = apply(&d, &find("hesitate", None).unwrap(), &Target::Layer("b".into()), &[4.0], &Map::new(), &ctx(&d)).unwrap();
+        let project: Project = serde_json::from_value(out).unwrap();
+        let ev = Evaluator::new(&project);
+        let s = |t: f64| ev.num(&project.layers[1].transform.scale, t);
+        assert!((s(4.4) - 1.04).abs() < 1e-9 && (s(4.8) - 1.03).abs() < 1e-9, "{} {}", s(4.4), s(4.8));
+        assert!((s(6.0) - 1.1).abs() < 1e-9 && (s(7.0) - 1.15).abs() < 1e-9);
+    }
+
+    #[test]
+    fn retiming_a_video_writes_a_time_remap() {
+        let mut d = doc();
+        d["slots"]["v"] = json!({});
+        d["layers"].as_array_mut().unwrap().push(json!({ "id": "v", "kind": "video", "slot": "v", "in": 0, "out": 8, "speed": 0.5 }));
+        // Forward, back and forward again over beats 2..4 (one second at 120 BPM).
+        let (out, applied) = apply(&d, &find("boomerang", None).unwrap(), &Target::Layer("v".into()), &[2.0], &Map::new(), &ctx(&d)).unwrap();
+        assert!(applied[0].changes.iter().any(|c| c.contains("playback")), "{:?}", applied[0].changes);
+        let project: Project = serde_json::from_value(out).unwrap();
+        let ev = Evaluator::new(&project);
+        let layer = &project.layers[3];
+        let LayerKind::Video(v) = &layer.kind else { panic!("not a video") };
+        let src = |t: f64| ev.source_seconds(layer, v, t);
+        // At half speed: 0.5 s of source at beat 2, 1 s at beat 4.
+        for (t, want) in [(0.0, 0.0), (1.0, 0.25), (2.0, 0.5), (2.0 + 2.0 / 3.0, 1.0), (2.0 + 4.0 / 3.0, 0.5), (4.0, 1.0), (8.0, 2.0)] {
+            assert!((src(t) - want).abs() < 1e-6, "at {t}: {} not {want}", src(t));
+        }
     }
 
     #[test]

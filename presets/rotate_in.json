@@ -1,0 +1,85 @@
+{
+  "format": "edits.preset/1",
+  "name": "rotate_in",
+  "description": "The picture turns in while it grows to its size.",
+  "tags": [
+    "intro",
+    "rotate",
+    "zoom"
+  ],
+  "variables": {
+    "length": {
+      "type": "number",
+      "default": 0.5,
+      "min": 0.05,
+      "max": 16,
+      "unit": "beats",
+      "doc": "How long it takes."
+    },
+    "angle": {
+      "type": "number",
+      "default": 90,
+      "min": -720,
+      "max": 720,
+      "unit": "degrees",
+      "doc": "Turn it starts from, in degrees (negative: the other way)."
+    },
+    "from": {
+      "type": "number",
+      "default": 0.4,
+      "min": 0,
+      "max": 1,
+      "doc": "Scale it starts at, as a fraction of its size."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "transform": "rotation",
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=orig + vec(0, 0, -$angle)",
+            "ease": "quint_out"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    },
+    {
+      "pulse": {
+        "transform": "scale",
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=orig * $from",
+            "ease": "quint_out"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    },
+    {
+      "pulse": {
+        "transform": "opacity",
+        "keys": [
+          {
+            "dt": 0,
+            "v": 0,
+            "ease": "out"
+          },
+          {
+            "dt": "=$length * 0.3 * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}

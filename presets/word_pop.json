@@ -1,0 +1,74 @@
+{
+  "format": "edits.preset/1",
+  "name": "word_pop",
+  "description": "The words of a text layer pop up one at a time, each overshooting and settling, like captions.",
+  "tags": [
+    "text",
+    "reveal",
+    "caption",
+    "bounce"
+  ],
+  "layer_kind": "text",
+  "variables": {
+    "duration": {
+      "type": "number",
+      "default": 2,
+      "min": 0.05,
+      "max": 64,
+      "unit": "beats",
+      "doc": "From the first unit starting to the last one settling."
+    },
+    "spread": {
+      "type": "number",
+      "default": 20,
+      "min": 1,
+      "max": 100,
+      "unit": "% of the units",
+      "doc": "How many units are moving at once: small is one by one, 100 all together."
+    },
+    "units": {
+      "type": "string",
+      "default": "words",
+      "doc": "What moves at each step: characters, words or lines."
+    },
+    "overshoot": {
+      "type": "number",
+      "default": 3,
+      "min": 0,
+      "max": 8,
+      "doc": "How far a word grows past its size before it settles (0: no bounce)."
+    }
+  },
+  "apply": [
+    {
+      "animator": {
+        "name": "word pop",
+        "selector": {
+          "kind": "range",
+          "units": "$units",
+          "shape": "ramp_up",
+          "start": 0,
+          "end": "$spread",
+          "offset": {
+            "keys": [
+              {
+                "t": "=at",
+                "v": "=-$spread"
+              },
+              {
+                "t": "=at + $duration * beat",
+                "v": 100
+              }
+            ]
+          },
+          "ease": {
+            "name": "back_out",
+            "overshoot": "$overshoot"
+          }
+        },
+        "scale": 0,
+        "opacity": 0
+      }
+    }
+  ]
+}

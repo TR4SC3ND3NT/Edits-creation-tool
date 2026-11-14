@@ -588,6 +588,40 @@ fn tracking_shifts(layout: &Layout, states: &[GlyphState], align: Align) -> Vec<
     out
 }
 
+/// What a character offset needs: the characters of the text, the font's
+/// character map and advances, and the range the first animator with an
+/// offset cycles through.
+struct Swap<'a> {
+    chars: Vec<char>,
+    fref: FontRef<'a>,
+    loc: Location,
+    /// Layer units per font unit.
+    unit: f64,
+    range: edits_core::text_select::CharRange,
+}
+
+impl<'a> Swap<'a> {
+    fn new(font: &'a Font, text: &Text, layout: &Layout) -> Self {
+        let fref = font.font_ref();
+        let loc = location(&fref, text.weight);
+        let upem = fref.metrics(Size::unscaled(), &loc).units_per_em.max(1) as f64;
+        let range = text.animators.iter().find(|a| a.enabled && a.character_offset.is_some()).map(|a| a.character_range).unwrap_or_default();
+        Swap { chars: text.text.chars().collect(), fref, loc, unit: layout.em / upem, range }
+    }
+
+    /// The glyph of `g`'s character moved `n` code points, and how far to
+    /// move it right so that it is centred where `g` was. `g` itself when the
+    /// font has no glyph for the new character.
+    fn glyph(&self, g: &Glyph, n: i64) -> (u32, f64) {
+        let Some(&c) = self.chars.get(g.char_index) else { return (g.id, 0.0) };
+        let to = edits_core::text_select::offset_char(c, n, self.range);
+        let Some(id) = self.fref.charmap().map(to).filter(|id| id.to_u32() != 0) else { return (g.id, 0.0) };
+        let metrics = self.fref.glyph_metrics(Size::unscaled(), &self.loc);
+        let adv = |id: GlyphId| metrics.advance_width(id).unwrap_or(0.0) as f64 * self.unit;
+        (id.to_u32(), (adv(GlyphId::new(g.id)) - adv(id)) / 2.0)
+    }
+}
+
 /// Straight sRGB to premultiplied linear.
 fn premultiplied(c: [f32; 4]) -> [f32; 4] {
     let a = c[3].clamp(0.0, 1.0);
@@ -708,6 +742,7 @@ impl Renderer {
         };
         let weight = text.weight.filter(|w| w.is_finite()).map(f64::to_bits);
         let shifts = states.map(|s| tracking_shifts(layout, s, text.align));
+        let swap = states.filter(|s| s.iter().any(|g| g.char_shift() != 0)).map(|_| Swap::new(font, text, layout));
         let mut keys: Vec<MaskKey> = Vec::new();
         let mut index: HashMap<MaskKey, usize> = HashMap::new();
         let mut masks = Vec::new();
@@ -718,8 +753,13 @@ impl Renderer {
             if opacity.is_nan() || opacity <= 1e-4 || st.is_some_and(|s| s.scale.iter().any(|v| v.is_nan() || v.abs() <= 1e-6)) {
                 continue;
             }
+            // A character offset draws another character in the glyph's place, centred on it.
+            let (glyph, dx) = match (st, &swap) {
+                (Some(s), Some(sw)) if s.char_shift() != 0 => sw.glyph(g, s.char_shift()),
+                _ => (g.id, 0.0),
+            };
             let off = st.map_or([0.0; 3], |s| s.offset);
-            let shift = [off[0] + shifts.as_ref().map_or(0.0, |v| v[gi]), off[1], off[2]];
+            let shift = [off[0] + dx + shifts.as_ref().map_or(0.0, |v| v[gi]), off[1], off[2]];
             // Glyphs scaled up are rasterised bigger (in steps of half an octave).
             let grow = st.map_or(1.0, |s| s.scale[0].abs().max(s.scale[1].abs())).clamp(1.0, 64.0);
             let grow = if grow > 1.0 { 2f64.powf((grow.log2() * 2.0).ceil() / 2.0) } else { 1.0 };
@@ -754,7 +794,7 @@ impl Renderer {
                 }
                 None => ([0, 0], None),
             };
-            let key = MaskKey { font: font.key.clone(), weight, glyph: g.id, em: em_q as u32, stroke: stroke_q as u32, sub, blur: blur_q as u32 };
+            let key = MaskKey { font: font.key.clone(), weight, glyph, em: em_q as u32, stroke: stroke_q as u32, sub, blur: blur_q as u32 };
             let i = match index.get(&key) {
                 Some(&i) => i,
                 None => {

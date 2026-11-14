@@ -253,6 +253,10 @@ pub(crate) fn prop_summary(p: &Prop) -> Option<String> {
         parts.push(match m {
             Modifier::Shake { frequency, amplitude, .. } => format!("+shake {} @ {frequency} Hz", const_text(amplitude)),
             Modifier::Loop { from, period } => format!("+loop from {from} every {period}"),
+            Modifier::Oscillate(o) => {
+                let per = if o.per == crate::model::OscPer::Second { "s" } else { "beat" };
+                format!("+{} {} × {}/{per} from {}", o.wave.name(), const_text(&o.amplitude), o.frequency, o.from)
+            }
         });
     }
     Some(parts.join(", "))

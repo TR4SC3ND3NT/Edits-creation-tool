@@ -1,0 +1,85 @@
+{
+  "format": "edits.preset/1",
+  "name": "scramble",
+  "description": "Decode: the letters of a text layer cycle through random characters and settle into the text one by one.",
+  "tags": [
+    "text",
+    "reveal",
+    "caption",
+    "glitch"
+  ],
+  "layer_kind": "text",
+  "variables": {
+    "duration": {
+      "type": "number",
+      "default": 2,
+      "min": 0.05,
+      "max": 64,
+      "unit": "beats",
+      "doc": "From the first unit starting to the last one settling."
+    },
+    "rate": {
+      "type": "number",
+      "default": 12,
+      "min": 0,
+      "max": 60,
+      "doc": "New random characters per second."
+    },
+    "color": {
+      "type": "color",
+      "default": [
+        0.55,
+        0.95,
+        1
+      ],
+      "doc": "Colour of the letters still scrambling."
+    },
+    "range": {
+      "type": "string",
+      "default": "preserve",
+      "doc": "preserve: letters stay letters of the same case and digits digits; full: any character."
+    },
+    "seed": {
+      "type": "integer",
+      "default": 1,
+      "min": 0,
+      "max": 100000,
+      "doc": "Which random characters."
+    },
+    "units": {
+      "type": "string",
+      "default": "characters",
+      "doc": "What moves at each step: characters, words or lines."
+    }
+  },
+  "apply": [
+    {
+      "animator": {
+        "name": "scramble",
+        "selector": {
+          "kind": "range",
+          "units": "$units",
+          "smoothness": 0,
+          "start": {
+            "keys": [
+              {
+                "t": "=at",
+                "v": 0
+              },
+              {
+                "t": "=at + $duration * beat",
+                "v": 100
+              }
+            ]
+          }
+        },
+        "character_offset": 52,
+        "character_random": true,
+        "character_rate": "$rate",
+        "character_seed": "$seed",
+        "character_range": "$range",
+        "fill": "$color"
+      }
+    }
+  ]
+}

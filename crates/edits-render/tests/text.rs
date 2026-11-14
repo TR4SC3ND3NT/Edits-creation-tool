@@ -260,3 +260,44 @@ fn animated_letters_are_deterministic() {
     let (a, b) = (render_in(r, &p, &dir(), 9, 1.0), render_in(r, &p, &dir(), 10, 1.0));
     assert!(a.as_raw() != b.as_raw());
 }
+
+#[test]
+fn character_offset_draws_other_letters_in_place() {
+    let with = |animator: &str| text_project(&format!(r#"{{"id":"t","kind":"text","text":"IIII","size":20,"animators":[{animator}]}}"#));
+    let plain = text_project(r#"{"id":"t","kind":"text","text":"IIII","size":20}"#);
+    let (Some(p), Some(wide), Some(round), Some(full)) = (
+        draw(&plain, 1.0),
+        // I + 14 is W: four Ws, each centred where its I was.
+        draw(&with(r#"{"character_offset":14}"#), 1.0),
+        // 26 letters on, preserving case, is the same letter.
+        draw(&with(r#"{"character_offset":26}"#), 1.0),
+        draw(&with(r#"{"character_offset":26,"character_range":"full"}"#), 1.0),
+    ) else {
+        return;
+    };
+    let (a, b) = (all(&p), all(&wide));
+    assert!(b[2] - b[0] > (a[2] - a[0]) * 3 / 2, "Ws are wider than Is: {a:?} {b:?}");
+    assert!((centre(a)[0] - centre(b)[0]).abs() <= 2.0, "{a:?} {b:?}");
+    assert!(round.as_raw() == p.as_raw(), "a whole trip round the alphabet is the text again");
+    assert!(full.as_raw() != p.as_raw(), "in the full range, I + 26 is another character");
+}
+
+#[test]
+fn random_character_offsets_scramble_by_seed_and_rate() {
+    let p = |seed: u32, rate: f64| {
+        text_project(&format!(
+            r#"{{"id":"t","kind":"text","text":"SCRAMBLE ME","size":12,"animators":[{{"character_offset":52,"character_random":true,"character_rate":{rate},"character_seed":{seed}}}]}}"#
+        ))
+    };
+    let plain = text_project(r#"{"id":"t","kind":"text","text":"SCRAMBLE ME","size":12}"#);
+    let Some(mut guard) = renderer() else { return };
+    let r = guard.as_mut().unwrap();
+    let a = p(1, 10.0);
+    let f3 = render_in(r, &a, &dir(), 3, 1.0);
+    assert!(render_in(r, &a, &dir(), 3, 1.0).as_raw() == f3.as_raw(), "the same frame twice");
+    assert!(render_in(r, &a, &dir(), 4, 1.0).as_raw() != f3.as_raw(), "10 new letters a second at 10 fps: every frame");
+    assert!(render_in(r, &p(2, 10.0), &dir(), 3, 1.0).as_raw() != f3.as_raw(), "another seed");
+    assert!(render_in(r, &plain, &dir(), 3, 1.0).as_raw() != f3.as_raw(), "scrambled");
+    let still = p(1, 0.0);
+    assert!(render_in(r, &still, &dir(), 3, 1.0).as_raw() == render_in(r, &still, &dir(), 9, 1.0).as_raw(), "rate 0 keeps the letters");
+}

@@ -362,7 +362,28 @@ can also write: `{ "selector": { "kind": "range", "start": 0, "end": 50 },
 `round` or `smooth`, `randomize` shuffles the order; `{ "kind": "wiggly",
 "amount": 60, "frequency": 3 }` jitters each letter. Properties (scaled by the
 selection): `position` (offset), `scale`, `rotation` (per letter, in 3D),
-`opacity`, `fill`, `tracking`, `blur`. See `docs/FORMAT.md` (Text animators).
+`opacity`, `fill`, `tracking`, `blur`, `character_offset` (other letters in
+place; with `character_random: true` they scramble). See `docs/FORMAT.md`
+(Text animators).
+
+**In, out, combo and time presets; more letters.** Like CapCut's and Alight
+Motion's animations, applied with `preset_apply` at a time on a picture:
+in `fade_in`, `bounce_in` (`style` back, elastic or bounce), `drop_in`,
+`rotate_in`, `swirl_in`, `wipe_in` (`direction`); out `fade_out`; on a hit
+`squish` (jelly squash and stretch) and `pendulum`; loops over `length` or
+`cycles` `swing`, `rock`, `pulse_loop` (swells on every beat),
+`party_rotate` and `party_flip` (a tilt or a mirror on alternate beats).
+The loops use the `oscillate` modifier (`{ "kind": "oscillate",
+"amplitude": [0, 0, 6], "frequency": 0.5, "wave": "sine" }`, also
+`triangle`, `square`, `saw`; frequency per beat or `per: "second"`), which
+you can put on any value yourself. Time: `freeze`, `boomerang`, `hesitate`
+and the speed curves `velocity_montage`, `_hero`, `_bullet`, `_jump_cut`,
+`_flash_in`, `_flash_out` replay the layer's keyed motion or a video's
+playback through a curve, and push a still picture in instead. More text:
+`fade_letters`, `flip_letters`, `slide_letters` (`units=words` slides word
+by word), `jitter_text`, `explode` (`direction=in` implodes), `word_pop`,
+`line_reveal` (`style` slide or swing), `gradient_text` (`cycle` for a
+rainbow), `scramble` (decodes the caption).
 
 ## Workflow 2: the recipe of a reference edit, with different pictures
 

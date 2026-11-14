@@ -1,0 +1,84 @@
+{
+  "format": "edits.preset/1",
+  "name": "party_flip",
+  "description": "Party look: the picture flips to its mirror image on the hit and back on the next beat, again and again.",
+  "tags": [
+    "loop",
+    "mirror",
+    "beat",
+    "party"
+  ],
+  "variables": {
+    "axis": {
+      "type": "enum",
+      "default": "horizontal",
+      "options": {
+        "horizontal": {
+          "fx": 0,
+          "fy": 1
+        },
+        "vertical": {
+          "fx": 1,
+          "fy": 0
+        }
+      },
+      "doc": "horizontal: mirrored left to right; vertical: upside down."
+    },
+    "period": {
+      "type": "number",
+      "default": 2,
+      "min": 0.25,
+      "max": 16,
+      "unit": "beats",
+      "doc": "Time to flip and back once."
+    },
+    "length": {
+      "type": "number",
+      "default": 4,
+      "min": 0.25,
+      "max": 256,
+      "unit": "beats",
+      "doc": "How long it goes on."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "transform": "rotation",
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=orig + vec($fx * 90, $fy * 90, 0)",
+            "ease": "hold"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    },
+    {
+      "oscillate": {
+        "transform": "rotation",
+        "wave": "square",
+        "frequency": "=1 / $period",
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=vec($fx * 90, $fy * 90, 0)",
+            "ease": "hold"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": [
+              0,
+              0,
+              0
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

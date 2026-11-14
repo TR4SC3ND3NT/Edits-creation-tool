@@ -530,6 +530,10 @@ file headers for ported code, `cargo test -p edits-core -p edits-render
 About 30 presets and 2 small features. Highest value per hour: every edit
 uses in/out/combo animations.
 
+**Done.** The presets below plus `scramble` (decode text with
+`character_offset`); `retime` also takes a `progress` list and retimes a
+video's playback (a `time_remap`), and `set` appends with a `/-` pointer.
+
 - Presets: `fade_in`, `fade_out`, `bounce_in`, `drop_in`, `rotate_in`,
   `swirl_in`, `wipe_in`, `squish`, `swing`, `rock`, `pendulum`,
   `pulse_loop`, `party_rotate`, `party_flip`, `freeze`, `boomerang`,

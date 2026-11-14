@@ -378,7 +378,7 @@ fn check_text(t: &Text, lp: &str, base_dir: Option<&Path>, err: &mut impl FnMut(
 /// A text animator: its properties and its selector's values.
 fn check_animator(a: &crate::text_select::TextAnimator, ap: &str, err: &mut impl FnMut(String, String, Option<&str>), warn: &mut Vec<Finding>) {
     use crate::text_select::Selector;
-    let props = [("position", &a.position), ("scale", &a.scale), ("rotation", &a.rotation), ("opacity", &a.opacity), ("fill", &a.fill), ("tracking", &a.tracking), ("blur", &a.blur)];
+    let props = [("position", &a.position), ("scale", &a.scale), ("rotation", &a.rotation), ("opacity", &a.opacity), ("fill", &a.fill), ("tracking", &a.tracking), ("blur", &a.blur), ("character_offset", &a.character_offset)];
     for (name, p) in props {
         let Some(p) = p else { continue };
         let pp = format!("{ap}.{name}");
@@ -391,8 +391,11 @@ fn check_animator(a: &crate::text_select::TextAnimator, ap: &str, err: &mut impl
             err(pp, "blur must be 0 or more".into(), Some("a sigma in percent of the composition height"));
         }
     }
+    if a.character_rate.is_some_and(|r| !r.is_finite() || r < 0.0) {
+        err(format!("{ap}.character_rate"), "character_rate must be 0 or more".into(), Some("new random offsets per second; 0 keeps them"));
+    }
     if a.properties().is_empty() {
-        warn.push(Finding { severity: Severity::Warning, path: ap.into(), message: "the animator sets no property: it does nothing".into(), hint: Some("give position, scale, rotation, opacity, fill, tracking or blur".into()) });
+        warn.push(Finding { severity: Severity::Warning, path: ap.into(), message: "the animator sets no property: it does nothing".into(), hint: Some("give position, scale, rotation, opacity, fill, tracking, blur or character_offset".into()) });
     }
     let ranged = |name: &str, p: &Option<Prop>, lo: f64, hi: f64, err: &mut dyn FnMut(String, String, Option<&str>)| {
         let Some(p) = p else { return };
@@ -447,6 +450,12 @@ pub(crate) fn check_prop(prop: &Prop, path: &str, err: &mut impl FnMut(String, S
     for m in &a.modifiers {
         if let Modifier::Shake { amplitude, .. } = m {
             check_prop(amplitude, &format!("{path}.modifiers.shake.amplitude"), err);
+        }
+        if let Modifier::Oscillate(o) = m {
+            check_prop(&o.amplitude, &format!("{path}.modifiers.oscillate.amplitude"), err);
+            if !o.frequency.is_finite() || o.frequency < 0.0 || !o.phase.is_finite() || !o.from.is_finite() {
+                err(format!("{path}.modifiers.oscillate"), "frequency must be a number, 0 or more, and phase and from numbers".into(), Some("e.g. { \"kind\": \"oscillate\", \"amplitude\": 5, \"frequency\": 0.5 }"));
+            }
         }
     }
 }

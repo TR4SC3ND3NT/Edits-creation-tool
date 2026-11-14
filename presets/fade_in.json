@@ -1,0 +1,54 @@
+{
+  "format": "edits.preset/1",
+  "name": "fade_in",
+  "description": "The picture fades in from transparent.",
+  "tags": [
+    "intro",
+    "fade",
+    "opacity"
+  ],
+  "variables": {
+    "length": {
+      "type": "number",
+      "default": 0.5,
+      "min": 0.05,
+      "max": 16,
+      "unit": "beats",
+      "doc": "How long it takes."
+    },
+    "ease": {
+      "type": "enum",
+      "default": "smooth",
+      "options": {
+        "smooth": {
+          "fade_ease": "in_out"
+        },
+        "linear": {
+          "fade_ease": "linear"
+        },
+        "fast": {
+          "fade_ease": "out"
+        }
+      },
+      "doc": "smooth: eases in and out; linear: even; fast: most of the way at once."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "transform": "opacity",
+        "keys": [
+          {
+            "dt": 0,
+            "v": 0,
+            "ease": "$fade_ease"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}

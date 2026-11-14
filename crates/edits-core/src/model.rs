@@ -637,6 +637,89 @@ pub enum Modifier {
         from: f64,
         period: f64,
     },
+    /// A periodic wave added to the value: `amplitude × wave(cycles)`, with
+    /// `cycles = frequency × (time since from) + phase`. No randomness.
+    Oscillate(Box<Oscillate>),
+}
+
+/// The fields of an `oscillate` modifier (see [`Modifier::Oscillate`]).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct Oscillate {
+    /// Peak offset: a number, a per-component vector, or keyframed (an envelope).
+    pub amplitude: Prop,
+    /// Cycles per `per` (default 1).
+    #[serde(default = "one")]
+    pub frequency: f64,
+    /// `beat` (default) or `second`: what `frequency` counts cycles per.
+    #[serde(default)]
+    pub per: OscPer,
+    #[serde(default)]
+    pub wave: Wave,
+    /// Where in the cycle the wave is at `from`, in cycles (0.25 is a quarter period).
+    #[serde(default)]
+    pub phase: f64,
+    /// Project time where the cycles are counted from.
+    #[serde(default)]
+    pub from: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OscPer {
+    #[default]
+    Beat,
+    Second,
+}
+
+/// The shape of one cycle of an `oscillate` modifier, in -1..1 from phase 0.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Wave {
+    /// 0, up to 1 at a quarter, 0 at half, -1 at three quarters.
+    #[default]
+    Sine,
+    /// The same turning points as `sine`, joined by straight lines.
+    Triangle,
+    /// 1 for the first half of the cycle, -1 for the second.
+    Square,
+    /// Rises straight from -1 to 1 over the cycle, then drops back.
+    Saw,
+}
+
+impl Wave {
+    /// The wave at `cycles` (any real number).
+    pub fn at(self, cycles: f64) -> f64 {
+        let f = cycles.rem_euclid(1.0);
+        match self {
+            Wave::Sine => (f * std::f64::consts::TAU).sin(),
+            Wave::Triangle => {
+                if f < 0.25 {
+                    4.0 * f
+                } else if f < 0.75 {
+                    2.0 - 4.0 * f
+                } else {
+                    4.0 * f - 4.0
+                }
+            }
+            Wave::Square => {
+                if f < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+            Wave::Saw => 2.0 * f - 1.0,
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Wave::Sine => "sine",
+            Wave::Triangle => "triangle",
+            Wave::Square => "square",
+            Wave::Saw => "saw",
+        }
+    }
 }
 
 // ---- serde defaults --------------------------------------------------------

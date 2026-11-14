@@ -1,0 +1,96 @@
+{
+  "format": "edits.preset/1",
+  "name": "velocity_flash_in",
+  "description": "Flash in speed curve (CapCut): starts very fast and slows to normal. Retimes the layer's keyed motion or a video's playback; a still picture gets a push that follows the curve.",
+  "tags": [
+    "speed",
+    "velocity",
+    "time",
+    "curve"
+  ],
+  "variables": {
+    "length": {
+      "type": "number",
+      "default": 2,
+      "min": 0.05,
+      "max": 64,
+      "unit": "beats",
+      "doc": "Length of the curve."
+    },
+    "zoom": {
+      "type": "number",
+      "default": 1.15,
+      "min": 1,
+      "max": 3,
+      "doc": "For a still picture: how far the push goes."
+    }
+  },
+  "apply": [
+    {
+      "retime": {
+        "length": "=$length * beat",
+        "progress": [
+          0.0,
+          0.3687,
+          0.5714,
+          0.6728,
+          0.7419,
+          0.8065,
+          0.871,
+          0.9355,
+          1.0
+        ],
+        "otherwise": [
+          {
+            "pulse": {
+              "transform": "scale",
+              "adjustment": {
+                "effect": "transform2d",
+                "param": "scale",
+                "base": 1
+              },
+              "keys": [
+                {
+                  "dt": 0,
+                  "v": "=base"
+                },
+                {
+                  "dt": "=$length * 0.125 * beat",
+                  "v": "=orig * (1 + ($zoom - 1) * 0.3687)"
+                },
+                {
+                  "dt": "=$length * 0.25 * beat",
+                  "v": "=orig * (1 + ($zoom - 1) * 0.5714)"
+                },
+                {
+                  "dt": "=$length * 0.375 * beat",
+                  "v": "=orig * (1 + ($zoom - 1) * 0.6728)"
+                },
+                {
+                  "dt": "=$length * 0.5 * beat",
+                  "v": "=orig * (1 + ($zoom - 1) * 0.7419)"
+                },
+                {
+                  "dt": "=$length * 0.625 * beat",
+                  "v": "=orig * (1 + ($zoom - 1) * 0.8065)"
+                },
+                {
+                  "dt": "=$length * 0.75 * beat",
+                  "v": "=orig * (1 + ($zoom - 1) * 0.871)"
+                },
+                {
+                  "dt": "=$length * 0.875 * beat",
+                  "v": "=orig * (1 + ($zoom - 1) * 0.9355)"
+                },
+                {
+                  "dt": "=$length * 1.0 * beat",
+                  "v": "=orig * (1 + ($zoom - 1) * 1.0)"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
