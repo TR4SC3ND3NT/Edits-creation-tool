@@ -1,0 +1,5 @@
+# Build into the workspace's target/ folder, so `edits-studio` lands next to
+# `edits` (target/release/edits-studio), where `edits gui` looks for it, and
+# the engine crates are compiled once for both.
+[build]
+target-dir = "../../target"

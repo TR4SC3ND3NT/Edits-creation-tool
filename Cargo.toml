@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+# The desktop app (Tauri) has its own lockfile and needs WebKitGTK to build;
+# keep it out so `cargo test --workspace` never needs it. See docs/GUI.md.
+exclude = ["studio/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
