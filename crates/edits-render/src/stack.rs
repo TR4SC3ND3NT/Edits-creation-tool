@@ -337,8 +337,12 @@ impl Renderer {
                 self.compose(&to, Source::Tex(&content), &tail, Sink::Over { dst: Some(&from), flat, mode: layer.blend, opacity });
                 self.release(content);
             }
+            let map = match &tr.map {
+                Some(name) => Some(self.scene.as_ref().and_then(|s| s.slot_texture(name)).ok_or_else(|| anyhow!("layer \"{}\": the transition's map \"slot:{name}\" was not prepared (write \"slot:<name>\" naming a slot)", layer.id))?),
+                None => None,
+            };
             let out = self.acquire(w, h);
-            self.transition_pass(&out, &from, &to, tr).with_context(|| format!("layer \"{}\"", layer.id))?;
+            self.transition_pass(&out, &from, &to, map.as_ref(), tr).with_context(|| format!("layer \"{}\"", layer.id))?;
             self.release(to);
             if let Some(old) = acc.replace(out) {
                 self.release(old);

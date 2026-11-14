@@ -220,6 +220,20 @@ pub(crate) fn check_stack(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> 
                     }
                     check_prop(v, &format!("{tp}.params.{k}"), &mut err);
                 }
+                match (spec.source, tr.source.as_deref()) {
+                    (_, None) => {}
+                    (SourceKind::Slot | SourceKind::OptionalSlot, Some(src)) => match src.strip_prefix("slot:") {
+                        Some(name) if p.slots.contains_key(name) => {
+                            used_slots.insert(name.to_string());
+                        }
+                        Some(name) => {
+                            let names: Vec<&str> = p.slots.keys().map(String::as_str).collect();
+                            err(format!("{tp}.source"), format!("no slot \"{name}\""), Some(&format!("slots: {}", if names.is_empty() { "(none)".into() } else { names.join(", ") })));
+                        }
+                        None => err(format!("{tp}.source"), format!("\"{src}\" is not a slot"), Some("write \"slot:<name>\", naming a slot of this project")),
+                    },
+                    (_, Some(_)) => err(format!("{tp}.source"), format!("transition \"{}\" takes no source", tr.kind), Some("remove \"source\"; only luma_wipe reads a map")),
+                }
             }
         }
         let end = l.end.unwrap_or(s.duration);

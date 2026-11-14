@@ -115,7 +115,10 @@ A project is **slots + layers + keyframes + effects**.
   beat. Choppy 12 fps anime motion is a layer's `fps`, not an effect.
 - **Transitions** sit on the incoming layer: `"transition": { "kind": "whip_pan", "duration": 0.5 }`
   mixes the picture beneath into this one over `duration` from its `in`
-  (`edits transitions` lists 22). The outgoing layer must last until the end.
+  (`edits transitions` lists 52: pushes, zooms, whips, wipes (linear, clock,
+  radial, circle, heart, star, diamond, luma through a map in `source`),
+  blocks and noise, blinds and slices, flips, folds, doors, cubes, ripples,
+  glitches, VHS and static). The outgoing layer must last until the end.
 - **Masks and track mattes** limit where a layer shows. `"masks": [ { "shape": "ellipse", "size": 0.6, "feather": 4 } ]`
   (shapes `rect`, `ellipse`, `rounded_rect` with `radius`, `polygon` with
   3 to 32 `points`; `position`, `size`, `rotation`, `feather` and `expansion`

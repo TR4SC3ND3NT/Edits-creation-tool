@@ -119,7 +119,7 @@ shows at that moment:
 - **Select**: every layer by id, the camera, deselect. **Go to**: every marker.
 - **Preset**: *Apply preset flash…* for every preset: opens it in the
   Presets drawer. **Transition** (with a layer selected): *Add transition
-  whip_pan into d* for each of the 22 kinds, and *Remove the transition*.
+  whip_pan into d* for each of the 52 kinds, and *Remove the transition*.
 - **Song**: *Analyse song* (or *again*), show or hide the song's downbeats,
   kicks, snares and sections, *Write the song's tempo and markers into the
   project*, *Cut on beats…*, *Accent on beats or onsets…*.
@@ -440,12 +440,12 @@ A layer can come in through a transition instead of a cut
 section shows it for the selected layer:
 
 - Without one: `None: the layer cuts in at its in`, and a **+** in the
-  title that lists the 22 kinds with their default length (hover one for
+  title that lists the 52 kinds with their default length (hover one for
   what it looks like). Adding one runs the `transition:<kind>` preset at the
   layer's `in` with `align: after`: the layer's `in` stays where it is, the
   transition starts there with its default length, and the picture it comes
   from is kept until it ends (its `out` moves later when needed). One edit.
-- With one: **Kind** (a menu of the 22; another kind keeps the parameters
+- With one: **Kind** (a menu of the 52; another kind keeps the parameters
   it also has and drops the others, which `check` would refuse), its
   one-line description, **Duration** in the project's time base (drag or
   type; `ends 5` says where it ends, and the picture it comes from is kept

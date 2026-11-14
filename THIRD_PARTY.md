@@ -4,9 +4,12 @@ Code in this repository that was ported or adapted from other projects, with
 where it came from, its licence and what was taken. Each ported file also
 keeps a header naming its source. Licence texts are reproduced below.
 
-The 22 transitions in `crates/edits-render/src/shaders/transitions/` come from
-the gl-transitions collection; their authors and licence (MIT) are listed in
-`crates/edits-render/src/shaders/transitions/LICENSE.md`.
+The 52 transitions in `crates/edits-render/src/shaders/transitions/` come from
+the gl-transitions collection (crates.io `gl-transitions` 2.0.2 and 2.0.3);
+their authors and licence (MIT) are listed in
+`crates/edits-render/src/shaders/transitions/LICENSE.md`. All but one are the
+crate's WGSL unchanged; `LumaWipe.wgsl` was changed (any map picture through
+its luminance, a soft edge, an inverted order), as its header says.
 
 ## Video time
 

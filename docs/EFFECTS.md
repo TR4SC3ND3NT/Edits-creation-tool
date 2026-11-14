@@ -391,15 +391,17 @@ parameters against it, and the MCP `effects_list` lists it too. The preset
 `transition:<kind>` sets the field and overlaps the two layers around the
 cut (`duration` in beats, `align` `center` / `after` / `before`).
 
-The 22 transitions are ported from the
+The 52 transitions are ported from the
 [gl-transitions](https://gl-transitions.com) collection: the WGSL files of the
-`gl-transitions` crate 2.0.2 are used unchanged (their headers keep source,
-author and licence; all are MIT; see
-`crates/edits-render/src/shaders/transitions/LICENSE.md`). The renderer
-rebinds their textures, reads both pictures in sRGB (the space they were
-written for) and writes the result back in linear light. Colour parameters
-are sRGB 0..1; directions and centres are in the shader's own frame (0..1,
-y up). Default length in beats in brackets.
+`gl-transitions` crate (2.0.2, and 2.0.3 for the 30 added in wave 2) are used
+unchanged, except `luma_wipe` (their headers keep source, author and licence;
+all are MIT; see `crates/edits-render/src/shaders/transitions/LICENSE.md`).
+The renderer rebinds their textures, reads both pictures in sRGB (the space
+they were written for) and writes the result back in linear light. Colour
+parameters are sRGB 0..1; directions and centres are in the shader's own
+frame (0..1, y up); sizes marked "% of height" and angles in degrees are
+converted to the shader's units by the renderer. Default length in beats in
+brackets.
 
 | Kind | What it looks like | Parameters (defaults) |
 | --- | --- | --- |
@@ -425,10 +427,59 @@ y up). Default length in beats in brackets.
 | `rotate_scale_fade` (1) | The outgoing picture spins and zooms away over a colour | `center` [0.5, 0.5], `rotations` 1, `scale` 8, `back_color` [0.15, 0.15, 0.15, 1] |
 | `pixelize` (0.5) | Both pictures pixelate, crossfade and sharpen | `squares_min` [20, 20], `steps` 50 |
 | `film_burn` (1) | Glowing film-burn light leaks reveal the next picture | `seed` 2.31 |
+| `zoom_out` (0.5) | The next picture zooms out into place while fading in | `zoom_quickness` 0.8, `fade` 1 |
+| `directional_eased` (0.5) | A push that starts fast and eases to a stop | `direction` [0, 1] |
+| `linear_wipe` (0.5) | A straight wipe in any direction, soft-edged | `direction` [1, -1], `smoothness` 0.5 |
+| `clock_wipe` (0.5) | A hard clock hand sweeps counter-clockwise around the centre | `start_angle` 90 (degrees: 0 at 9 o'clock, 90 at 12) |
+| `radial_wipe` (0.5) | A soft sweep around the centre from 9 o'clock, counter-clockwise | `smoothness` 1 (radians) |
+| `circle_open` (0.5) | A soft circle opens from the centre (or closes) | `smoothness` 0.3, `opening` 1 (0 closes) |
+| `heart_wipe` (1) | A heart grows with a heartbeat and a glowing edge | `center` [0.5, 0.5], `smoothness` 0.006, `pulse` 0.5, `glow_color` [1, 0.85, 0.9], `glow` 0.3 |
+| `star_wipe` (1) | A bordered five-pointed star grows (it covers the frame by about a third of the way) | `border` 1 (% of height), `rotation` 54 (degrees), `border_color` [1, 1, 1, 1], `center` [0.5, 0.5] |
+| `diamond_wipe` (0.5) | A soft diamond grows from a point | `center` [0.5, 0.5], `smoothness` 0.03 |
+| `random_squares` (0.5) | A grid of squares switches in random order (block dissolve) | `squares` [10, 10], `smoothness` 0.5 |
+| `noise_dissolve` (0.5) | The next picture appears pixel by pixel | none |
+| `luma_wipe` (1) | A wipe through a map's brightness, darkest first; the map is `"source": "slot:<name>"`, else the outgoing picture | `softness` 0.1, `invert` 0 |
+| `window_blinds` (0.5) | A crossfade through thin flickering blinds | none |
+| `window_slices` (0.5) | Vertical slices widen from left to right | `count` 10, `smoothness` 0.5 |
+| `grid_flip` (1) | Cards lift apart and flip over one after another | `tiles` [4, 4], `pause` 0.1, `gap` 0.05 (of a tile), `background` [0, 0, 0, 1], `randomness` 0.1 |
+| `inside_cube` (1) | The camera inside a cube turns to the next wall | `direction` [1, 0], `fov` 90 (degrees), `shading` 0.6, `background` [0.09, 0.09, 0.1, 1] |
+| `simple_flip` (0.5) | The picture flips like a card around its vertical axis, over the background | none |
+| `book_flip` (1) | The right half turns over like a book page, curling | `perspective` 0.5, `shading` 0.6, `curl` 0.5 |
+| `fold` (0.5) | The next picture unfolds from the left, the old one folds away right | none |
+| `doorway` (1) | Double doors swing open on the next picture coming forward | `reflection` 0.4, `perspective` 0.4, `depth` 3 |
+| `horizontal_open` (0.5) | The next picture opens from a line across the middle | none |
+| `split_slide` (0.5) | Two halves slide in from opposite sides (top from the left) | `reverse` 0 |
+| `ripple` (1) | Ripples spread from the centre while crossfading | `frequency` 100, `speed` 50 |
+| `water_drop` (1) | A drop's rings spread with glints; the next picture inside the leading ring | `frequency` 30, `speed` 30, `center` [0.5, 0.5], `refraction` 1.5 (% of height), `highlight` 0.5 |
+| `glitch_bands` (0.5) | A crossfade that breaks into colour-driven glitch bands | `horizontal` 1, `vertical` 1 |
+| `glitch_flicker` (0.5) | A stepped glitch (RGB offset, torn blocks, ghosts, scanlines) that flickers between the pictures | `flickers` 24, `rgb_offset` 1.4 (% of the frame), `blocks` 0.72, `ghost` 0.62, `red_cyan` 0.58, `scanlines` 0.075 |
+| `vhs_tracking` (1) | Tape-tracking snow bands roll down; the next picture is recorded over | `bands` 3, `noise` 0.6, `bleed` 0.5, `wobble` 0.5 |
+| `tv_static` (0.5) | Cut to full-screen static, then to the next picture | `offset` 0.05 |
+| `stretch_slide` (0.75) | The old picture stretches as it shoots away; the next springs into shape | `direction` [-1, 0], `stretch` 0.6, `bounce` 0.6 |
+| `squeeze` (0.5) | The old picture is squeezed into a line with colour separation | `color_separation` 4 (% of height) |
+
+`luma_wipe` is the one transition that reads a third picture: write
+`"source": "slot:<name>"` next to its `kind` (a gradient for a shaped wipe, a
+texture or a picture for an organic one). The map's luminance (sRGB, alpha
+counting as black) decides when each pixel switches: dark first, or bright
+first with `invert` 1; `softness` is the width of the edge in that
+brightness. Without a `source` the outgoing picture is the map, so its
+shadows give way first. The `transition:luma_wipe` preset does not set the
+source: add it with an edit.
+
+```json
+{ "id": "cut6", "kind": "image", "slot": "b", "in": 5.5,
+  "transition": { "kind": "luma_wipe", "duration": 1, "source": "slot:ramp", "params": { "softness": 0.2 } } }
+```
 
 `crates/edits-render/tests/transitions.rs` renders every one: it starts on the
-picture beneath, ends on the plain cut, does something visible in between and
-stays opaque. To add one: copy its WGSL from the crate (check its licence
-header), add it to `TRANSITIONS` and to the table in
+picture beneath, ends on the plain cut, does something visible in between,
+renders the same frame twice the same way and stays opaque; the wipes are
+also checked where their formula puts the edge (linear, clock, circle,
+horizontal open, split slide, luma through a ramp), the dissolves switch
+whole pixels and the static is grey noise. To add one: copy its WGSL from the
+crate (check its licence header), add it to `TRANSITIONS` and to the table in
 `crates/edits-render/src/transitions.rs` (parameter offsets come from the
-crate's uniform layout), and document it here.
+crate's uniform layout; `K(factor)` converts a unit, such as % of height to
+frame heights), and document it here. A map texture declared by the shader
+is bound at binding 4 of the transition's texture group.

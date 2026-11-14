@@ -314,7 +314,14 @@ code is credited.
 
 ## Transitions
 
-We have 22 (`edits transitions`), all from gl-transitions. Every missing one
+We have 52 (`edits transitions`), all from gl-transitions; wave 2 added
+`zoom_out`, `directional_eased`, `linear_wipe`, `clock_wipe`, `radial_wipe`,
+`circle_open`, `heart_wipe`, `star_wipe`, `diamond_wipe`, `random_squares`,
+`noise_dissolve`, `luma_wipe` (map from a slot), `window_blinds`,
+`window_slices`, `grid_flip`, `inside_cube`, `simple_flip`, `book_flip`,
+`fold`, `doorway`, `horizontal_open`, `split_slide`, `ripple`, `water_drop`,
+`glitch_bands`, `glitch_flicker`, `vhs_tracking`, `tv_static`,
+`stretch_slide` and `squeeze`, so rows below that name them are done. Every missing one
 below has a gl-transitions file (MIT unless noted); porting is GLSL to WGSL
 into `crates/edits-render/src/shaders/transitions/`, a `TransitionSpec` in
 `crates/edits-core/src/effects/mod.rs` and a `Def` in

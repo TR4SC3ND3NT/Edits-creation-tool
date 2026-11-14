@@ -50,6 +50,8 @@ pub struct ResolvedTransition {
     pub progress: f64,
     /// Every parameter of the transition's spec, with defaults filled in.
     pub params: BTreeMap<String, Vec<f64>>,
+    /// The slot of its map (`source` without `slot:`), for a transition that reads one.
+    pub map: Option<String>,
 }
 
 /// What the core cannot know about a video by itself: the frame rate and
@@ -284,7 +286,11 @@ impl<'a> Evaluator<'a> {
             let v = tr.params.get(p.name).map(|v| self.prop(v, t)).unwrap_or_else(|| p.default.to_vec());
             params.insert(p.name.to_string(), pad(v, p.default.len()));
         }
-        Some(ResolvedTransition { kind: spec.kind, progress, params })
+        let map = match spec.source {
+            effects::SourceKind::OptionalSlot | effects::SourceKind::Slot => tr.source.as_deref().and_then(|s| s.strip_prefix("slot:")).map(str::to_string),
+            _ => None,
+        };
+        Some(ResolvedTransition { kind: spec.kind, progress, params, map })
     }
 
     /// What the animators of `text` do to each of its `glyphs` at project
