@@ -1,0 +1,60 @@
+{
+  "format": "edits.preset/1",
+  "name": "freeze",
+  "description": "Freeze frame: the layer's motion (or a video) stops dead for the length and then goes on from where it would be, with a little punch in while it holds.",
+  "tags": [
+    "time",
+    "speed",
+    "freeze",
+    "hit"
+  ],
+  "variables": {
+    "length": {
+      "type": "number",
+      "default": 1,
+      "min": 0.05,
+      "max": 64,
+      "unit": "beats",
+      "doc": "How long it holds."
+    },
+    "zoom": {
+      "type": "number",
+      "default": 1.08,
+      "min": 1,
+      "max": 2,
+      "doc": "Punch in while it holds (1: none)."
+    }
+  },
+  "apply": [
+    {
+      "retime": {
+        "length": "=$length * beat",
+        "progress": [
+          0,
+          0
+        ]
+      }
+    },
+    {
+      "pulse": {
+        "transform": "scale",
+        "adjustment": {
+          "effect": "transform2d",
+          "param": "scale",
+          "base": 1
+        },
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=orig * $zoom",
+            "ease": "hold"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}

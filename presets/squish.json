@@ -1,0 +1,56 @@
+{
+  "format": "edits.preset/1",
+  "name": "squish",
+  "description": "Squash and stretch on the hit: the picture squashes flat, springs tall and settles, like jelly.",
+  "tags": [
+    "hit",
+    "zoom",
+    "bounce",
+    "accent"
+  ],
+  "variables": {
+    "amount": {
+      "type": "number",
+      "default": 0.15,
+      "min": 0,
+      "max": 0.6,
+      "doc": "How far it squashes at the start (0.15: 15% wider and lower)."
+    },
+    "length": {
+      "type": "number",
+      "default": 0.75,
+      "min": 0.05,
+      "max": 16,
+      "unit": "beats",
+      "doc": "Time to settle."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "transform": "scale",
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=vec(base0 * (1 + $amount), base0 * (1 - $amount), base0)",
+            "ease": "in_out"
+          },
+          {
+            "dt": "=$length * 0.3 * beat",
+            "v": "=vec(orig0 * (1 - 0.6 * $amount), orig0 * (1 + 0.6 * $amount), orig0)",
+            "ease": "in_out"
+          },
+          {
+            "dt": "=$length * 0.6 * beat",
+            "v": "=vec(orig0 * (1 + 0.25 * $amount), orig0 * (1 - 0.25 * $amount), orig0)",
+            "ease": "in_out"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}

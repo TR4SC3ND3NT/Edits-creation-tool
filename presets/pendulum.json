@@ -1,0 +1,106 @@
+{
+  "format": "edits.preset/1",
+  "name": "pendulum",
+  "description": "On the hit the picture tips over and swings like a pendulum from its top edge, smaller each time, until it hangs still.",
+  "tags": [
+    "hit",
+    "rotate",
+    "swing",
+    "accent"
+  ],
+  "variables": {
+    "angle": {
+      "type": "number",
+      "default": 12,
+      "min": 0,
+      "max": 60,
+      "unit": "degrees",
+      "doc": "Turn at the start."
+    },
+    "period": {
+      "type": "number",
+      "default": 1,
+      "min": 0.25,
+      "max": 8,
+      "unit": "beats",
+      "doc": "Time of one swing there and back."
+    },
+    "length": {
+      "type": "number",
+      "default": 4,
+      "min": 0.25,
+      "max": 64,
+      "unit": "beats",
+      "doc": "Time until it hangs still."
+    },
+    "cover": {
+      "type": "number",
+      "default": 1,
+      "min": 0,
+      "max": 1,
+      "doc": "Zoom in so the frame's corners never show: 1 just enough, 0 not at all."
+    }
+  },
+  "apply": [
+    {
+      "oscillate": {
+        "transform": "rotation",
+        "frequency": "=1 / $period",
+        "phase": 0.25,
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=vec(0, 0, $angle)",
+            "ease": "out"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": [
+              0,
+              0,
+              0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "oscillate": {
+        "transform": "position",
+        "frequency": "=1 / $period",
+        "phase": 0.25,
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=vec(-0.5 * $angle * 0.01745, 0, 0)",
+            "ease": "out"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": [
+              0,
+              0,
+              0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "pulse": {
+        "transform": "scale",
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=base * (1 + $cover * (max(aspect, 1 / aspect) * $angle * 0.01745 + 2 * 0.5 * $angle * 0.01745))",
+            "ease": "out"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}

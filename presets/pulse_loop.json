@@ -1,0 +1,110 @@
+{
+  "format": "edits.preset/1",
+  "name": "pulse_loop",
+  "description": "The picture pulses with the beat: it swells on every beat and eases back in between.",
+  "tags": [
+    "loop",
+    "zoom",
+    "beat",
+    "combo"
+  ],
+  "variables": {
+    "amount": {
+      "type": "number",
+      "default": 0.04,
+      "min": 0,
+      "max": 0.5,
+      "doc": "How much bigger it gets on the beat, half of it (0.04: 8%)."
+    },
+    "period": {
+      "type": "number",
+      "default": 1,
+      "min": 0.125,
+      "max": 16,
+      "unit": "beats",
+      "doc": "Time from one pulse to the next."
+    },
+    "length": {
+      "type": "number",
+      "default": 4,
+      "min": 0.25,
+      "max": 256,
+      "unit": "beats",
+      "doc": "How long it pulses; the last period fades out."
+    },
+    "shape": {
+      "type": "enum",
+      "default": "kick",
+      "options": {
+        "kick": {
+          "wave_name": "saw",
+          "amp_sign": -1,
+          "wave_phase": 0
+        },
+        "smooth": {
+          "wave_name": "sine",
+          "amp_sign": 1,
+          "wave_phase": 0.25
+        }
+      },
+      "doc": "kick: jumps on the beat and shrinks back steadily; smooth: swells and shrinks like breathing."
+    }
+  },
+  "apply": [
+    {
+      "oscillate": {
+        "transform": "scale",
+        "adjustment": {
+          "effect": "transform2d",
+          "param": "scale",
+          "base": 1
+        },
+        "wave": "$wave_name",
+        "phase": "$wave_phase",
+        "frequency": "=1 / $period",
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=$amp_sign * $amount",
+            "ease": "hold"
+          },
+          {
+            "dt": "=max($length * beat - $period * beat, 0)",
+            "v": "=$amp_sign * $amount",
+            "ease": "in_out"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": 0
+          }
+        ]
+      }
+    },
+    {
+      "pulse": {
+        "transform": "scale",
+        "adjustment": {
+          "effect": "transform2d",
+          "param": "scale",
+          "base": 1
+        },
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=orig * (1 + $amount)",
+            "ease": "hold"
+          },
+          {
+            "dt": "=max($length * beat - $period * beat, 0)",
+            "v": "=orig * (1 + $amount)",
+            "ease": "in_out"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,160 @@
+{
+  "format": "edits.preset/1",
+  "name": "explode",
+  "description": "The letters of a text layer fly apart in every direction, spinning and fading (or, inward, fly together into the text).",
+  "tags": [
+    "text",
+    "caption",
+    "outro",
+    "burst"
+  ],
+  "layer_kind": "text",
+  "variables": {
+    "direction": {
+      "type": "enum",
+      "default": "out",
+      "options": {
+        "out": {
+          "a0": 0,
+          "a1": 100,
+          "o0": 1,
+          "o1": 0
+        },
+        "in": {
+          "a0": 100,
+          "a1": 0,
+          "o0": 0,
+          "o1": 1
+        }
+      },
+      "doc": "out: the text explodes; in: the letters fly together (implode)."
+    },
+    "duration": {
+      "type": "number",
+      "default": 1,
+      "min": 0.05,
+      "max": 64,
+      "unit": "beats",
+      "doc": "Time of the explosion."
+    },
+    "distance": {
+      "type": "number",
+      "default": 60,
+      "min": 0,
+      "max": 300,
+      "unit": "% of height",
+      "doc": "How far the letters fly."
+    },
+    "spin": {
+      "type": "number",
+      "default": 180,
+      "min": 0,
+      "max": 1440,
+      "unit": "degrees",
+      "doc": "How far they turn."
+    },
+    "units": {
+      "type": "string",
+      "default": "characters",
+      "doc": "What moves at each step: characters, words or lines."
+    }
+  },
+  "apply": [
+    {
+      "animator": {
+        "name": "explode x",
+        "selector": {
+          "kind": "wiggly",
+          "units": "$units",
+          "amount": {
+            "keys": [
+              {
+                "t": "=at",
+                "v": "$a0",
+                "ease": "expo_out"
+              },
+              {
+                "t": "=at + $duration * beat",
+                "v": "$a1"
+              }
+            ]
+          },
+          "frequency": 0,
+          "correlation": 0,
+          "seed": 21
+        },
+        "position": "=vec($distance / 100 * aspect, 0, 0)"
+      }
+    },
+    {
+      "animator": {
+        "name": "explode y",
+        "selector": {
+          "kind": "wiggly",
+          "units": "$units",
+          "amount": {
+            "keys": [
+              {
+                "t": "=at",
+                "v": "$a0",
+                "ease": "expo_out"
+              },
+              {
+                "t": "=at + $duration * beat",
+                "v": "$a1"
+              }
+            ]
+          },
+          "frequency": 0,
+          "correlation": 0,
+          "seed": 22
+        },
+        "position": "=vec(0, $distance / 100, 0)"
+      }
+    },
+    {
+      "animator": {
+        "name": "explode spin",
+        "selector": {
+          "kind": "wiggly",
+          "units": "$units",
+          "amount": {
+            "keys": [
+              {
+                "t": "=at",
+                "v": "$a0",
+                "ease": "expo_out"
+              },
+              {
+                "t": "=at + $duration * beat",
+                "v": "$a1"
+              }
+            ]
+          },
+          "frequency": 0,
+          "correlation": 0,
+          "seed": 23
+        },
+        "rotation": "=vec(0, 0, $spin)"
+      }
+    },
+    {
+      "animator": {
+        "name": "explode fade",
+        "opacity": {
+          "keys": [
+            {
+              "t": "=at",
+              "v": "$o0",
+              "ease": "in_out"
+            },
+            {
+              "t": "=at + $duration * beat",
+              "v": "$o1"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

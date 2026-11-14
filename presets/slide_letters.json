@@ -1,0 +1,95 @@
+{
+  "format": "edits.preset/1",
+  "name": "slide_letters",
+  "description": "The letters (or words) of a text layer slide in one after another and fade in.",
+  "tags": [
+    "text",
+    "reveal",
+    "caption",
+    "slide"
+  ],
+  "layer_kind": "text",
+  "variables": {
+    "duration": {
+      "type": "number",
+      "default": 1.5,
+      "min": 0.05,
+      "max": 64,
+      "unit": "beats",
+      "doc": "From the first unit starting to the last one settling."
+    },
+    "spread": {
+      "type": "number",
+      "default": 40,
+      "min": 1,
+      "max": 100,
+      "unit": "% of the units",
+      "doc": "How many units are moving at once: small is one by one, 100 all together."
+    },
+    "units": {
+      "type": "string",
+      "default": "characters",
+      "doc": "What moves at each step: characters, words or lines."
+    },
+    "direction": {
+      "type": "enum",
+      "default": "from_bottom",
+      "options": {
+        "from_left": {
+          "dx": -1,
+          "dy": 0
+        },
+        "from_right": {
+          "dx": 1,
+          "dy": 0
+        },
+        "from_top": {
+          "dx": 0,
+          "dy": -1
+        },
+        "from_bottom": {
+          "dx": 0,
+          "dy": 1
+        }
+      },
+      "doc": "Where they come from."
+    },
+    "distance": {
+      "type": "number",
+      "default": 12,
+      "min": 0,
+      "max": 200,
+      "unit": "% of height",
+      "doc": "How far they travel."
+    }
+  },
+  "apply": [
+    {
+      "animator": {
+        "name": "slide letters",
+        "selector": {
+          "kind": "range",
+          "units": "$units",
+          "shape": "ramp_up",
+          "start": 0,
+          "end": "$spread",
+          "offset": {
+            "keys": [
+              {
+                "t": "=at",
+                "v": "=-$spread"
+              },
+              {
+                "t": "=at + $duration * beat",
+                "v": 100
+              }
+            ]
+          },
+          "ease": "quint_out"
+        },
+        "position": "=vec($dx * $distance / 100, $dy * $distance / 100, 0)",
+        "opacity": 0
+      }
+    }
+  ]
+}

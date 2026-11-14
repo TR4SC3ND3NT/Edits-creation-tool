@@ -1,0 +1,88 @@
+{
+  "format": "edits.preset/1",
+  "name": "line_reveal",
+  "description": "The lines of a text layer come in one after another: slide up into place, or swing down like a flap.",
+  "tags": [
+    "text",
+    "reveal",
+    "caption",
+    "title"
+  ],
+  "layer_kind": "text",
+  "variables": {
+    "duration": {
+      "type": "number",
+      "default": 1,
+      "min": 0.05,
+      "max": 64,
+      "unit": "beats",
+      "doc": "From the first unit starting to the last one settling."
+    },
+    "spread": {
+      "type": "number",
+      "default": 60,
+      "min": 1,
+      "max": 100,
+      "unit": "% of the units",
+      "doc": "How many units are moving at once: small is one by one, 100 all together."
+    },
+    "units": {
+      "type": "string",
+      "default": "lines",
+      "doc": "What moves at each step: characters, words or lines."
+    },
+    "style": {
+      "type": "enum",
+      "default": "slide",
+      "options": {
+        "slide": {
+          "py": 1,
+          "rx": 0
+        },
+        "swing": {
+          "py": 0,
+          "rx": 1
+        }
+      },
+      "doc": "slide: rises into place; swing: turns down from flat about its middle."
+    },
+    "distance": {
+      "type": "number",
+      "default": 10,
+      "min": 0,
+      "max": 100,
+      "unit": "% of height",
+      "doc": "slide: how far a line rises."
+    }
+  },
+  "apply": [
+    {
+      "animator": {
+        "name": "line reveal",
+        "selector": {
+          "kind": "range",
+          "units": "$units",
+          "shape": "ramp_up",
+          "start": 0,
+          "end": "$spread",
+          "offset": {
+            "keys": [
+              {
+                "t": "=at",
+                "v": "=-$spread"
+              },
+              {
+                "t": "=at + $duration * beat",
+                "v": 100
+              }
+            ]
+          },
+          "ease": "quint_out"
+        },
+        "position": "=vec(0, $py * $distance / 100, 0)",
+        "rotation": "=vec(-90 * $rx, 0, 0)",
+        "opacity": 0
+      }
+    }
+  ]
+}

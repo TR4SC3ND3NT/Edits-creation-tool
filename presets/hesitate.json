@@ -1,0 +1,80 @@
+{
+  "format": "edits.preset/1",
+  "name": "hesitate",
+  "description": "Hesitate: the layer's motion (or a video) stutters, stepping back twice before it goes on; a still picture pushes in the same way.",
+  "tags": [
+    "time",
+    "speed",
+    "stutter"
+  ],
+  "variables": {
+    "length": {
+      "type": "number",
+      "default": 2,
+      "min": 0.05,
+      "max": 64,
+      "unit": "beats",
+      "doc": "Time of the stutter."
+    },
+    "zoom": {
+      "type": "number",
+      "default": 1.15,
+      "min": 1,
+      "max": 3,
+      "doc": "For a still picture: how far the push goes."
+    }
+  },
+  "apply": [
+    {
+      "retime": {
+        "length": "=$length * beat",
+        "progress": [
+          0,
+          0.4,
+          0.3,
+          0.7,
+          0.6,
+          1
+        ],
+        "otherwise": [
+          {
+            "pulse": {
+              "transform": "scale",
+              "adjustment": {
+                "effect": "transform2d",
+                "param": "scale",
+                "base": 1
+              },
+              "keys": [
+                {
+                  "dt": 0,
+                  "v": "=base"
+                },
+                {
+                  "dt": "=$length * 0.2 * beat",
+                  "v": "=orig * (1 + ($zoom - 1) * 0.4)"
+                },
+                {
+                  "dt": "=$length * 0.4 * beat",
+                  "v": "=orig * (1 + ($zoom - 1) * 0.3)"
+                },
+                {
+                  "dt": "=$length * 0.6 * beat",
+                  "v": "=orig * (1 + ($zoom - 1) * 0.7)"
+                },
+                {
+                  "dt": "=$length * 0.8 * beat",
+                  "v": "=orig * (1 + ($zoom - 1) * 0.6)"
+                },
+                {
+                  "dt": "=$length * 1.0 * beat",
+                  "v": "=orig * (1 + ($zoom - 1) * 1)"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

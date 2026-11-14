@@ -1,0 +1,68 @@
+{
+  "format": "edits.preset/1",
+  "name": "swirl_in",
+  "description": "The picture spins in from nothing, fast, and slows into place.",
+  "tags": [
+    "intro",
+    "rotate",
+    "spin"
+  ],
+  "variables": {
+    "length": {
+      "type": "number",
+      "default": 0.75,
+      "min": 0.05,
+      "max": 16,
+      "unit": "beats",
+      "doc": "How long it takes."
+    },
+    "turns": {
+      "type": "number",
+      "default": 1,
+      "min": -8,
+      "max": 8,
+      "doc": "Whole turns it makes (negative: the other way)."
+    },
+    "from": {
+      "type": "number",
+      "default": 0,
+      "min": 0,
+      "max": 1,
+      "doc": "Scale it starts at, as a fraction of its size."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "transform": "rotation",
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=orig + vec(0, 0, -360 * $turns)",
+            "ease": "expo_out"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    },
+    {
+      "pulse": {
+        "transform": "scale",
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=orig * $from",
+            "ease": "expo_out"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}

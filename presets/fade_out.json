@@ -1,0 +1,54 @@
+{
+  "format": "edits.preset/1",
+  "name": "fade_out",
+  "description": "The picture fades out to transparent and stays out.",
+  "tags": [
+    "outro",
+    "fade",
+    "opacity"
+  ],
+  "variables": {
+    "length": {
+      "type": "number",
+      "default": 0.5,
+      "min": 0.05,
+      "max": 16,
+      "unit": "beats",
+      "doc": "How long it takes."
+    },
+    "ease": {
+      "type": "enum",
+      "default": "smooth",
+      "options": {
+        "smooth": {
+          "fade_ease": "in_out"
+        },
+        "linear": {
+          "fade_ease": "linear"
+        },
+        "late": {
+          "fade_ease": "expo_in"
+        }
+      },
+      "doc": "smooth: eases in and out; linear: even; late: holds, then goes at once."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "transform": "opacity",
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=orig",
+            "ease": "$fade_ease"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": 0
+          }
+        ]
+      }
+    }
+  ]
+}

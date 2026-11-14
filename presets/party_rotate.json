@@ -1,0 +1,84 @@
+{
+  "format": "edits.preset/1",
+  "name": "party_rotate",
+  "description": "Party look: the picture snaps to a tilt one way, then the other, on alternate beats.",
+  "tags": [
+    "loop",
+    "rotate",
+    "beat",
+    "party"
+  ],
+  "variables": {
+    "angle": {
+      "type": "number",
+      "default": 8,
+      "min": 0,
+      "max": 90,
+      "unit": "degrees",
+      "doc": "Tilt each way."
+    },
+    "period": {
+      "type": "number",
+      "default": 2,
+      "min": 0.25,
+      "max": 16,
+      "unit": "beats",
+      "doc": "Time to tilt both ways once."
+    },
+    "length": {
+      "type": "number",
+      "default": 4,
+      "min": 0.25,
+      "max": 256,
+      "unit": "beats",
+      "doc": "How long it goes on."
+    },
+    "cover": {
+      "type": "number",
+      "default": 1,
+      "min": 0,
+      "max": 1,
+      "doc": "Zoom in so the frame's corners never show: 1 just enough, 0 not at all."
+    }
+  },
+  "apply": [
+    {
+      "oscillate": {
+        "transform": "rotation",
+        "wave": "square",
+        "frequency": "=1 / $period",
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=vec(0, 0, $angle)",
+            "ease": "hold"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": [
+              0,
+              0,
+              0
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "pulse": {
+        "transform": "scale",
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=orig * (1 + $cover * (max(aspect, 1 / aspect) * $angle * 0.01745 + 2 * 0))",
+            "ease": "hold"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}

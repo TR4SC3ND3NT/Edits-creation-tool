@@ -1,0 +1,72 @@
+{
+  "format": "edits.preset/1",
+  "name": "bounce_in",
+  "description": "The picture grows in from nothing and bounces as it settles.",
+  "tags": [
+    "intro",
+    "zoom",
+    "bounce"
+  ],
+  "variables": {
+    "length": {
+      "type": "number",
+      "default": 0.75,
+      "min": 0.05,
+      "max": 16,
+      "unit": "beats",
+      "doc": "How long it takes."
+    },
+    "from": {
+      "type": "number",
+      "default": 0,
+      "min": 0,
+      "max": 1,
+      "doc": "Scale it starts at, as a fraction of its size."
+    },
+    "style": {
+      "type": "enum",
+      "default": "back",
+      "options": {
+        "back": {
+          "bounce_ease": {
+            "name": "back_out",
+            "overshoot": 2.2
+          }
+        },
+        "elastic": {
+          "bounce_ease": {
+            "name": "elastic_out",
+            "period": 0.35
+          }
+        },
+        "bounce": {
+          "bounce_ease": "bounce_out"
+        }
+      },
+      "doc": "back: one overshoot; elastic: springs past a few times; bounce: drops on its size like a ball."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "transform": "scale",
+        "adjustment": {
+          "effect": "transform2d",
+          "param": "scale",
+          "base": 1
+        },
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=orig * $from",
+            "ease": "$bounce_ease"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}
