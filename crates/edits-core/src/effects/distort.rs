@@ -74,6 +74,7 @@ pub(super) const EFFECTS: &[EffectSpec] = &[
          p!("motion", [0.0], num, "Explicit motion of each shard, five numbers per shard in order: axis angle (deg), spin (deg), vx, vy, vz (% of height, vz toward the camera), each per time unit^gamma. Shards it does not cover use the seeded motion."),
          p!("spin", [40.0], deg, "Seeded turn of a shard about its in-plane axis, degrees per time unit^gamma (each shard 0.5 to 1.5 times, either way)."),
          p!("spread", [10.0], pct, "Seeded outward speed of a shard, away from the impact point, % of height per time unit^gamma."),
+         p!("twist", [0.0], deg, "Seeded turn of every shard in the picture's plane, up to this many degrees per time unit^gamma either way (also on shards with explicit `motion`): it makes the gaps taper."),
          p!("drift", [0.0, 0.0], pos, "Common speed of every shard in the plane, composition units per time unit^gamma."),
          p!("depth", [10.0], pct, "Seeded speed toward the camera, % of height per time unit^gamma (each shard 0.6 to 1.4 times; negative moves away)."),
          p!("fov", [35.0], deg, 1.0, 170.0, "Vertical field of view of the camera; the picture's plane fills the frame at rest."),

@@ -237,6 +237,7 @@ pub(crate) fn shards(e: &ResolvedEffect, f: &Frame) -> Vec<Shard> {
     let zoom = (num(e, "zoom") as f64 * ex).exp();
     let roll = (num(e, "roll") as f64 * ex).to_radians();
     let shade_k = num(e, "shade") as f64;
+    let twist = num(e, "twist") as f64;
     // Camera: magnification, principal point shift, roll about the axis.
     let kc: M3 = [[focal * zoom, 0.0, pan[0] * ex], [0.0, focal * zoom, pan[1] * ex], [0.0, 0.0, 1.0]];
     let (rs, rc) = roll.sin_cos();
@@ -268,6 +269,9 @@ pub(crate) fn shards(e: &ResolvedEffect, f: &Frame) -> Vec<Shard> {
         };
         let v = [v[0] + drift[0], v[1] + drift[1], v[2]];
         let r = rot_axis([phi.cos(), phi.sin(), 0.0], (om * ex).to_radians());
+        // A turn in the sheet's plane (about the view axis), after the tilt.
+        let tw = twist * (hash(sd, ju, 16) * 2.0 - 1.0) * ex;
+        let r = if tw != 0.0 { mul(&rot_axis([0.0, 0.0, 1.0], tw.to_radians()), &r) } else { r };
         // A point (x, y) of the picture sits at (x, y, focal) in front of the
         // camera; the shard turns about its centre and moves (toward the
         // camera is -z).
