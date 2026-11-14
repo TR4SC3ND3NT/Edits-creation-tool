@@ -119,6 +119,53 @@ pub enum AnalysisCommand {
     Compare(CompareArgs),
     /// Cheap per-frame signatures of a video: luminance, saturation, sharpness, frame difference
     Probe(ProbeArgs),
+    /// The vision pass: export per-shot strips and a fixed questionnaire for a model to answer, then merge the answers into the analysis
+    #[command(subcommand)]
+    Vision(VisionCommand),
+}
+
+#[derive(Subcommand, Clone)]
+pub enum VisionCommand {
+    /// Write per-shot strips, detail crops, an overview, questions.json and an answers.json template
+    Export(VisionExportArgs),
+    /// Validate a filled answers.json, check it against the signals and merge it into the analysis
+    Merge(VisionMergeArgs),
+}
+
+#[derive(Args, Clone)]
+pub struct VisionExportArgs {
+    /// reference_analysis.json written by `edits analyze`
+    pub analysis: PathBuf,
+    /// The reference video [default: the one the analysis names]
+    #[arg(long)]
+    pub video: Option<PathBuf>,
+    /// Output folder [default: vision/ next to the analysis]
+    #[arg(short, long)]
+    pub out: Option<PathBuf>,
+    /// Only these shots, e.g. 3,7
+    #[arg(long, value_delimiter = ',')]
+    pub shots: Vec<usize>,
+    /// Height of a strip tile in pixels
+    #[arg(long, default_value_t = 180)]
+    pub tile_height: u32,
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Clone)]
+pub struct VisionMergeArgs {
+    /// reference_analysis.json to merge into (rewritten in place unless --out is given)
+    pub analysis: PathBuf,
+    /// The filled answers.json
+    pub answers: PathBuf,
+    /// Write the merged analysis here instead
+    #[arg(short, long)]
+    pub out: Option<PathBuf>,
+    /// Validate and check only; write nothing
+    #[arg(long)]
+    pub dry_run: bool,
+    #[arg(long)]
+    pub json: bool,
 }
 
 pub fn run(cmd: AnalysisCommand) -> Result<ExitCode> {
@@ -128,6 +175,8 @@ pub fn run(cmd: AnalysisCommand) -> Result<ExitCode> {
         AnalysisCommand::Draft(a) => draft_project(a),
         AnalysisCommand::Compare(a) => compare_video(a),
         AnalysisCommand::Probe(a) => probe(a),
+        AnalysisCommand::Vision(VisionCommand::Export(a)) => vision_export(a),
+        AnalysisCommand::Vision(VisionCommand::Merge(a)) => vision_merge(a),
     }
 }
 
@@ -262,6 +311,31 @@ fn compare_video(a: CompareArgs) -> Result<ExitCode> {
         println!("{}", edits_analyze::jsonfmt::to_string(&c)?);
     } else {
         print!("{}", compare::report(&c, a.top));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn vision_export(a: VisionExportArgs) -> Result<ExitCode> {
+    let an = pipeline::load(&a.analysis)?;
+    let opts = edits_analyze::vision::ExportOpts { video: a.video, out_dir: a.out, tile_height: a.tile_height, shots: a.shots };
+    let e = edits_analyze::vision::export(&an, &a.analysis, &opts)?;
+    if a.json {
+        println!("{}", edits_analyze::jsonfmt::to_string(&e)?);
+    } else {
+        print!("{}", edits_analyze::vision::export_summary(&e));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn vision_merge(a: VisionMergeArgs) -> Result<ExitCode> {
+    let r = edits_analyze::vision::merge_file(&a.analysis, &a.answers, a.out.as_deref(), a.dry_run)?;
+    if a.json {
+        println!("{}", edits_analyze::jsonfmt::to_string(&r)?);
+    } else {
+        print!("{}", edits_analyze::vision::merge_summary(&r));
+        if !a.dry_run {
+            println!("wrote {}", a.out.as_deref().unwrap_or(&a.analysis).display());
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

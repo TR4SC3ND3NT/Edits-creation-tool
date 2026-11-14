@@ -233,7 +233,7 @@ pub fn generate(spec: &CaseSpec) -> Case {
         markers: vec![],
     };
     for p in &pictures {
-        project.slots.insert(p.slot.clone(), Slot { path: Some(format!("img/{}.png", p.slot)), fit: Fit::Cover, focus: [0.5, 0.5], note: Some(format!("generated {} picture", p.kind.name())), trim: None });
+        project.slots.insert(p.slot.clone(), Slot { path: Some(format!("img/{}.png", p.slot)), fit: Fit::Cover, focus: [0.5, 0.5], note: Some(format!("generated {} picture", p.kind.name())), trim: None, role: None });
     }
 
     let mut flashes: Vec<FlashTruth> = Vec::new();
@@ -374,7 +374,7 @@ pub fn generate(spec: &CaseSpec) -> Case {
     }
     let overlay_seed = r.next_u64() >> 16;
     if overlay {
-        project.slots.insert("overlay".into(), Slot { path: Some("img/overlay.png".into()), fit: Fit::Stretch, focus: [0.5, 0.5], note: None, trim: None });
+        project.slots.insert("overlay".into(), Slot { path: Some("img/overlay.png".into()), fit: Fit::Stretch, focus: [0.5, 0.5], note: None, trim: None, role: None });
         project.layers.push(Layer {
             id: "overlay".into(),
             kind: LayerKind::Image { slot: "overlay".into() },

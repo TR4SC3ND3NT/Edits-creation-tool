@@ -121,6 +121,11 @@ pub struct AudioClip {
     pub enabled: bool,
 }
 
+/// What kind of picture a slot wants (`Slot::role`): a black-and-white or
+/// colour manga panel, a full illustration, a close-up of a face, a detail
+/// crop, an emblem or logo on a plain ground, lettering, a solid frame.
+pub const SLOT_ROLES: [&str; 8] = ["panel_bw", "panel_colour", "full_art", "close_up", "detail_crop", "emblem", "text_card", "solid"];
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Slot {
     /// Image file. `None` means the slot is empty and renders as a placeholder.
@@ -133,6 +138,10 @@ pub struct Slot {
     pub focus: [f64; 2],
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// What kind of picture the slot wants, one of [`SLOT_ROLES`] (a reference
+    /// draft takes it from the vision labels), so pictures can be matched to slots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
     /// For a video: the part of the source that plays, `[in, out]` in
     /// seconds of the file. The rest of the file is ignored, as if it had been
     /// cut out. It belongs to the content, so it swaps with the slot's `path`.

@@ -304,6 +304,7 @@ pub fn draft(a: &Analysis, opts: &DraftOpts) -> Project {
                     proxy.map(|p| format!("; proxy still {}", rel(&p))).unwrap_or_default()
                 )),
                 trim: None,
+                role: s.role.clone(),
             },
         );
     }
@@ -383,7 +384,7 @@ pub fn draft(a: &Analysis, opts: &DraftOpts) -> Project {
         if let Some(p) = &o.path {
             slots.insert(
                 "overlay".into(),
-                Slot { path: Some(rel(&opts.analysis_dir.join(p))), fit: Fit::Stretch, focus: [0.5, 0.5], note: Some("static overlay plate recovered from the reference".into()), trim: None },
+                Slot { path: Some(rel(&opts.analysis_dir.join(p))), fit: Fit::Stretch, focus: [0.5, 0.5], note: Some("static overlay plate recovered from the reference".into()), trim: None, role: None },
             );
             layers.push(Layer {
                 id: "overlay".into(),

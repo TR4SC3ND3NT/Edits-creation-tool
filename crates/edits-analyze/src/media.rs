@@ -117,18 +117,28 @@ pub fn decode_frames(path: &Path, info: &VideoInfo, height: u32) -> Result<Frame
 
 /// Decode the listed frames (ascending frame numbers) at full resolution.
 pub fn decode_selected(path: &Path, info: &VideoInfo, frames: &[usize]) -> Result<Frames> {
-    let (w, h) = (info.width as usize, info.height as usize);
+    decode_selected_at(path, info, frames, None)
+}
+
+/// Decode the listed frames (ascending frame numbers), scaled to `height`
+/// pixels high (never upscaled) or at full resolution.
+pub fn decode_selected_at(path: &Path, info: &VideoInfo, frames: &[usize], height: Option<u32>) -> Result<Frames> {
+    let (w, h) = match height {
+        Some(hh) => analysis_size(info, hh),
+        None => (info.width as usize, info.height as usize),
+    };
     if frames.is_empty() {
         return Ok(Frames::new(w, h, info.fps));
     }
     let expr: Vec<String> = frames.iter().map(|f| format!("eq(n\\,{f})")).collect();
+    let scale = if height.is_some() { format!(",scale={w}:{h}:flags=area") } else { String::new() };
     let args: Vec<String> = [
         "-i",
         &path.to_string_lossy(),
         "-an",
         "-sn",
         "-vf",
-        &format!("select='{}'", expr.join("+")),
+        &format!("select='{}'{scale}", expr.join("+")),
         "-fps_mode",
         "passthrough",
         "-f",

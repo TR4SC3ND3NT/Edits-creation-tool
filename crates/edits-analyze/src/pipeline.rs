@@ -3,6 +3,8 @@
 
 use crate::beats::{self, Onset, TempoOpts};
 use crate::blur::{self, BlurSample};
+use crate::blurkind;
+use crate::look;
 use crate::curves::{self, decay, named};
 use crate::exposure::{self, ExposureSample};
 use crate::img::{median, save_rgb, Frames, Sim};
@@ -207,6 +209,10 @@ pub struct FrameMeasure {
     /// False where blur cannot be seen at all: a frame flashed to white, a threshold or inversion hit.
     pub blur_ok: bool,
     pub inverted: bool,
+    /// Gradient-orientation log ratios against the reference frame, on blurred frames (see `blurkind`).
+    pub blur_dir: Option<blurkind::BlurDir>,
+    /// Duotone statistics of the frame itself (see `look`).
+    pub duo: look::Duo,
 }
 
 /// Measure frame `i` against `ref_frame`. `sim` is the frame's track sample
@@ -226,6 +232,7 @@ pub fn measure_frame(frames: &Frames, ref_frame: usize, i: usize, sim: Option<&S
     let mut tone = tone::measure(&pair, inverted);
     let mut exp = exposure::measure(&pair, inverted, sat_of(&tone));
     let mut blur = BlurSample::default();
+    let mut blur_dir = None;
     if i != ref_frame {
         // Linear light, with overlay strokes filled in. The reference
         // frame is used in this frame's geometry when the warp covers
@@ -289,6 +296,10 @@ pub fn measure_frame(frames: &Frames, ref_frame: usize, i: usize, sim: Option<&S
                 }
             }
         }
+        // Which orientations the blur took away (blur kind, see `blurkind`).
+        if blur.sigma_px > 0.0025 * fh as f64 && !inverted && tone.threshold.is_none() {
+            blur_dir = Some(blurkind::ratios(&blurkind::orientation(&cur, None), &blurkind::orientation(&reference, None)));
+        }
     }
     if tone.threshold.is_some() {
         exp = ExposureSample::default();
@@ -297,7 +308,12 @@ pub fn measure_frame(frames: &Frames, ref_frame: usize, i: usize, sim: Option<&S
     if !blur_ok {
         blur = BlurSample::default();
     }
-    FrameMeasure { exp, tone, blur, blur_ok, inverted }
+    // The histogram's comb finds posterisation that the level count misses (codec smear).
+    if tone.posterize.is_none() && tone.threshold.is_none() {
+        tone.posterize = look::posterized(pair.cur, &pair.refw, Some(&pair.mask));
+    }
+    let duo = look::duotone(frames.rgb(i), frames.w, frames.h, Some(usable));
+    FrameMeasure { exp, tone, blur, blur_ok, inverted, blur_dir: if blur_ok { blur_dir } else { None }, duo }
 }
 
 fn process_shot(frames: &Frames, sigs: &[FrameSig], toggles: &[bool], usable: &[bool], flat: &FlatField, f0: usize, f1: usize) -> ShotWork {
@@ -407,7 +423,7 @@ impl Timing<'_> {
         CurveKey { frame, beat: self.beat(frame), beat_snapped: self.snap(frame), v: vec![round_to(v, 4)], ease, rms: None, runner_up: None }
     }
     fn event(&self, kind: &str, f0: usize, f1: usize, frame: usize, params: BTreeMap<String, Est>, note: Option<String>) -> Event {
-        Event { kind: kind.into(), f0, f1, frame, beat: self.beat(frame), beat_snapped: self.snap(frame), params, note }
+        Event { kind: kind.into(), f0, f1, frame, beat: self.beat(frame), beat_snapped: self.snap(frame), params, colors: BTreeMap::new(), note }
     }
 }
 
@@ -440,6 +456,7 @@ fn build_shot(id: usize, w: &ShotWork, sigs: &[FrameSig], dup: &[bool], t: &Timi
     let mut events: Vec<Event> = Vec::new();
     let mut notes = w.reasons.clone();
     let mut shake_out = None;
+    let mut blur_kind: Option<BlurKind> = None;
     let valid = w.track.iter().filter(|s| s.valid()).count();
     let confs: Vec<f64> = w.track.iter().filter(|s| s.valid()).map(|s| s.confidence()).collect();
     let track_conf = crate::img::mean(&confs);
@@ -580,14 +597,36 @@ fn build_shot(id: usize, w: &ShotWork, sigs: &[FrameSig], dup: &[bool], t: &Timi
     if peak_blur >= 0.15 {
         let blurred: Vec<f64> = w.meas.iter().filter(|m| 100.0 * m.blur.sigma_px / frame_h as f64 > 0.3).map(|m| m.blur.anisotropy).collect();
         let aniso = median(&blurred);
-        let directional = !blurred.is_empty() && aniso > 0.45;
         let clipped = crate::img::mean(&w.meas.iter().map(|m| m.exp.clipped).collect::<Vec<_>>());
         let mut conf = if w.tracked { 0.75 } else { 0.45 };
         if clipped > 0.3 {
             conf *= 0.7;
         }
+        // The kind, from the gradient orientations the blur took away.
+        let dirs: Vec<blurkind::BlurDir> = w.meas.iter().filter(|m| 100.0 * m.blur.sigma_px / frame_h as f64 > 0.25).filter_map(|m| m.blur_dir).collect();
+        if let Some((kind, c, st)) = (!dirs.is_empty()).then(|| blurkind::classify(&blurkind::median(&dirs))).flatten() {
+            let c = round_to(c * if w.tracked { 1.0 } else { 0.6 } * (dirs.len() as f64 / 3.0).min(1.0), 2);
+            blur_kind = Some(BlurKind {
+                kind: kind.into(),
+                confidence: c,
+                angle: (kind == "directional").then(|| round_to(st.angle, 0)),
+                axis_contrast: round_to(st.axis_contrast, 3),
+                radial_tangential: round_to(st.rt, 3),
+                frames: dirs.len(),
+            });
+        }
+        let classified = blur_kind.as_ref().map(|k| k.confidence >= 0.4).unwrap_or(false);
+        let directional = !blurred.is_empty() && aniso > 0.45 && !classified;
         if directional {
-            notes.push(format!("blur is anisotropic (index {aniso:.2}): directional, zoom or spin blur; kind not classified, radius is a Gaussian equivalent"));
+            notes.push(format!("blur is anisotropic (index {aniso:.2}) but its kind could not be classified; radius is a Gaussian equivalent"));
+        }
+        if let Some(k) = blur_kind.as_ref().filter(|k| k.kind != "gaussian" && k.confidence >= 0.4) {
+            notes.push(format!(
+                "blur looks {}{} (confidence {:.2}); the radius is its Gaussian equivalent, draft converts it",
+                k.kind,
+                k.angle.map(|a| format!(" at {a:.0} degrees")).unwrap_or_default(),
+                k.confidence
+            ));
         }
         let mut keys: Vec<CurveKey> = fb.keys.iter().map(|k| t.key(f0, k, 3)).collect();
         keys.iter_mut().for_each(|k| k.v[0] = k.v[0].max(0.0));
@@ -595,7 +634,7 @@ fn build_shot(id: usize, w: &ShotWork, sigs: &[FrameSig], dup: &[bool], t: &Timi
             prop: "gaussian_blur.radius".into(),
             unit: "% of frame height (sigma)".into(),
             confidence: round_to(conf, 2),
-            identifiability: if directional { Ident::NeedsAgent } else { Ident::Measured },
+            identifiability: if directional { Ident::NeedsAgent } else if blur_kind.as_ref().map(|k| k.kind != "gaussian").unwrap_or(false) { Ident::Qualitative } else { Ident::Measured },
             keys,
         });
     }
@@ -696,6 +735,23 @@ fn build_shot(id: usize, w: &ShotWork, sigs: &[FrameSig], dup: &[bool], t: &Timi
         params.insert("levels".into(), Est::new(l, "levels per channel", 0.3, Ident::Qualitative));
         events.push(t.event("posterize", f0 + a, f0 + b, f0 + a, params, None));
     }
+    // Duotone: a colour look that is a function of luminance (see `look`).
+    let duo: Vec<bool> = w.meas.iter().map(|m| m.duo.is_duotone() && !m.inverted && m.tone.threshold.is_none()).collect();
+    let ref_duo = duo[w.ref_frame - f0];
+    for (a, b) in tone::runs(&duo) {
+        if b - a < 2 && n > 2 {
+            continue;
+        }
+        let med = |f: &dyn Fn(&look::Duo) -> f64| round_to(median(&(a..b).map(|i| f(&w.meas[i].duo)).collect::<Vec<_>>()), 3);
+        let mut params = BTreeMap::new();
+        let whole = ref_duo && a == 0 && b == n;
+        params.insert("amount".into(), Est::new(1.0, "0..1", if whole { 0.4 } else { 0.7 * trust }, if whole { Ident::NeedsSource } else { Ident::Measured }));
+        params.insert("spread".into(), Est::measured(med(&|d| d.spread), "chroma left within luminance bins (0 = pure duotone)", 0.6));
+        let mut ev = t.event("duotone", f0 + a, f0 + b, f0 + a, params, whole.then(|| "the whole shot is duotone: it may be the picture itself; drafted as a gradient_map either way".to_string()));
+        ev.colors.insert("shadows".into(), [med(&|d| d.shadows[0]), med(&|d| d.shadows[1]), med(&|d| d.shadows[2])]);
+        ev.colors.insert("highlights".into(), [med(&|d| d.highlights[0]), med(&|d| d.highlights[1]), med(&|d| d.highlights[2])]);
+        events.push(ev);
+    }
     events.sort_by_key(|e| (e.frame, e.kind.clone()));
 
     // ---- cut timing -----------------------------------------------------------
@@ -763,7 +819,9 @@ fn build_shot(id: usize, w: &ShotWork, sigs: &[FrameSig], dup: &[bool], t: &Timi
         curves: curves_out,
         events,
         shake: shake_out,
+        blur_kind,
         samples,
+        vision: None,
     }
 }
 
@@ -923,14 +981,22 @@ pub fn analyze_frames(frames: &Frames, audio: Option<(&[f32], u32)>, mut source:
     let mut group_slot: BTreeMap<usize, usize> = BTreeMap::new();
     for (i, g) in groups.iter().enumerate() {
         let si = *group_slot.entry(*g).or_insert_with(|| {
-            slots.push(SlotInfo { id: format!("p{:02}", slots.len() + 1), shots: vec![], ref_frame: refs[i], proxy: None });
+            slots.push(SlotInfo { id: format!("p{:02}", slots.len() + 1), shots: vec![], ref_frame: refs[i], proxy: None, role: None });
             slots.len() - 1
         });
         slots[si].shots.push(i + 1);
         shots_out[i].slot = slots[si].id.clone();
     }
 
-    timer.lap("slots");
+    // A static texture: fine detail common to one frame of every picture.
+    let groups: Vec<Vec<usize>> = slots.iter().map(|s| vec![s.ref_frame]).collect();
+    let texture = layers::texture(frames, &groups, &usable).and_then(|t| {
+        if timer.on {
+            eprintln!("  texture presence {:.3}, strength {:.3} stops, coverage {:.2}, {} over {} pictures", t.presence, t.strength, t.coverage, t.blend, groups.len());
+        }
+        layers::texture_info(&t)
+    });
+    timer.lap("slots, texture");
     // Signature curves.
     let mut sig = Signature { f0: a0, ..Default::default() };
     for w in &work {
@@ -955,9 +1021,10 @@ pub fn analyze_frames(frames: &Frames, audio: Option<(&[f32], u32)>, mut source:
         beats,
         shots: shots_out,
         slots,
-        layers: Layers { overlay, vignette },
+        layers: Layers { overlay, vignette, texture },
         signature: sig,
         notes,
+        vision: None,
     };
     Analyzed { analysis, plate, sigs }
 }
@@ -1086,6 +1153,14 @@ pub fn analyze_video(path: &Path, out_dir: Option<&Path>, opts: &AnalyzeOpts) ->
                 save_rgb(&dir.join("overlay.png"), plate.w, plate.h, &plate.rgb)?;
                 o.path = Some("overlay.png".into());
             }
+            if let Some(t) = analysis.layers.texture.as_mut() {
+                let groups: Vec<Vec<usize>> = analysis.slots.iter().map(|s| vec![pos(s.ref_frame)]).collect();
+                if let Some(tex) = layers::texture(&full, &groups, &vec![true; full.w * full.h]) {
+                    let plate = layers::texture_plate(full.w, full.h, &tex);
+                    save_rgb(&dir.join("texture.png"), plate.w, plate.h, &plate.rgb)?;
+                    t.path = Some("texture.png".into());
+                }
+            }
         } else {
             analysis.notes.push("full-resolution frames could not be extracted; proxies and overlay were written at analysis resolution".into());
             for s in analysis.slots.iter_mut() {
@@ -1137,6 +1212,9 @@ pub fn summary(a: &Analysis) -> String {
     if let Some(v) = &a.layers.vignette {
         s += &format!(", vignette amount {:.2} radius {:.2} softness {:.2}", v.amount.value, v.radius.value, v.softness.value);
     }
+    if let Some(t) = &a.layers.texture {
+        s += &format!(", static texture (presence {:.2}, {:.3} stops)", t.presence.value, t.strength.value);
+    }
     s += "\n";
     for sh in &a.shots {
         let ev: Vec<String> = sh
@@ -1147,7 +1225,10 @@ pub fn summary(a: &Analysis) -> String {
                 k => format!("{k}@{}-{}", e.f0, e.f1),
             })
             .collect();
-        let cv: Vec<String> = sh.curves.iter().filter(|c| !c.prop.contains('.') || c.prop.starts_with("gaussian")).map(|c| format!("{}[{}]", c.prop, c.keys.len())).collect();
+        let mut cv: Vec<String> = sh.curves.iter().filter(|c| !c.prop.contains('.') || c.prop.starts_with("gaussian")).map(|c| format!("{}[{}]", c.prop, c.keys.len())).collect();
+        if let Some(k) = sh.blur_kind.as_ref().filter(|k| k.kind != "gaussian") {
+            cv.push(format!("blur:{}{}", k.kind, k.angle.map(|a| format!("@{a:.0}")).unwrap_or_default()));
+        }
         s += &format!(
             "  shot {:2} frames {:4}..{:4} beats {:6.2}..{:6.2} cut {:+.1}f {:10} ref {:4} slot {} {:11} track {:.2} | {} | {}\n",
             sh.id,

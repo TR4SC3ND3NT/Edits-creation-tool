@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use edits_analyze::{compare, draft, media, pipeline, signals, AnalyzeOpts};
+use edits_analyze::{compare, draft, media, pipeline, signals, vision, AnalyzeOpts};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -77,6 +77,11 @@ enum Cmd {
         #[arg(long, default_value_t = 25)]
         top: usize,
     },
+    /// The vision pass: `vision export` writes per-shot strips and a fixed questionnaire for a model, `vision merge` validates the answers and merges them into the analysis
+    Vision {
+        #[command(subcommand)]
+        cmd: VisionCmd,
+    },
     /// Cheap per-frame signature table: luminance, saturation, sharpness, frame difference
     Probe {
         video: PathBuf,
@@ -84,6 +89,39 @@ enum Cmd {
         json: bool,
         #[arg(long, default_value_t = 360)]
         height: u32,
+    },
+}
+
+#[derive(Subcommand)]
+enum VisionCmd {
+    /// Write per-shot strips, detail crops, an overview, questions.json and an answers.json template
+    Export {
+        analysis: PathBuf,
+        /// The reference video [default: the one the analysis names]
+        #[arg(long)]
+        video: Option<PathBuf>,
+        /// Output folder [default: vision/ next to the analysis]
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// Only these shots, e.g. 3,7
+        #[arg(long, value_delimiter = ',')]
+        shots: Vec<usize>,
+        #[arg(long, default_value_t = 180)]
+        tile_height: u32,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Validate a filled answers.json, check it against the signals and merge it into the analysis
+    Merge {
+        analysis: PathBuf,
+        answers: PathBuf,
+        /// Write the merged analysis here instead of in place
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -128,6 +166,26 @@ fn main() -> Result<()> {
                 println!("{}", edits_analyze::jsonfmt::to_string(&c)?);
             } else {
                 print!("{}", compare::report(&c, top));
+            }
+        }
+        Cmd::Vision { cmd: VisionCmd::Export { analysis, video, out, shots, tile_height, json } } => {
+            let a = pipeline::load(&analysis)?;
+            let e = vision::export(&a, &analysis, &vision::ExportOpts { video, out_dir: out, tile_height, shots })?;
+            if json {
+                println!("{}", edits_analyze::jsonfmt::to_string(&e)?);
+            } else {
+                print!("{}", vision::export_summary(&e));
+            }
+        }
+        Cmd::Vision { cmd: VisionCmd::Merge { analysis, answers, out, dry_run, json } } => {
+            let r = vision::merge_file(&analysis, &answers, out.as_deref(), dry_run)?;
+            if json {
+                println!("{}", edits_analyze::jsonfmt::to_string(&r)?);
+            } else {
+                print!("{}", vision::merge_summary(&r));
+                if !dry_run {
+                    println!("wrote {}", out.as_deref().unwrap_or(&analysis).display());
+                }
             }
         }
         Cmd::Probe { video, json, height } => {
