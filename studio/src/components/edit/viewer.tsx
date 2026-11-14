@@ -1,6 +1,7 @@
 import * as React from "react"
 import { CircleAlertIcon } from "lucide-react"
 
+import { AgentViewing } from "@/agent/presence-ui"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Spinner } from "@/components/ui/spinner"
@@ -152,6 +153,7 @@ export function Viewer() {
           </div>
         )}
       </div>
+      <AgentViewing />
       <div className="absolute bottom-3 left-3 flex items-center gap-2">
         {shown != null && shown !== frame && (
           <Badge variant="secondary" className="tabular-nums">

@@ -13,6 +13,7 @@ import {
   ScanIcon,
 } from "lucide-react"
 
+import { AgentRowGlow, AgentTimeMarker } from "@/agent/presence-ui"
 import { KindIcon } from "@/components/edit/kind-icon"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -536,6 +537,9 @@ export function Timeline() {
                       )}
                     </span>
                   </div>
+                  {row.index != null && (
+                    <AgentRowGlow layer={row.id} left={x(row.start)} />
+                  )}
                   {g && (
                     <div
                       className="pointer-events-none absolute inset-y-1 rounded-md border border-dashed border-primary"
@@ -576,6 +580,7 @@ export function Timeline() {
               </div>
             )
           })}
+          <AgentTimeMarker x={(t) => HEADER + x(t)} />
           {/* playhead */}
           <div
             className="pointer-events-none absolute top-0 bottom-0 z-30 w-px bg-primary"

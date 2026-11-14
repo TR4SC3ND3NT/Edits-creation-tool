@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client"
 
 import "./index.css"
 import App from "./App.tsx"
+import { AgentProvider } from "@/agent/store"
 import { ThemeProvider } from "@/components/theme-provider.tsx"
 import { ExternalLinkGuard } from "./components/external-link-guard.tsx"
 import { DebugPanel } from "./components/debug-panel.tsx"
@@ -13,7 +14,9 @@ createRoot(document.getElementById("root")!).render(
       <ExternalLinkGuard />
       {import.meta.env.DEV ? <DebugPanel /> : null}
       <main data-ui-scroll-container>
-        <App />
+        <AgentProvider>
+          <App />
+        </AgentProvider>
       </main>
     </ThemeProvider>
   </StrictMode>
