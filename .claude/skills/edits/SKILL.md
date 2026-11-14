@@ -24,6 +24,7 @@ the shell. They can be mixed: the project file is the only state.
 | Many frames in one image | `edits sheet p.json -o s.png`, then view `s.png` | `render_sheet` (returns the image) |
 | The video | `edits render p.json -o out.mp4` | `render_video`, then `job_status` |
 | Recipe of a reference edit | `edits analyze / vision export / vision merge / draft / compare / probe / fit` | `reference_analyze`, `reference_read`, `reference_vision_export`, `reference_vision_merge`, `reference_draft`, `reference_compare`, `reference_probe`, `project_fit` |
+| Recreate a reference that shows your pictures (trace) | `edits trace / track / measure grade / measure blur / metric` | `reference_trace`, `reference_track`, `reference_measure`, `render_metric` |
 | Song: tempo, bars, kicks, snares, drop | `edits audio song.mp3 -o song.json --project p.json` | `audio_analyze` |
 | Pictures cut to the beat | `edits beats cut p.json --slots a,b,c --every 1 --from 0 --to 16` | `beats_cut` |
 | A hit on every beat / kick / bar | `edits beats accent p.json --preset flash --on downbeats` | `beats_accent` |
@@ -414,6 +415,57 @@ playback through a curve, and push a still picture in instead. More text:
 by word), `jitter_text`, `explode` (`direction=in` implodes), `word_pop`,
 `line_reveal` (`style` slide or swing), `gradient_text` (`cycle` for a
 rainbow), `scramble` (decodes the caption).
+
+## Workflow 2a: recreating a reference (trace first)
+
+Choose the route by the pictures. **The reference shows pictures you have**
+(the same arts, moved, graded, blurred): trace them, this workflow. **The
+pictures differ**: the recipe, Workflow 2. Mixed: trace what you have, and
+`--proxy` + `--fill` for planes you do not have.
+
+One rule above all: only **parameters** come from the reference (corners,
+curves, blur amounts, timings, colours, sizes). Never paste a frame, a crop
+or a patch of the reference into the edit, and no local tone transfer from
+it. `edits metric` reports the author-pixel share; above 15% on a frame,
+find the leak.
+
+1. **Look first.** Extract the reference's frames
+   (`ffmpeg -i ref.mp4 frames/%03d.png`), make sheets
+   (`edits sheet`-style tiles or `ffmpeg ... tile=8x8`) and write down the
+   shots, timings and every element: pictures, text, shapes, lines, flashes,
+   glitches, blur kinds, light. Metrics come later; they point at frames,
+   your eyes say what is wrong.
+2. **Trace.** `edits trace ref.mp4 --arts arts/ -o work/project.json --preview`
+   (MCP: `reference_trace`). It finds each art, tracks it (homographies),
+   measures tone curves and blur, puts cuts on the beat grid and writes a
+   project of pinned image layers (`transform.pin` per frame), then renders,
+   scores and writes `work/trace/worst.jpg` and `side_by_side.mp4`.
+   Arts listed under `arts_not_found` are not in the reference.
+   For a plane that is not among your arts (a card, a photo, a background):
+   `--proxy card=137:176,117,236,328 --fill card=mine.png` (a rectangle of
+   reference frame 137 is the measurement template; your picture is shown).
+   Check a track by eye: `edits track ref.mp4 --art a.png --sheet quads.jpg`.
+3. **Build what is not a picture** from measurements, with the engine's
+   layers: typed captions (text animators, a measured left edge and letter
+   count per frame), shapes (dotted lines, circles, arrows with `glow`),
+   flashes, `glitch_bands`, `shatter`, `pinch`, `film_scratches`, the post
+   look (see EFFECTS.md "Ported from a hand-built edit"). Measure sizes,
+   positions and colours on the reference frames (numbers only).
+4. **Loop**, one cause at a time:
+   ```
+   edits render work/project.json -o work/ours.mp4
+   edits metric work/ours.mp4 ref.mp4 --project work/project.json --sheet work/worst.jpg --side-by-side work/sbs.mp4
+   ```
+   (MCP: `render_video`, then `render_metric` with `project` and `sheet`.)
+   Read `work/worst.jpg` (reference | ours | difference) yourself, crop and
+   zoom where needed. Name the cause: a missing element, the wrong blur kind
+   (`edits measure blur work/ours.mp4 ref.mp4 --frames A-B` gives gaussian,
+   zoom and directional values), a grade (`edits measure grade`), a timing,
+   a glow. If you do not know how the look is made, search the web for the
+   professional technique (After Effects / Alight Motion tutorials), then
+   build it with the engine's effects. Fix it, render, metric, look again.
+   Reject a change that raises SSIM but looks worse (softer than the
+   reference). Report SSIM per block and overall, and the author share.
 
 ## Workflow 2: the recipe of a reference edit, with different pictures
 

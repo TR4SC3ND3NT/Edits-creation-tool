@@ -18,7 +18,18 @@ you name the kinds.
 
 Input (in the task): the video path, the output folder, and the BPM if known.
 
-Steps:
+First look at the reference yourself: extract its frames
+(`ffmpeg -i ref.mp4 <out>/frames/%03d.png`), tile them into sheets and
+list the shots, timings and every element (pictures, text, shapes, lines,
+flashes, glitches, blur kinds). If the task gives pictures that appear in
+the reference, use the trace route instead of steps 2-5:
+`reference_trace` (shell: `edits trace ref.mp4 --arts <dir> -o <out>/project.json --preview`),
+check `arts_not_found`, look at `trace/worst.jpg` and a `reference_track`
+quad sheet for any art with a low ncc, and write in the notes which
+elements are not pictures (they must be built from measurements). Only
+parameters come from the reference, never its pixels.
+
+Steps (recipe route, different pictures):
 1. `reference_probe` to confirm it is a picture-cut edit of this genre.
 2. `reference_analyze` into `<out>/analysis/`, then `job_status` until done.
 3. `reference_read` the summary and shots sections. Note tempo, beat

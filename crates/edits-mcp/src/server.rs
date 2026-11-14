@@ -284,6 +284,76 @@ pub struct DraftArgs {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct TraceArgs {
+    /// The reference video.
+    pub video: String,
+    /// Pictures that appear in the reference: files or folders of PNG/JPEG.
+    pub arts: Option<Vec<String>>,
+    /// The project to write (the track, grade and preview go into trace/ beside it).
+    pub output: String,
+    /// Frames to look in per picture, "NAME=FIRST-LAST[,...]" (default: found by a quick pass).
+    pub windows: Option<Vec<String>>,
+    /// Planes of the reference that are not among the arts, "NAME=FRAME:X,Y,W,H" (a rectangle of that frame, in pixels): tracked as a template, never rendered.
+    pub proxies: Option<Vec<String>>,
+    /// What to show where a proxy was tracked, "NAME=FILE".
+    pub fills: Option<Vec<String>>,
+    /// Render the draft, score it and write a worst-frames sheet and a side-by-side (default true).
+    pub preview: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TrackArgs {
+    /// The reference video.
+    pub video: String,
+    /// Pictures to find (PNG/JPEG files).
+    pub arts: Vec<String>,
+    /// Where to write the track (JSON).
+    pub output: String,
+    /// Frames to look in per picture, "NAME=FIRST-LAST[,...]" (default: every frame).
+    pub windows: Option<Vec<String>>,
+    /// Also write a sheet of frames with the tracked quads drawn on them (.jpg).
+    pub sheet: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MeasureArgs {
+    /// `grade` (tone curves per tracked key; needs `track`) or `blur` (gaussian, zoom and directional blur per frame; needs `render`).
+    pub kind: String,
+    /// The reference video.
+    pub reference: String,
+    /// grade: the track written by reference_track or reference_trace.
+    pub track: Option<String>,
+    /// blur: your render.
+    pub render: Option<String>,
+    /// blur: only these frames, e.g. "100-140,200".
+    pub frames: Option<String>,
+    /// Where to write the result (JSON).
+    pub output: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MetricArgs {
+    /// Your render.
+    pub render: String,
+    /// The reference video.
+    pub reference: String,
+    /// The project the render came from: each worst frame then lists the layers visible at it.
+    pub project: Option<String>,
+    /// Write the worst frames here as reference | ours | difference (.jpg); it comes back as an image.
+    pub sheet: Option<String>,
+    /// Write reference | render as a video here (.mp4), with the reference's sound.
+    pub side_by_side: Option<String>,
+    /// How many worst frames (default 10).
+    pub worst: Option<u32>,
+    /// Named frame ranges to score, "NAME=FIRST-LAST".
+    pub blocks: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CompareArgs {
     /// reference_analysis.json of the reference edit.
     pub analysis: String,
@@ -985,6 +1055,14 @@ impl EditsServer {
                         }
                         Err(_) => format!("{head} completed, but its output is not JSON:\n{}", exec::tail_chars(s.stdout.trim(), 1500)),
                     },
+                    "trace" | "track" | "measure" | "metric" => match serde_json::from_str::<Value>(&s.stdout) {
+                        Ok(r) => {
+                            let brief = trace_brief(s.kind.as_str(), &r);
+                            data["result"] = r;
+                            format!("{head} completed in {:.1} s.\n{brief}", s.elapsed_seconds)
+                        }
+                        Err(_) => format!("{head} completed in {:.1} s\n{}", s.elapsed_seconds, exec::tail_chars(s.stdout.trim(), 1500)),
+                    },
                     _ => format!("{head} completed in {:.1} s\n{}", s.elapsed_seconds, exec::tail_chars(s.stdout.trim(), 1500)),
                 }
             }
@@ -1202,6 +1280,128 @@ impl EditsServer {
         text.push_str("\nNext: point the slots at your pictures (project_edit set_slot), look at a render_sheet, then reference_compare a render against the analysis.");
         let structured = json!({ "project": self.ws.show(&output), "ok": errors == 0 && out.ok(), "findings": findings, "backup": backup.as_ref().map(|b| self.ws.show(b)) });
         Ok(Reply { text, image: None, structured: Some(structured), failed: errors > 0 || !out.ok() })
+    }
+
+    /// Start `args` as a job of `kind` and answer inline when it finishes in time.
+    async fn job_inline(&self, kind: &str, tool: Tool, args: Vec<OsString>, meta: Value, image: Option<PathBuf>) -> Out {
+        let bin = self.bin(tool)?;
+        let job = jobs::start(self.root(), kind, &bin, &args, meta)?;
+        let status = jobs::wait(self.root(), &job, self.config.timeout.saturating_sub(Duration::from_secs(5))).await?;
+        let (text, mut data) = self.job_report(&status, 15);
+        if status.state == State::Running {
+            data["state"] = json!("running");
+            return Ok(Reply::data(format!("{kind} is still running as job {job} ({:.0} s so far). Call job_status with this job id for the result.", status.elapsed_seconds), data));
+        }
+        let failed = data["state"] != "completed";
+        let image = image.filter(|p| !failed && p.is_file()).and_then(|p| images::prepare(&p, images::MAX_TOKENS, images::MAX_BYTES).ok());
+        Ok(Reply { text, image, structured: Some(data), failed })
+    }
+
+    fn out_path(&self, arg: &str, what: &str) -> Result<PathBuf, String> {
+        let p = self.ws.resolve(arg, what)?;
+        if let Some(dir) = p.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", self.ws.show(dir)))?;
+        }
+        Ok(p)
+    }
+
+    async fn trace(&self, a: TraceArgs) -> Out {
+        let video = self.ws.file(&a.video, "video")?;
+        let output = self.out_path(&a.output, "output")?;
+        let mut args: Vec<OsString> = vec!["trace".into(), video.clone().into(), "-o".into(), output.clone().into(), "--json".into()];
+        for art in a.arts.iter().flatten() {
+            let p = self.ws.resolve(art, "arts")?;
+            if !p.exists() {
+                return Err(format!("arts: {} does not exist", self.ws.show(&p)));
+            }
+            args.extend(["--arts".into(), p.into()]);
+        }
+        for w in a.windows.iter().flatten() {
+            args.push(format!("--window={w}").into());
+        }
+        for x in a.proxies.iter().flatten() {
+            args.push(format!("--proxy={x}").into());
+        }
+        for f in a.fills.iter().flatten() {
+            let (name, file) = f.split_once('=').ok_or_else(|| format!("fills: write NAME=FILE, not {f}"))?;
+            let p = self.ws.file(file.trim(), "fills")?;
+            args.push(format!("--fill={}={}", name.trim(), p.display()).into());
+        }
+        if a.arts.as_ref().is_none_or(|v| v.is_empty()) && a.proxies.as_ref().is_none_or(|v| v.is_empty()) {
+            return Err("give `arts` (pictures that appear in the reference) and/or `proxies`".into());
+        }
+        if a.preview.unwrap_or(true) {
+            args.push("--preview".into());
+        }
+        let sheet = output.parent().map(|d| d.join("trace").join("worst.jpg"));
+        let meta = json!({ "video": self.ws.show(&video), "output": self.ws.show(&output) });
+        self.job_inline("trace", Tool::Edits, args, meta, sheet).await
+    }
+
+    async fn track(&self, a: TrackArgs) -> Out {
+        let video = self.ws.file(&a.video, "video")?;
+        let output = self.out_path(&a.output, "output")?;
+        let mut args: Vec<OsString> = vec!["track".into(), video.clone().into(), "-o".into(), output.clone().into(), "--json".into()];
+        for art in &a.arts {
+            args.extend(["--art".into(), self.ws.file(art, "arts")?.into()]);
+        }
+        for w in a.windows.iter().flatten() {
+            args.push(format!("--window={w}").into());
+        }
+        let sheet = a.sheet.as_deref().map(|p| self.out_path(p, "sheet")).transpose()?;
+        if let Some(p) = &sheet {
+            args.extend(["--sheet".into(), p.clone().into()]);
+        }
+        let meta = json!({ "video": self.ws.show(&video), "output": self.ws.show(&output) });
+        self.job_inline("track", Tool::Edits, args, meta, sheet).await
+    }
+
+    async fn measure(&self, a: MeasureArgs) -> Out {
+        let reference = self.ws.file(&a.reference, "reference")?;
+        let output = self.out_path(&a.output, "output")?;
+        let args: Vec<OsString> = match a.kind.as_str() {
+            "grade" => {
+                let track = self.ws.file(a.track.as_deref().ok_or("grade needs `track` (from reference_track or reference_trace)")?, "track")?;
+                vec!["measure".into(), "grade".into(), reference.clone().into(), "--track".into(), track.into(), "-o".into(), output.clone().into()]
+            }
+            "blur" => {
+                let render = self.ws.file(a.render.as_deref().ok_or("blur needs `render` (your render to compare)")?, "render")?;
+                let mut v: Vec<OsString> = vec!["measure".into(), "blur".into(), render.into(), reference.clone().into(), "-o".into(), output.clone().into()];
+                if let Some(f) = &a.frames {
+                    v.push(format!("--frames={f}").into());
+                }
+                v
+            }
+            other => return Err(format!("kind: `grade` or `blur`, not `{other}`")),
+        };
+        let meta = json!({ "reference": self.ws.show(&reference), "output": self.ws.show(&output) });
+        let mut r = self.job_inline("measure", Tool::Edits, args, meta, None).await?;
+        if !r.failed {
+            r.text.push_str(&format!("\nwritten to {}: per key, ready-to-paste effect keys (`effects` per art for grade; gaussian, zoom and directional values per frame for blur).", self.ws.show(&output)));
+        }
+        Ok(r)
+    }
+
+    async fn metric(&self, a: MetricArgs) -> Out {
+        let render = self.ws.file(&a.render, "render")?;
+        let reference = self.ws.file(&a.reference, "reference")?;
+        let mut args: Vec<OsString> = vec!["metric".into(), render.clone().into(), reference.clone().into(), "--json".into()];
+        args.push(format!("--worst={}", a.worst.unwrap_or(10).clamp(1, 40)).into());
+        if let Some(p) = &a.project {
+            args.extend(["--project".into(), self.ws.file(p, "project")?.into()]);
+        }
+        let sheet = a.sheet.as_deref().map(|p| self.out_path(p, "sheet")).transpose()?;
+        if let Some(p) = &sheet {
+            args.extend(["--sheet".into(), p.clone().into()]);
+        }
+        if let Some(p) = &a.side_by_side {
+            args.extend(["--side-by-side".into(), self.out_path(p, "side_by_side")?.into()]);
+        }
+        for b in a.blocks.iter().flatten() {
+            args.push(format!("--block={b}").into());
+        }
+        let meta = json!({ "render": self.ws.show(&render), "reference": self.ws.show(&reference) });
+        self.job_inline("metric", Tool::Edits, args, meta, sheet).await
     }
 
     async fn compare(&self, a: CompareArgs) -> Out {
@@ -1508,6 +1708,42 @@ impl EditsServer {
     }
 
     #[tool(
+        name = "reference_trace",
+        description = "The trace method, for a reference that shows pictures you have (the same arts, moved, graded, blurred): find each art in the reference, track it frame by frame (homographies), measure its tone curves, and write a draft project of pinned image layers (transform.pin keyed per frame, curves and blur keys), cuts near the beat grid. `proxies` track a plane of the reference that is not among your arts (the template is never rendered) and `fills` put your picture there. With preview (default) it also renders the draft, scores it and returns the worst-frames sheet. Long: runs as a job (poll job_status).",
+        annotations(title = "Trace reference (background job)", read_only_hint = false, destructive_hint = true, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn reference_trace(&self, Parameters(a): Parameters<TraceArgs>) -> CallToolResult {
+        finish(self.trace(a).await)
+    }
+
+    #[tool(
+        name = "reference_track",
+        description = "Find known pictures in a reference frame by frame: per art and frame a homography, the four corners in composition units (ready for a layer's transform.pin) and a correlation. Optionally a sheet with the quads drawn on the frames. Runs as a job.",
+        annotations(title = "Track pictures (background job)", read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn reference_track(&self, Parameters(a): Parameters<TrackArgs>) -> CallToolResult {
+        finish(self.track(a).await)
+    }
+
+    #[tool(
+        name = "reference_measure",
+        description = "Measure the reference as effect parameters, never pixels. kind `grade`: per tracked key, red/green/blue tone curves (`curves` keys) and a gaussian blur that turn the clean art into its look in the reference. kind `blur`: per frame, the gaussian, zoom (strength, centre) and directional (length, angle) blur that bring your render closest to the reference.",
+        annotations(title = "Measure grade or blur", read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn reference_measure(&self, Parameters(a): Parameters<MeasureArgs>) -> CallToolResult {
+        finish(self.measure(a).await)
+    }
+
+    #[tool(
+        name = "render_metric",
+        description = "Score a render against its reference frame by frame at the reference's size: SSIM per frame (after a 2 px blur, as the trace method measures), its mean, the worst frames (with the project's layers visible at each, given `project`), and the author-pixel audit (share of mid-tone pixels equal to the reference's within 4/255; well above 15% means reference pixels leak into the render). `sheet` returns the worst frames as reference | ours | difference: look at it before changing anything.",
+        annotations(title = "Score render against reference", read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn render_metric(&self, Parameters(a): Parameters<MetricArgs>) -> CallToolResult {
+        finish(self.metric(a).await)
+    }
+
+    #[tool(
         name = "reference_vision_export",
         description = "The vision pass, step 1: write per-shot labelled strips (previous frame, cut, cut+1, cut+2, reference frame, last frame, and every frame around a flash or tone hit), full-resolution detail crops, an overview of all shots (returned as an image), questions.json (fixed questions Q1-Q8 with their only allowed words: picture kind, framing and border, tone, light, motion kind, blur kind, overlays, entry) and an answers.json template. Look at the images, fill answers.json, then reference_vision_merge.",
         annotations(title = "Export frames for the vision pass", read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
@@ -1636,5 +1872,31 @@ impl ServerHandler for EditsServer {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("edits-mcp", env!("CARGO_PKG_VERSION")))
             .with_instructions(INSTRUCTIONS)
+    }
+}
+
+/// One or two lines about a trace, track, measure or metric result.
+fn trace_brief(kind: &str, r: &Value) -> String {
+    match kind {
+        "trace" => {
+            let layers: Vec<String> = r["layers"].as_array().into_iter().flatten().map(|l| format!("{} {} ncc {}", l["id"].as_str().unwrap_or(""), l["frames"], l["mean_ncc"])).collect();
+            let mut t = format!("project {}; layers: {}", r["project"].as_str().unwrap_or("?"), if layers.is_empty() { "none".into() } else { layers.join(", ") });
+            if let Some(nf) = r["arts_not_found"].as_array().filter(|v| !v.is_empty()) {
+                t += &format!("\nnot found in the reference: {}", nf.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "));
+            }
+            if let Some(p) = r.get("preview") {
+                t += &format!("\ndraft SSIM {}, author pixels {}, worst frames {}; side by side {}. Look at the worst-frames sheet, then fix the cause.", p["ssim_mean"], p["author_share_mean"], p["worst_frames"], p["side_by_side"].as_str().unwrap_or(""));
+            }
+            t
+        }
+        "track" => r["arts"].as_array().into_iter().flatten().map(|a| format!("{}: {} keys ({} found, {} filled), {} missing, mean ncc {}", a["art"].as_str().unwrap_or(""), a["keys"], a["found"], a["filled"], a["missing"], a["mean_ncc"])).collect::<Vec<_>>().join("\n"),
+        "metric" => {
+            let worst: Vec<String> = r["worst"].as_array().into_iter().flatten().map(|f| match f.get("layers") {
+                Some(l) => format!("f{} {} {}", f["frame"], f["ssim"], l),
+                None => format!("f{} {}", f["frame"], f["ssim"]),
+            }).collect();
+            format!("SSIM mean {} (min {}), author pixels mean {} max {}, {} frames over 15%\nworst: {}", r["ssim_mean"], r["ssim_min"], r["author_share_mean"], r["author_share_max"], r["author_frames_over_15"].as_array().map(|v| v.len()).unwrap_or(0), worst.join("; "))
+        }
+        _ => exec::tail_chars(&r.to_string(), 600),
     }
 }

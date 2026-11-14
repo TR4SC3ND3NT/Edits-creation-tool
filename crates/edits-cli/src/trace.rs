@@ -185,7 +185,7 @@ pub fn track(a: TrackArgs) -> Result<ExitCode> {
     let frames = media::decode_frames(&a.video, &info, info.height)?;
     let last = std::sync::Mutex::new(String::new());
     let progress = |name: &str, f: usize| {
-        if f % 24 == 0 {
+        if f.is_multiple_of(24) {
             let mut l = last.lock().unwrap();
             let s = format!("{name} {f}");
             if *l != s {

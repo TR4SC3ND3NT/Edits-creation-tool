@@ -57,6 +57,16 @@ conversation. Ask for at most 200 words back plus file paths and JSON
 pointers. Never ask a helper to send you an image; open a file yourself only
 when you must see it, and prefer one sheet at low scale.
 
+Recreating a reference: if it shows pictures you have, trace (skill,
+Workflow 2a): `reference_trace` gives a draft of pinned, graded layers on
+the beat grid and a scored preview; build the rest (text, shapes, glows,
+glitches, shards) from measurements. Then loop, one cause at a time:
+render, `render_metric` with `project` and `sheet`, look at the worst
+frames (reference | ours | difference) yourself, name the cause, search
+for the technique if you do not know it, fix, repeat. Never put reference
+pixels in the edit (frames, crops, local tone transfer); keep the
+author-pixel share under 15%. Report SSIM overall and per block.
+
 Numbers decide amounts, pictures decide kinds. Fix the largest compare
 differences first, one or two at a time; after each round run
 reference_compare with `sheet` and read the worst page yourself: a wrong kind

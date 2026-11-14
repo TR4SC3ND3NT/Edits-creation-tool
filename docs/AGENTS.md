@@ -57,6 +57,10 @@ files, D = can overwrite or remove something.
 | `project_undo(project)` | D | Restore the version before the newest edit in the shared history (yours or the person's) |
 | `reference_analyze(video, out_dir, bpm?, beat_offset?, whole?)` | W | Background job: extract the recipe of a finished edit |
 | `reference_compare(analysis, video, top?, sheet?, sheet_shots?)` | R | Scores and ranked differences in signature space; with `sheet`, side-by-side pairs (reference left, render right, worst shots first), the first page returned as an image |
+| `reference_trace(video, output, arts?, windows?, proxies?, fills?, preview?)` | W | The trace method in one call (a job): find and track the arts, measure their curves, draft a project of pinned layers on the beat grid; with preview, render, score and return the worst-frames sheet |
+| `reference_track(video, arts, output, windows?, sheet?)` | W | Per art and frame a homography and the corners for `transform.pin` (a job) |
+| `reference_measure(kind, reference, output, track?, render?, frames?)` | W | `grade`: tone curves and blur per tracked key; `blur`: gaussian, zoom and directional blur per frame, as effect keys |
+| `render_metric(render, reference, project?, sheet?, side_by_side?, worst?, blocks?)` | W | Per-frame SSIM against the reference, the worst frames (with the layers visible at each) and the author-pixel audit; the sheet comes back as an image |
 | `reference_draft(analysis, output, proxies?, width?, height?, single_loop?, no_snap?)` | D | Write a project that replays an analysed recipe |
 | `reference_probe(video, from_frame?, to_frame?)` | R | Per-frame luminance, saturation, sharpness, difference: summarised |
 | `reference_read(analysis, section?, shot?, pointer?)` | R | One section of an analysis instead of the whole file |

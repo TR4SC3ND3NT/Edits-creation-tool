@@ -186,7 +186,7 @@ pub fn trace_cmd(a: TraceArgs) -> Result<ExitCode> {
     }
     let (present, absent): (Vec<planar::Art>, Vec<planar::Art>) = arts.into_iter().partition(|x| !x.windows.is_empty());
     let progress = |name: &str, f: usize| {
-        if f % 48 == 0 {
+        if f.is_multiple_of(48) {
             eprintln!("tracking {name} at frame {f}");
         }
     };

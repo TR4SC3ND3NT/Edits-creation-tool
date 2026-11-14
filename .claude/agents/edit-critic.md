@@ -27,6 +27,12 @@ Check all of these, every time, and report on each even when it passes:
    glow on the same instant and about as strong? same tone (inverted,
    threshold, duotone, black and white)? same motion and direction? same
    blur kind? same overlays and vignette?
+2b. For a recreation (a reference showing the same pictures): `render_metric`
+   with `project` and `sheet`; read the worst-frames sheet (reference |
+   ours | difference) and name the cause per frame (missing element, blur
+   kind, grade, timing, glow), with the layers it lists. Flag any frame
+   whose author-pixel share is above 15% as a blocker: reference pixels
+   must never be in the edit.
 3. A 16-frame sheet of the whole edit: crops that cut faces, pictures showing
    edges, empty slots, slots whose picture does not fit their `role`,
    overlays that wash out the pictures.

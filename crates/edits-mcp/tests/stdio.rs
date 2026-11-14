@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 const SERVER: &str = env!("CARGO_BIN_EXE_edits-mcp");
 
-const TOOLS: [&str; 27] = [
+const TOOLS: [&str; 31] = [
     "audio_analyze",
     "beats_accent",
     "beats_cut",
@@ -41,11 +41,15 @@ const TOOLS: [&str; 27] = [
     "reference_analyze",
     "reference_compare",
     "reference_draft",
+    "reference_measure",
     "reference_probe",
     "reference_read",
+    "reference_trace",
+    "reference_track",
     "reference_vision_export",
     "reference_vision_merge",
     "render_frame",
+    "render_metric",
     "render_sheet",
     "render_video",
     "ui_context",

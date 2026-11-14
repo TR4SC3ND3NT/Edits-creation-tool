@@ -686,16 +686,32 @@ pub fn draft(track: &Track, grade: Option<&Grade>, o: &DraftOpts) -> (Value, Val
         if let Some(g) = grade.and_then(|g| g.arts.iter().find(|a| &a.art == name)) {
             let ks: Vec<&GradeKey> = g.keys.iter().filter(|k| (first..=last).contains(&k.frame)).collect();
             if !ks.is_empty() {
-                let keyed = |f: &dyn Fn(&GradeKey) -> Value| -> Value {
-                    if ks.len() == 1 {
-                        f(ks[0])
-                    } else {
-                        json!({ "keys": ks.iter().map(|k| json!({ "t": k.t, "v": f(k) })).collect::<Vec<_>>() })
+                // Per-frame measurements are noisy: a value that barely moves over the
+                // run becomes one constant (its median), one that moves is a running
+                // median over 5 keys, keyed every 3rd frame.
+                let keyed = |f: &dyn Fn(&GradeKey) -> Vec<f64>, tol: f64| -> Value {
+                    let vals: Vec<Vec<f64>> = ks.iter().map(|k| f(k)).collect();
+                    let n = vals[0].len();
+                    let med = |rows: &[Vec<f64>]| -> Vec<f64> { (0..n).map(|c| crate::img::median(&rows.iter().map(|r| r[c]).collect::<Vec<_>>())).map(r4).collect() };
+                    let all = med(&vals);
+                    let flat = vals.iter().all(|v| v.iter().zip(&all).all(|(a, b)| (a - b).abs() <= tol));
+                    if ks.len() == 1 || flat {
+                        return if n == 1 { json!(all[0]) } else { json!(all) };
                     }
+                    let mut keys = Vec::new();
+                    for i in (0..ks.len()).step_by(3).chain(std::iter::once(ks.len() - 1)) {
+                        if keys.last().is_some_and(|(j, _): &(usize, Value)| *j == i) {
+                            continue;
+                        }
+                        let (a, b) = (i.saturating_sub(2), (i + 3).min(ks.len()));
+                        let m = med(&vals[a..b]);
+                        keys.push((i, json!({ "t": ks[i].t, "v": if n == 1 { json!(m[0]) } else { json!(m) } })));
+                    }
+                    json!({ "keys": keys.into_iter().map(|(_, k)| k).collect::<Vec<_>>() })
                 };
-                effects.push(json!({ "kind": "curves", "params": { "red": keyed(&|k| json!(k.red)), "green": keyed(&|k| json!(k.green)), "blue": keyed(&|k| json!(k.blue)) } }));
+                effects.push(json!({ "kind": "curves", "params": { "red": keyed(&|k| k.red.clone(), 0.03), "green": keyed(&|k| k.green.clone(), 0.03), "blue": keyed(&|k| k.blue.clone(), 0.03) } }));
                 if ks.iter().any(|k| k.blur > 0.0) {
-                    effects.push(json!({ "kind": "gaussian_blur", "params": { "radius": keyed(&|k| json!(k.blur)) } }));
+                    effects.push(json!({ "kind": "gaussian_blur", "params": { "radius": keyed(&|k| vec![k.blur], 0.05) } }));
                 }
             }
         }
@@ -750,6 +766,35 @@ mod tests {
         let o: Vec<u8> = r.iter().map(|v| v + 20).collect();
         assert_eq!(author_share(&r, &o), Some(0.0));
         assert_eq!(author_share(&[0u8; 300], &[0u8; 300]), None);
+    }
+
+    #[test]
+    fn a_draft_pins_each_run_and_snaps_cuts_to_beats() {
+        let key = |frame: usize, x: f64| planar::TrackKey {
+            frame,
+            t: frame as f64 / 24.0,
+            h: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            corners: Some([x - 0.3, -0.2, x + 0.3, -0.2, x + 0.3, 0.2, x - 0.3, 0.2]),
+            pin: [0.6, 0.0, x - 0.3, 0.0, 0.4, -0.2, 0.0, 0.0, 1.0],
+            ncc: 0.9,
+            inliers: 20,
+            method: "features".into(),
+        };
+        let art = planar::ArtTrack { name: "a".into(), path: "arts/a.png".into(), size: [600, 400], windows: vec![[0, 30]], keys: vec![key(0, 0.0), key(1, 0.01), key(2, 0.02), key(10, 0.1), key(11, 0.1)], missing: vec![] };
+        let small = planar::ArtTrack { name: "b".into(), path: "arts/b.png".into(), size: [100, 100], windows: vec![], keys: vec![], missing: vec![] };
+        let tr = Track { format: planar::FORMAT.into(), video: planar::VideoMeta { path: "ref.mp4".into(), width: 576, height: 576, fps: 24.0, frames: 30 }, arts: vec![art, small] };
+        let o = DraftOpts { width: 576, height: 576, fps: 24.0, duration: 1.25, audio: None, beats: Some((120.0, 0.0, vec![0.0, 0.5, 1.0])), rel: Box::new(|p: &str| p.to_string()), samples: 4 };
+        let (p, report) = draft(&tr, None, &o);
+        let layers = p["layers"].as_array().unwrap();
+        assert_eq!(layers.len(), 2, "{p}");
+        let by_id = |id: &str| layers.iter().find(|l| l["id"] == id).unwrap().clone();
+        assert_eq!(by_id("a_1")["transform"]["pin"]["keys"].as_array().unwrap().len().max(by_id("a_2")["transform"]["pin"]["keys"].as_array().unwrap().len()), 3);
+        // Frame 10 starts at 0.4167 s, within 1.5 frames of no beat; frame 12 ends at 0.5 s, on a beat.
+        assert!(layers.iter().any(|l| l["out"] == json!(0.5)), "{p}");
+        assert_eq!(report["arts_not_found"], json!(["b"]));
+        let project = edits_core::Project::from_json(&p.to_string()).unwrap();
+        let findings = edits_core::check::check(&project, None);
+        assert!(findings.iter().all(|f| f.severity != edits_core::check::Severity::Error), "{findings:?}");
     }
 
     #[test]

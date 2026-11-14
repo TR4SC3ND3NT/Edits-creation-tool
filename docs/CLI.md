@@ -35,6 +35,10 @@ preview of the full one.
 | [`vision merge`](#vision-export-and-vision-merge) | Validate the answers, check them against the signals, merge them into the analysis |
 | [`probe`](#probe) | Per-frame signatures of a video |
 | [`fit`](#fit) | Tune a project's effect values until its render matches a reference |
+| [`trace`](#trace) | Reference + the arts in it → a draft of pinned, graded layers (and a scored preview) |
+| [`track`](#track) | Find known pictures in a reference, frame by frame: homographies and corner pins |
+| [`measure`](#measure) | Tone curves per tracked key (`grade`), blur per frame (`blur`), as effect keys |
+| [`metric`](#metric) | Per-frame SSIM against the reference, worst frames on a sheet, the author-pixel audit |
 | [`audio`](#audio) | Song → tempo, beat grid, bars, kick/snare/hat onsets, energy, sections, the drop |
 | [`presets`](#presets) | The preset library: flashes, punches, shakes, slides, 3D flips, transitions... |
 | [`apply`](#apply) | Apply a preset at one or more times, as one undoable edit |
@@ -441,6 +445,105 @@ minutes on four CPU cores. Details and measured accuracy: [CALIBRATION.md](CALIB
 $ edits fit edit/project.json -r an/reference_analysis.json --dry-run
   shot  2 shot02     frames   25..  43: 9 params, 10 renders, objective 1.734 -> 1.576
   shot02 exposure_decay: exposure.stops key 2 decay rate: 0.21 -> 0.394
+```
+
+## trace
+
+```
+edits trace <reference> --arts <file|dir>... -o <project.json> [--window NAME=A-B,...] [--proxy NAME=FRAME:X,Y,W,H --fill NAME=FILE] [--min-ncc 0.5] [--ignore dark,red] [--width W --height H] [--no-audio] [--preview] [--json]
+```
+
+The start of the trace method ([ANALYSIS.md](ANALYSIS.md#trace-or-recipe)):
+for a reference that shows pictures you have. Finds each art (a quick
+keypoint pass over every third frame, unless `--window` says where), tracks
+it, measures its tone curves and blur, finds the beat grid of the
+reference's sound and writes a project: one image layer per run of tracked
+frames with `transform.pin` keyed per frame, `curves` and `gaussian_blur`
+on it, cuts moved onto the beat when within 1.5 frames, the reference's
+sound as `audio`. `--proxy` takes a rectangle of a reference frame as a
+template for a plane that is not among the arts (it is never rendered);
+`--fill` puts your picture on that plane. `--preview` renders the draft,
+scores it like `metric` and writes `trace/worst.jpg` and
+`trace/side_by_side.mp4`. Beside the project, `trace/` holds `track.json`
+and `grade.json`.
+
+```
+$ edits trace ref.mp4 --arts arts -o draft/project.json --preview
+a10_1: a10 frames [81,119] ncc 1.0
+a12_1: a12 frames [0,40] ncc 0.88
+a04_1: a04 frames [41,80] ncc 0.94
+a18_1: a18 frames [12,40] ncc 0.99
+not found in the reference: a05
+draft SSIM 0.976 (author pixels 0.4104), worst frames [58,50,54,55,57,59,51,52]
+sheet "draft/trace/worst.jpg", side by side "draft/trace/side_by_side.mp4"
+wrote draft/project.json
+```
+
+(A 5-second synthetic reference made with the engine from four of the
+arts: the draft scores 0.976. The author-pixel share is high here because
+the "reference" was rendered from the very same files.)
+
+## track
+
+```
+edits track <reference> --art <png>... [--window NAME=A-B,...] [--min-ncc 0.5] [--max-gap 8] [--smooth 5] [--ignore dark,red] [--features 1500] [-o track.json] [--sheet quads.jpg] [--json]
+```
+
+Per art and frame, a homography found by keypoints and RANSAC, refined on
+pixels (ECC-style), checked by correlation; gaps filled, corners smoothed.
+Without `-o` the track (`edits.track/1`) goes to stdout. `--sheet` draws the
+quads on the frames (red: filled). The `corners` of a key are the value of
+a layer's `transform.pin` at `t`.
+
+```
+$ edits track pin.mp4 --art a04.png -o track.json
+a04: 48 keys (48 found, 0 filled), 0 missing, mean ncc 0.995
+wrote track.json
+```
+
+## measure
+
+```
+edits measure grade <reference> --track track.json [--points 9] [--every 1] [-o grade.json]
+edits measure blur <render> <reference> [--frames 100-140,200] [--min-gain 0.01] [-o blur.json]
+```
+
+`grade`: per tracked key, red, green and blue tone curves (`curves` points)
+that turn the clean picture into its look in the reference, and the
+Gaussian blur that explains its softness; `arts[].effects` are ready to
+paste. `blur`: per frame, the `gaussian_blur`, `zoom_blur` and
+`directional_blur` values that bring the render closest to the reference
+(frames where blur does not help by `--min-gain` are left out).
+
+## metric
+
+```
+edits metric <render> <reference> [--pre-blur 2] [--worst 12] [--sheet worst.jpg] [--project project.json] [--side-by-side sbs.mp4] [--block NAME=A-B]... [-o frames.json] [--json]
+```
+
+The render is decoded at the reference's size and frame rate. Per frame:
+SSIM of the luma after a Gaussian of `--pre-blur` px, the colour error and
+the author-pixel share (mid-tone pixels equal to the reference's within
+4/255; above 15% means reference pixels may be leaking in). `--sheet`: the
+worst frames as reference | ours | difference. `--project`: each worst frame
+lists the layers visible at it. `--side-by-side`: reference | render, with
+the reference's sound.
+
+```
+$ edits metric draft/trace/draft.mp4 ref.mp4 --project draft/project.json --worst 4 --sheet w.jpg
+120 frames at 576x576, pre-blur 2 px
+SSIM mean 0.976, min 0.952; colour error 3.8/255
+author pixels: mean 41.4%, max 70.6%, 80 frames over 15%
+worst frames:
+  f58   ( 2.42 s)  SSIM 0.952  colour error 4.8
+  f50   ( 2.08 s)  SSIM 0.953  colour error 4.5
+  f54   ( 2.25 s)  SSIM 0.953  colour error 4.7
+  f57   ( 2.38 s)  SSIM 0.953  colour error 4.8
+sheet: w.jpg
+  f58 layers: ["a04_1"]
+  f50 layers: ["a04_1"]
+  f54 layers: ["a04_1"]
+  f57 layers: ["a04_1"]
 ```
 
 ## audio

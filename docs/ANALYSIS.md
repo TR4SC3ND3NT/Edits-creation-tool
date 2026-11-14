@@ -47,6 +47,117 @@ given a `pipeline::ShotContext` from a whole-clip analysis: what
 Accuracy per estimator, measured against generated recipes with known
 parameters, and automatic fitting of a draft are in [CALIBRATION.md](CALIBRATION.md).
 
+## Trace or recipe
+
+Two ways to start from a reference:
+
+- **Trace** (`edits trace`, `edits track`, `edits measure`, `edits metric`),
+  when the reference shows **pictures you have** (the same arts, moved,
+  graded, blurred, perhaps cropped). Each picture is found in every frame
+  and its exact place is measured as a homography; the draft pins your
+  copy of the picture to those corners, frame by frame, with the measured
+  tone curves and blur. 3D moves, card flips and perspective come out
+  exactly, because they are measured, not classified. This is how a
+  hand-made recreation reached SSIM 0.88 over every frame of a 3D edit.
+- **Recipe** (`analyze`, `draft`, `compare`, below), when the pictures are
+  different. The recipe (cuts, flashes, motion kinds, blur, tone hits) is
+  measured independently of the pictures and replayed with yours.
+
+A mix is common: `edits trace --proxy` tracks a plane of the reference
+that is not among your pictures (a photo, a card, a background), using a
+rectangle of a reference frame as a **measurement template only**, and
+`--fill` shows your picture on that plane. Graphics that are not pictures
+(text, shapes, lines, glows) are built from their measurements (sizes,
+positions, colours per frame) with the engine's layers and effects.
+
+**The rule.** Only parameters come from the reference: homographies,
+curves, blur amounts, timings, colours, sizes. Never pixels: no frame,
+crop, patch or local tone transfer of the reference goes into a render.
+`edits metric` audits it: the share of mid-tone pixels that equal the
+reference's within 4/255 stays near 10% for a render built from parameters
+(it rises for a near-exact trace with the same arts and a clean source,
+and to 50-90% where reference pixels leak in); above 15% on a frame, find
+out why.
+
+### The loop
+
+```
+edits trace ref.mp4 --arts arts/ -o work/project.json --preview
+#   finds each art (quick pass), tracks it, measures its curves and blur,
+#   snaps cuts within 1.5 frames of the beat grid, writes the project and
+#   trace/{track.json, grade.json, draft.mp4, worst.jpg, side_by_side.mp4}
+#   look at trace/worst.jpg and the reference frames yourself
+edits render work/project.json -o work/ours.mp4
+edits metric work/ours.mp4 ref.mp4 --project work/project.json --sheet work/worst.jpg --side-by-side work/sbs.mp4
+#   per-frame SSIM, the worst frames with the layers visible there, the audit
+edits measure blur work/ours.mp4 ref.mp4 --frames 100-140 -o work/blur.json
+#   blur keys where the reference is softer than the render
+```
+
+Then repeat: look at the worst frames (reference | ours | difference)
+yourself, name the cause (a missing layer, a wrong blur kind, a glow, a
+grade, a timing), search for how the effect is done professionally if it
+is not obvious, fix that one thing, render, `metric`, look again. Metrics
+point at frames; your eyes decide what is wrong. A change that raises SSIM
+but looks worse (blurrier than the reference) is rejected.
+
+### What each step does
+
+**`edits track`** (`planar` module). Per picture and frame: keypoints
+(Harris corners on a sqrt(2) pyramid, orientation, a SIFT-like 4x4x8
+gradient descriptor; the frame is detected at twice its size when it is
+small), matched with the ratio test, a homography by seeded RANSAC; then
+the same homography refined on pixels (`homography::refine`: Gauss-Newton
+on the 8 parameters plus a gain and an offset, Huber weights against
+overlays and occluders, three blur stages, 3 to 0.7 px). The previous
+frame's result refined the same way competes, and the better normalised
+correlation (NCC) wins; below `--min-ncc` (0.5) the frame is not trusted.
+A backward pass carries trusted frames into the frames before them. Gaps
+up to `--max-gap` frames (motion blur breaks tracking) are filled by
+interpolating the corners, then the corners are smoothed (Savitzky-Golay,
+`--smooth 5`). `--ignore dark,red` leaves black or red frame pixels out of
+the refinement (vignettes, red arrows drawn over the picture). On a
+synthetic 6-frame warp the corners land within 0.1 px; through H.264 at
+576 px, within 0.15 px.
+
+The track (`edits.track/1`): per art, its `windows` and `keys`, each with
+`frame`, `t` (seconds), `h` (picture pixels to frame pixels, pixel-edge
+coordinates), `corners` (composition units: the value of a layer's
+`transform.pin`), `pin` (the same as a 3x3 matrix), `ncc`, `inliers` and
+`method` (`features`, `propagated` or `filled`). `--sheet` draws the quads
+on the frames (red = filled): look at it.
+
+**`edits measure grade`.** Per tracked key, the picture is warped into the
+frame and its pixels matched to the reference's by quantiles, per channel
+(64 quantiles, resampled to `--points` curve points), after the Gaussian
+blur (0 to 6 px) that leaves the least error; pictures tracked over it
+(smaller ones in the same frame) are left out. The result is `curves` and
+`gaussian_blur` keys per key, ready to paste (`arts[].effects`). With a
+different picture (a `--fill`) the same matching gives a tone curve per
+key: one look per shot, from the reference's colours only.
+
+**`edits measure blur`.** Per frame, on top of a render: the Gaussian, then
+the zoom blur (strength, one of 9 centres), then the directional blur
+(length, angle) that raise SSIM against the reference most, in the engine's
+units, measured at half size.
+
+**`edits metric`.** Both videos decoded at the reference's size and frame
+rate; per frame the SSIM of the BT.601 luma after a Gaussian of
+`--pre-blur` px (2: placement and shape, not grain), the mean colour
+error and the author-pixel share; the mean, the worst frames (with
+`--project`, the layers visible at each), `--block NAME=A-B` means, a sheet
+of the worst frames and a side-by-side video.
+
+**`edits trace`.** All of the above in one command: windows by a quick
+pass over every third frame (an art never found is listed under
+`arts_not_found`), `track`, `measure grade`, the song's beat grid from the
+reference's sound, and a draft: one image layer per run of tracked frames,
+pinned per frame, larger pictures beneath smaller ones, `curves` and
+`gaussian_blur` keyed on each, `in`/`out` moved onto a beat when within
+1.5 frames, the reference's sound as `audio`, motion blur 8 samples. What
+the draft lacks is what is not a tracked picture: text, shapes, flashes,
+glitches, light. Add those from your measurements, then loop.
+
 ## Stages
 
 | Stage (module) | What it measures | How | Known failure modes |
