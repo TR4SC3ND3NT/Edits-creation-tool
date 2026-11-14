@@ -91,8 +91,11 @@ header, and the page.
   last frame took, the frame cache, the state of the audio and the theme.
 - **Header.** The sidebar toggle, the page's title, `folder / project.json`,
   a `rev N` badge (a counter of loaded versions) and a red `N errors` badge
-  while the file on disk has errors; on the right *Search commands…* (Ctrl+K)
-  and Undo / Redo, whose tooltips name the edit and who made it.
+  while the file on disk has errors; on the right *Search commands…* (Ctrl+K),
+  the note for the agent (a speech bubble: *Tell the agent*, a text box,
+  **Save note** or Ctrl+Enter, **Clear**; the note goes into `ui.json` as
+  `note` and `note_at`) and Undo / Redo, whose tooltips name the edit and who
+  made it.
 
 The theme is shadcn's dark neutral theme (`--background`, `--card`,
 `--muted`, `--border`, `--primary` of `studio/src/index.css`, as the template
@@ -387,9 +390,9 @@ example after picking `position` on layer `d` at frame 60:
   names, cube faces, text, particles, shapes, masks, shake and loop modifiers
   (their values under the shake can be edited), custom shaders' `source`,
   slot paths; the agent or a text editor does those and the studio follows.
-- No song analysis lane, cut-on-beats or accent dialogs yet, and no note box
-  for the agent (`ui.json` has no `note` from the studio); the egui window has
-  them.
+- No song analysis lane, cut-on-beats or accent dialogs yet; the egui window
+  has them. The agent is not told that there is a note: say "see my note" in
+  your chat.
 - No preview of a preset or of a value while dragging a slider: the change is
   rendered once it is written.
 - No waveform on the timeline. Audio plays through the webview: it needs
@@ -400,7 +403,9 @@ example after picking `position` on layer `d` at frame 60:
   actor `window`, `ui.json` updated), an agent's `project_edit` while open
   (reloaded, toast with Undo), dragging a key on the timeline, Ctrl+Z, the
   command palette, rendering from the Renders page, two comparisons on the
-  Reference page and *Jump to*, a preset from the Presets sheet. Not run on
+  Reference page and *Jump to*, a preset from the Presets sheet, playback,
+  a note for the agent (read back by `ui_context`), the release build started
+  through `edits gui`, and the debug panel of `bun run tauri dev` (Ctrl+D). Not run on
   Wayland, macOS or Windows, or on a HiDPI screen; audio could not be heard
   where it was developed.
 

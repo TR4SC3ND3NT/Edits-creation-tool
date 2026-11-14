@@ -371,8 +371,6 @@ has no `main`-only assumptions, so a subcommand of another binary can call it.
 - MCP tasks (the `io.modelcontextprotocol/tasks` extension) are not used;
   jobs are ordinary tools, which every client can call.
 - No MCP resources or prompts; the skill is a file, not served over MCP.
-- Edits Studio writes `.edits/ui.json` without a `note` (it has no note box
-  yet); the egui window writes the note too.
 - Presets are applied, not previewed: there are no poster images; look with
   `render_sheet` after `preset_apply` (`dry_run` reports the changes only).
 - No tool isolates a single layer in a render, overlays ids or motion paths

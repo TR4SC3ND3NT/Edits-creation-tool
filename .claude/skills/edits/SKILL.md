@@ -205,8 +205,7 @@ undoable step (`project_undo`, or Ctrl+Z in the window).
    again on another layer); undo a whole preset with `project_undo`. When the
    person is watching in the window (Edits Studio, opened with `edits gui
    project.json`), `ui_context` tells you which layer and property they
-   selected and where the playhead is (and, in the egui window, the note they
-   typed). Your edits appear there at once, with an Undo button; theirs show
+   selected, where the playhead is, and the note they typed for you. Your edits appear there at once, with an Undo button; theirs show
    up in `project_undo` and the history as actor `window`.
 9. **Render.** `edits render project.json -o out.mp4 --scale 0.5` for a
    preview, then full size (MCP: `render_video`, then `job_status`).
