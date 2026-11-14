@@ -19,11 +19,11 @@ A Cargo workspace; every crate is under `crates/`.
 
 | Crate | Binary | Owns |
 | --- | --- | --- |
-| `edits-core` | | The project model (`model.rs`), keyframe and easing evaluation (`eval.rs`, `ease.rs`), **the effect registry** (`effects/`, one file per category), validation (`check.rs`) and the text outline (`describe.rs`). No GPU or media dependencies; everything else depends on it. |
+| `edits-core` | | The project model (`model.rs`), keyframe and easing evaluation (`eval.rs`, `ease.rs`), **the effect registry** (`effects/`, one file per category), validation (`check.rs`), the text outline (`describe.rs`), and the files the agent and the window share: `ui.rs` (`.edits/ui.json`) and `activity.rs` (`.edits/activity.jsonl`, where each tool call points). No GPU or media dependencies; everything else depends on it. |
 | `edits-render` | | The wgpu renderer: project + frame number -> RGBA image. Layers, blend modes, effects (`fx.rs`, `compose.rs`, `shaders/*.wgsl`), cubes, motion blur, custom WGSL effects. |
 | `edits-cli` | `edits` | The command line: `render`, `frame`, `sheet`, `bench`, `describe`, `check`, `effects`, `doctor`, `demo`; `analyze`, `draft`, `compare`, `probe` through the `edits-analyze` library (`analysis.rs`); `gui` and `mcp` start the sibling executables (`launch.rs`). Encoding through the system `ffmpeg` (`encode.rs`), contact sheets (`sheet.rs`), the generated demo (`demo.rs`). |
 | `edits-analyze` | `edits-analyze` | Reference analysis: `analyze` (recipe of a finished edit -> `reference_analysis.json`), `draft` (analysis -> project), `compare` (render vs analysis in signature space), `probe` (per-frame signatures). |
-| `edits-mcp` | `edits-mcp` | The MCP server (stdio, `rmcp`). A thin adapter that runs `edits` and `edits-analyze` as subprocesses, plus `project_edit` / `project_undo` (validated, atomic edits with history), path confinement, background jobs and image size caps. |
+| `edits-mcp` | `edits-mcp` | The MCP server (stdio, `rmcp`). A thin adapter that runs `edits` and `edits-analyze` as subprocesses, plus `project_edit` / `project_undo` (validated, atomic edits with history), path confinement, background jobs, image size caps and the activity log (`activity.rs`: a line per tool call start and end). |
 | `edits-gui` | `edits-gui` | The older egui desktop window (preview, timeline, inspector, live reload, edits as actor `window`). Kept; `edits gui` starts it only when the studio is not built. |
 | `edits-calib` | | Round-trip calibration: random recipes with known parameters are rendered, analysed and scored against the truth. |
 
@@ -34,7 +34,11 @@ Outside `crates/`: **`studio/`**, Edits Studio, the desktop app (binary
 Rust side in `studio/src-tauri` (depends on `edits-core`, `edits-render` and
 `edits-analyze` by path; frames, edits through `edits_core::edit`, live
 reload, `ui.json`, renders, comparisons; `engine/` is ported from
-`edits-gui`). It is **not** a workspace member (`exclude` in `Cargo.toml`)
+`edits-gui`). The agent panel on the right of every page is
+`studio/src/agent` (chat, presence store `presence.ts` that editor parts read
+with `usePresence(...)`) and `studio/src-tauri/src/agent` (an Agent Client
+Protocol client that starts the Claude Code or Codex adapter with the
+`edits` MCP server, and the follower of `.edits/activity.jsonl`). It is **not** a workspace member (`exclude` in `Cargo.toml`)
 and builds into the workspace's `target/`.
 
 Other folders: `docs/` (format, effects, CLI, rendering, analysis, agents, window),

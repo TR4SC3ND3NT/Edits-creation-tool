@@ -94,8 +94,12 @@ header, and the page.
   while the file on disk has errors; on the right *Search commands…* (Ctrl+K),
   the note for the agent (a speech bubble: *Tell the agent*, a text box,
   **Save note** or Ctrl+Enter, **Clear**; the note goes into `ui.json` as
-  `note` and `note_at`) and Undo / Redo, whose tooltips name the edit and who
-  made it.
+  `note` and `note_at`), **Agent** (the agent panel, Ctrl+L) and Undo / Redo,
+  whose tooltips name the edit and who made it.
+- **Agent panel.** On the right of every page, resizable and collapsible:
+  a chat with Claude Code or Codex ([The agent panel](#the-agent-panel)). Under
+  the header, while an agent works, a strip with its current step
+  ([Seeing where the agent works](#seeing-where-the-agent-works)).
 
 The theme is shadcn's dark neutral theme (`--background`, `--card`,
 `--muted`, `--border`, `--primary` of `studio/src/index.css`, as the template
@@ -285,6 +289,145 @@ videos next to the project and in `renders/`, newest first, with their size
 and age, and a menu (play in the system player, show in folder, compare with
 the reference).
 
+## The agent panel
+
+On the right of every page is a chat with an agent, as in Zed's agent
+panel: Claude Code or Codex, with their own tools, permission modes, models
+and commands, working on the open project. **Agent** in the header (or
+Ctrl+L) shows and hides it; drag the divider to make it wider. It starts
+open; the choice is remembered.
+
+The studio speaks the [Agent Client Protocol](https://agentclientprotocol.com)
+(ACP), the protocol Zed uses for external agents, with the same adapters Zed
+runs:
+
+| Agent | Adapter (npm, Apache-2.0) | How the studio starts it |
+| --- | --- | --- |
+| **Claude Code** | `@agentclientprotocol/claude-agent-acp` (formerly `@zed-industries/claude-code-acp`) | `$EDITS_AGENT_CLAUDE` (a command line), else `claude-agent-acp` on `PATH`, else `npx -y @agentclientprotocol/claude-agent-acp@latest` |
+| **Codex** | `@agentclientprotocol/codex-acp` (formerly `@zed-industries/codex-acp`) | `$EDITS_AGENT_CODEX`, else `codex-acp` on `PATH`, else `npx -y @agentclientprotocol/codex-acp@latest` |
+| **Custom ACP command** | any program that speaks ACP on stdio | the command line typed in the panel (or `$EDITS_AGENT_CUSTOM`) |
+
+The adapter runs as a child process of the studio (JSON-RPC on its stdin and
+stdout, in its own process group, stopped with the studio), in the project's
+folder. Every session gets the `edits` MCP server, as `.mcp.json` gives it to
+Claude Code in this repository: the `edits-mcp` built next to `edits-studio`
+(or `$EDITS_MCP_BIN`, or on `PATH`) with `--root <project folder>`, so the
+agent's `project_edit`, `preset_apply`, `render_frame` and the rest work on
+the open project. The agent is told where it is (the project file, that the
+person watches live, and the path of the skill
+`.claude/skills/edits/SKILL.md`): as an appended system prompt when the
+adapter offers one, otherwise with the first message.
+
+### Using it
+
+- **Connect.** Choose *Claude Code*, *Codex* or *Custom ACP command* and press
+  **Connect**. The panel shows how the adapter will start (`via npx`,
+  `installed`, `set by env`) and whether the MCP server and the skill were
+  found. The first `npx` start downloads the adapter (a minute).
+- **Threads.** A thread is an ACP session. The speech-bubbles menu has **New
+  thread**, the threads of this run, the agent's earlier threads in this folder
+  (`session/list`, when the adapter offers it) and the ones started here
+  before, which reopen with their history (`session/load` or
+  `session/resume`), and **Disconnect**.
+- **The thread.** Your messages on the right; the agent's text as markdown
+  with code blocks; its thinking collapsed under *Thought*; each tool call as
+  a card (`edits · project_edit` and what it does, `Read`, `Bash`, ...) with
+  its status (*pending*, *running*, *done*, *failed*), which opens to its
+  arguments, its output (text, the frames `render_frame` returns, diffs of
+  files, terminal output); permission questions as a card with the agent's
+  buttons (*Allow*, *Always allow*, *Reject*, ...); the plan (the agent's todo
+  list, with its progress) above the message box; the tokens used and the
+  cost under it, when the agent reports them.
+- **The message box.** Enter sends, Shift+Enter is a new line, Esc stops the
+  turn (as does the square button). `@` opens a list of what to include:
+  *frame N* (the frame under the playhead, as a PNG, with its time), *selection*
+  (the selected layer, property and playhead), every **layer**, every
+  **effect** (`d/glow`), the **keys** of every animated property, and the
+  **files** of the project folder; a layer, an effect or keys go along as their
+  JSON. `/` at the start lists the agent's commands (`/review`, `/compact`,
+  ... whatever the adapter offers). The camera button attaches the current
+  frame; images can be pasted or dropped too.
+- **Mode, model, effort.** Under the message box, as the adapter offers them:
+  the permission mode (Claude Code: *Default*, *Accept Edits*, *Plan Mode*,
+  *Bypass Permissions*; Codex: its approval presets), the model, the effort
+  (*thought level*) and *Fast mode*. They change the session at once.
+- **Steps** (the tab next to *Chat*) lists every step of the agent, newest
+  first, from this panel or from an agent in a terminal; click one to move the
+  playhead and the selection there.
+
+### Logging in (Linux)
+
+The adapters use your own Claude Code or Codex login; the studio never asks
+for a key and stores none. When the agent is not logged in, its answer to a
+new thread is ACP's "authentication required", and the panel shows **Log in
+to Claude Code** (or Codex) with the steps, the agent's own login methods and
+**Retry**:
+
+- **Claude Code.** In a terminal, run `claude` and type `/login` (a Claude
+  subscription or an Anthropic Console account), or run the adapter's login
+  without installing Claude Code:
+  `npx -y @agentclientprotocol/claude-agent-acp --cli auth login --claudeai`
+  (`--console` for a Console account). The panel lists these methods with
+  **Open terminal** (it starts `x-terminal-emulator`, `gnome-terminal`,
+  `konsole`, `xfce4-terminal` or `xterm` on the command) and the command to
+  copy. Then press **Retry**.
+- **Codex.** In a terminal, `npx -y @openai/codex login` (or `codex login`
+  when Codex is installed), with ChatGPT. The panel also offers the adapter's
+  **Log in: ChatGPT**, which opens the browser. An API key belongs in your
+  environment (`OPENAI_API_KEY`), not in the studio.
+
+### Switching adapters
+
+Choose another agent in the panel (after **Disconnect** in the threads menu)
+and **Connect**. To pin a version or use a local build, set the environment
+variable before starting the studio:
+
+```
+EDITS_AGENT_CLAUDE="npx -y @agentclientprotocol/claude-agent-acp@0.107.0" edits-studio demo/project.json
+EDITS_AGENT_CODEX="$HOME/src/codex-acp/dist/index.js" edits-studio demo/project.json
+```
+
+Any other ACP agent works as *Custom ACP command*. To try the panel without a
+login, the repository has a fake agent that streams a realistic turn (a
+thought, a plan, `project_describe`, a `project_edit` that asks for
+permission, `preset_apply`, `render_frame`) and really edits the project
+through the MCP server it is given:
+
+```
+node studio/scripts/fake-acp-agent.mjs                 # as the Custom ACP command
+FAKE_ACP_LOGIN=1 node studio/scripts/fake-acp-agent.mjs  # shows the "Log in" state
+```
+
+## Seeing where the agent works
+
+While the agent works, the editor shows where, from two sources: the tool
+calls of the panel's agent (each `edits` tool call carries its arguments), and
+`.edits/activity.jsonl`, the log `edits-mcp` writes for every client
+([AGENTS.md](AGENTS.md#what-the-agent-is-doing-editsactivityjsonl)), so Claude
+Code or Codex in a terminal shows up the same way (named after its MCP
+client: *Claude*, *Codex*, otherwise *Agent*).
+
+- **Status strip.** Under the header, the current step with the agent's
+  avatar (its initial, ringed in the theme's `--ring`): *Claude: applying punch
+  at b6 on layer d*, with a progress bar while the call runs, then *done* or
+  the error; click it to go there. It hides a few seconds after the last step.
+- **Timeline.** A dashed marker in the ring colour, with the agent's badge,
+  at the time the step targets (a preset's `at`, a frame, a sheet's `from`);
+  the row of the layer it works on glows, with the badge at the start of the
+  bar.
+- **Inspector.** A field the agent changes is ringed and shows the old and
+  the new value (`[0, 0, 0] → [0.06, 0, 0]`); an effect it adds shows
+  *added by Claude* on its card, and a card it changes is ringed.
+- **Viewer.** *Claude is looking at frame 60* in the top right corner while
+  `render_frame` or `render_sheet` runs and just after.
+- **Follow agent** (the crosshair in the panel's header, off by default):
+  the playhead and the selection move to each step of the agent. Off, the
+  agent never moves your playhead.
+
+Highlights fade after about five seconds; the *Steps* tab keeps them. The
+values before and after are found by comparing the project before and after
+the agent's edit, so they are right whatever tool made the change.
+
 ## Command palette and keys
 
 Ctrl+K (or *Search commands…*) opens shadcn's command dialog: go to a page;
@@ -302,6 +445,7 @@ layer; apply any preset at the playhead.
 | L | Loop on or off |
 | Ctrl+Z / Ctrl+Shift+Z, Ctrl+Y | Undo / redo the newest edit in the shared history, yours or the agent's |
 | Ctrl+K | Command palette |
+| Ctrl+L | Show or hide the agent panel |
 | Ctrl+1 ... Ctrl+6 | Edit, Overview, Reference, Presets & Effects, Activity, Renders |
 | Delete, Backspace | Delete the selected layer |
 | Esc | Deselect |
@@ -373,8 +517,49 @@ example after picking `position` on layer `d` at frame 60:
   through `edits-analyze`; `commands.rs` is the list of Tauri commands.
   `engine/` is ported from `crates/edits-gui` (editing, time, rows, reload),
   so both windows make the same edits.
+- The agent panel is `studio/src/agent/` (the panel, the thread, the message
+  box, the ACP session state in `store.tsx`) and `studio/src-tauri/src/agent/`:
+  `rpc.rs` is JSON-RPC 2.0 over the adapter's stdio (one message per line,
+  requests answered by id on a reader thread, the adapter's own requests and
+  notifications to a callback, lines that are not JSON-RPC skipped);
+  `mod.rs` is the ACP client (`initialize` with the client's capabilities,
+  `session/new` / `load` / `resume` / `list` in the project folder with the
+  `edits` MCP server, `session/prompt`, `session/cancel`, modes, models,
+  config options, `authenticate`, permission requests held until the person
+  answers, every session update sent to the page as an `agent` event with
+  where an `edits` tool call points); `adapters.rs` finds the adapters,
+  `edits-mcp` and the skill; `activity.rs` follows `.edits/activity.jsonl`.
+  The page's side of the presence is `studio/src/agent/presence.ts`, a small
+  store the editor reads with one hook per place:
+
+  | Call | Where | What it returns |
+  | --- | --- | --- |
+  | `usePresence({ layer })` | a layer row | the agent's step on that layer, or `null` |
+  | `usePresence({ pointer })` | an inspector field | the step, or the value the agent changed there (`from`, `to`) |
+  | `usePresence({ effect: { layer, index } })` | an effect card | the step, or `added: true` |
+  | `usePresence({ frame: true })` | the viewer | the frame the agent looks at |
+  | `usePresenceState()` + `presenceFor(state, target)` | lists (the rows) | the same, without a hook per row |
+  | `useAgentMarker()`, `useAgentStatus()`, `useFollowAgent()` | timeline, status strip, panel | the targeted time, the current step, the toggle |
+  | `presenceRing(hit)` | anything | the ring classes (theme `--ring`) |
+
+  `presence-ui.tsx` has the pieces the editor places with one line each
+  (`<AgentRowGlow layer left />`, `<AgentTimeMarker x />`, `<AgentViewing />`,
+  `<PresenceValue hit />`, `<AgentAddedBadge layer index />`), and
+  `bridge.tsx` compares the project before and after an agent's edit and
+  follows the agent when asked. The thread uses `react-markdown` with
+  `remark-gfm` for the agent's text.
 - The webview loads the project's audio through Tauri's asset protocol.
-- Tests (`cd studio/src-tauri && cargo test`, no window needed): the snapshot,
+- Tests (`cd studio/src-tauri && cargo test`, no window needed): the ACP
+  client against a fake agent process (the test binary started again; it
+  answers the handshake, streams updates, asks for permission in the middle of
+  a turn, answers "log in first" and exits on request): the handshake and the
+  capabilities sent, the session in the project folder with the MCP server, a
+  turn with its updates and where its tool call points, a permission answered
+  once, a cancel that answers the open question, an agent that needs a login,
+  an exit that fails the open request; the forms in which adapters name an
+  `edits` tool; telling JSON-RPC lines apart; following the activity log
+  (replay, appended lines, a line written in two pieces, a log moved aside);
+  splitting adapter command lines; the snapshot,
   telling an agent's edit from an undo and from a plain reload, edits written
   as the window and undone through the shared history, a stale edit refused,
   restoring a version, the inspector's values, units, keys and the camera,
@@ -386,6 +571,13 @@ example after picking `position` on layer `d` at frame 60:
 
 ## Known limits of the studio
 
+- The agent panel does not offer the client's file system or terminals to
+  the agent (ACP `fs/*`, `terminal/*`): the agent uses its own tools for
+  files and commands, and its terminal output shows as text in the tool card.
+  There is no review of a whole changeset before it is kept (the agent's
+  edits land at once and are undone with Ctrl+Z, as any other edit), and no
+  `@` mention of a time range or a marker yet. A render job the agent starts
+  shows in the status strip as started, not with its progress.
 - Not editable in the studio: project settings, markers, audio, layer ids and
   names, cube faces, text, particles, shapes, masks, shake and loop modifiers
   (their values under the shake can be edited), custom shaders' `source`,
