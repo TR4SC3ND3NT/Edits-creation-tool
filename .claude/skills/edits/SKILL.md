@@ -108,6 +108,22 @@ A project is **slots + layers + keyframes + effects**.
   map: `"source": "slot:<name>"`. Effects that change on their own every
   frame (`glitch`, `vhs`, `film_damage`, moving waves) are still the same
   for the same frame and `seed`.
+- **3D shards, band glitch, print look** (ported from a hand-built edit;
+  docs/EFFECTS.md "Ported from a hand-built edit" has the formulas and
+  recipes). `shatter`: the layer breaks into glass shards around `center`
+  (`pieces` or explicit `angles`, optional `rings`), which turn and fly
+  apart as (t - `start`)^`gamma` through a pinhole camera (`fov`, `zoom`,
+  `roll`, `pan`); `cracks` / `reach` / `glint` draw the cracks first,
+  option `fill` black or transparent between shards; explicit per-shard
+  `motion` (axis, spin, vx, vy, vz) replays a fitted break. `pinch`
+  (Gaussian pull toward a point; key `amount`). `glitch_bands` (local
+  bands that shift, stretch and smear rows, coloured brick strips; a new
+  pattern every `hold` frames). `film_scratches` (partial vertical
+  scratches and dust on bright areas only), `grain_highlights` (grain
+  only on light areas). `drip` on a text layer: ragged edges and paint
+  drips (key `grow`). The caption italic of these edits is `"font":
+  "builtin:sans-bold-italic"` (Liberation Sans Bold Italic). The
+  `card_fall` preset drops a card layer onto a table in 3D.
 - **Time effects** render the layer again at other times. `echo` (`count`
   0..16, `interval` in project time, negative = past, `decay` per echo,
   option `mode` `add`/`screen`/`max`/`min`/`over_back`/`over_front`/`average`)

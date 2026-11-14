@@ -666,7 +666,7 @@ transitions apply as usual.
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `text` | (required) | The words; `\n` starts a new line. |
-| `font` | Inter | A `.ttf` or `.otf` file, relative to the project file. Without it, Inter (variable, built into the renderer, SIL Open Font Licence) is used. `check` reports a missing file. |
+| `font` | Inter | A `.ttf` or `.otf` file, relative to the project file, or a font built into the renderer: `builtin:inter` (Inter, variable, the default) or `builtin:sans-bold-italic` (Liberation Sans Bold Italic, metrically a Helvetica / Nimbus Sans Bold Italic: the caption italic of many edits). Both are SIL Open Font Licence; see `assets/fonts/README.md`. `check` reports a missing file or an unknown `builtin:` name. |
 | `size` | 10 | The em, in percent of the composition height (10 = a tenth of the frame's height). Must be positive. |
 | `weight` | the font's default | Position on the font's `wght` axis: 100 thin, 400 regular, 700 bold, 900 black. Fonts without that axis (not variable) ignore it. |
 | `align` | `center` | `left`, `center` or `right`: how the lines line up in the block. |

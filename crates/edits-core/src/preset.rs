@@ -106,6 +106,7 @@ macro_rules! builtin {
 
 builtin!(
     "flash",
+    "card_fall",
     "flash_burn",
     "punch",
     "zoom_out",

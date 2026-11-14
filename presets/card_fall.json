@@ -1,0 +1,100 @@
+{
+  "format": "edits.preset/1",
+  "name": "card_fall",
+  "description": "A card (a picture on its own layer) falls onto a table in 3D: it starts lifted toward the camera, tilted and turned, and drops faster and faster until it lies flat in its place. Use motion blur for the fall's streak.",
+  "tags": [
+    "3d",
+    "move",
+    "intro",
+    "card"
+  ],
+  "variables": {
+    "length": {
+      "type": "number",
+      "default": 0.5,
+      "min": 0.05,
+      "max": 16,
+      "unit": "beats",
+      "doc": "How long the fall takes."
+    },
+    "lift": {
+      "type": "number",
+      "default": 0.6,
+      "min": 0,
+      "max": 0.95,
+      "doc": "How far toward the camera it starts, in frame heights (0.5 looks twice as big)."
+    },
+    "tilt": {
+      "type": "number",
+      "default": 55,
+      "min": -89,
+      "max": 89,
+      "unit": "degrees",
+      "doc": "Tilt about the horizontal axis at the start (positive: top edge away)."
+    },
+    "turn": {
+      "type": "number",
+      "default": -20,
+      "min": -89,
+      "max": 89,
+      "unit": "degrees",
+      "doc": "Tilt about the vertical axis at the start."
+    },
+    "roll": {
+      "type": "number",
+      "default": -12,
+      "min": -180,
+      "max": 180,
+      "unit": "degrees",
+      "doc": "Turn in the plane at the start."
+    },
+    "slide_x": {
+      "type": "number",
+      "default": -0.15,
+      "min": -4,
+      "max": 4,
+      "doc": "Where it starts relative to its place, across, in frame heights."
+    },
+    "slide_y": {
+      "type": "number",
+      "default": -0.1,
+      "min": -4,
+      "max": 4,
+      "doc": "Where it starts relative to its place, down, in frame heights."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "transform": "position",
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=orig + vec($slide_x, $slide_y, -$lift)",
+            "ease": "in"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    },
+    {
+      "pulse": {
+        "transform": "rotation",
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=orig + vec($tilt, $turn, $roll)",
+            "ease": "quad_out"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}
