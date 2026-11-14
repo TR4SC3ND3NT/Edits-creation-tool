@@ -17,6 +17,7 @@
 //! running executable, then `PATH`), `EDITS_MCP_TIMEOUT` (seconds one
 //! foreground command may run; default 50).
 
+pub mod activity;
 pub mod edit;
 pub mod exec;
 pub mod images;

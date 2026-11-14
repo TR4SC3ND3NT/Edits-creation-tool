@@ -1,0 +1,76 @@
+{
+  "format": "edits.preset/1",
+  "name": "wipe_in",
+  "description": "The picture is wiped on from one side behind a straight edge.",
+  "tags": [
+    "intro",
+    "wipe",
+    "mask"
+  ],
+  "variables": {
+    "direction": {
+      "type": "enum",
+      "default": "from_left",
+      "options": {
+        "from_left": {
+          "dx": -1,
+          "dy": 0
+        },
+        "from_right": {
+          "dx": 1,
+          "dy": 0
+        },
+        "from_top": {
+          "dx": 0,
+          "dy": -1
+        },
+        "from_bottom": {
+          "dx": 0,
+          "dy": 1
+        }
+      },
+      "doc": "Where the edge starts."
+    },
+    "length": {
+      "type": "number",
+      "default": 0.5,
+      "min": 0.05,
+      "max": 16,
+      "unit": "beats",
+      "doc": "How long it takes."
+    },
+    "softness": {
+      "type": "number",
+      "default": 3,
+      "min": 0,
+      "max": 50,
+      "unit": "% of height",
+      "doc": "Width of the soft edge."
+    }
+  },
+  "apply": [
+    {
+      "set": {
+        "pointer": "/masks/-",
+        "value": {
+          "shape": "rect",
+          "size": "=vec(4 * aspect, 4)",
+          "feather": "$softness",
+          "position": {
+            "keys": [
+              {
+                "t": "=at",
+                "v": "=vec($dx * (2 + (0.55 + $softness / 100)) * aspect, $dy * (2 + (0.55 + $softness / 100)))",
+                "ease": "in_out"
+              },
+              {
+                "t": "=at + $length * beat",
+                "v": "=vec($dx * (2 - (0.55 + $softness / 100)) * aspect, $dy * (2 - (0.55 + $softness / 100)))"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

@@ -37,6 +37,10 @@ anyhow = "1"
 notify = "8"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 
+[target.'cfg(unix)'.dependencies]
+# Stop an agent adapter with everything it started (its process group).
+libc = "0.2"
+
 [profile.dev]
 opt-level = 1
 

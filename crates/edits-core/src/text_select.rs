@@ -55,8 +55,71 @@ pub struct TextAnimator {
     /// Gaussian blur of the glyph (sigma), in percent of the composition height.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blur: Option<Prop>,
+    /// Shift of each character's code point at full selection, rounded to a
+    /// whole number (After Effects' Character Offset): 1 turns `A` into `B`.
+    /// Spaces never change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character_offset: Option<Prop>,
+    /// Which characters an offset cycles through (default `preserve`).
+    #[serde(default, skip_serializing_if = "CharRange::is_default")]
+    pub character_range: CharRange,
+    /// Each character gets its own random share (0..1) of the offset, drawn
+    /// again `character_rate` times a second: letters that scramble.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub character_random: bool,
+    /// With `character_random`: new random shares per second (default 12; 0 keeps them).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character_rate: Option<f64>,
+    /// With `character_random`: the seed of the random shares.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub character_seed: u32,
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub enabled: bool,
+}
+
+/// What a `character_offset` cycles through.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CharRange {
+    /// Lower-case letters stay lower-case letters (a-z, wrapping), capitals
+    /// capitals, digits digits, hiragana hiragana and katakana katakana;
+    /// any other character does not change.
+    #[default]
+    Preserve,
+    /// Any character but a space moves through the code points (a code point
+    /// that is not a character leaves it as it was).
+    Full,
+}
+impl CharRange {
+    fn is_default(&self) -> bool {
+        *self == CharRange::Preserve
+    }
+}
+
+/// `c` moved `n` code points within `range`.
+pub fn offset_char(c: char, n: i64, range: CharRange) -> char {
+    if n == 0 || c.is_whitespace() || c.is_control() {
+        return c;
+    }
+    let within = |lo: u32, hi: u32| -> Option<char> {
+        let (code, len) = (c as u32, (hi - lo + 1) as i64);
+        (lo..=hi).contains(&code).then(|| char::from_u32(lo + ((code - lo) as i64 + n).rem_euclid(len) as u32)).flatten()
+    };
+    match range {
+        CharRange::Preserve => within('a' as u32, 'z' as u32)
+            .or_else(|| within('A' as u32, 'Z' as u32))
+            .or_else(|| within('0' as u32, '9' as u32))
+            .or_else(|| within(0x3041, 0x3096))
+            .or_else(|| within(0x30A1, 0x30FA))
+            .unwrap_or(c),
+        CharRange::Full => u32::try_from(c as i64 + n).ok().filter(|v| *v > 0x20).and_then(char::from_u32).filter(|x| !x.is_whitespace() && !x.is_control()).unwrap_or(c),
+    }
+}
+
+/// The random share (0..1) of a character offset for the character at
+/// `char_index`, at `step` (the count of `character_rate` periods).
+pub fn offset_share(char_index: usize, step: i64, seed: u32) -> f64 {
+    0.5 + 0.5 * crate::eval::hash(step, seed, char_index as u32 ^ 0x0C4A_0000)
 }
 
 impl TextAnimator {
@@ -70,6 +133,7 @@ impl TextAnimator {
             ("fill", &self.fill),
             ("tracking", &self.tracking),
             ("blur", &self.blur),
+            ("character_offset", &self.character_offset),
         ];
         all.iter().filter(|(_, p)| p.is_some()).map(|(n, _)| *n).collect()
     }
@@ -431,11 +495,13 @@ pub struct GlyphState {
     pub tracking: f64,
     /// Blur sigma, percent of the composition height.
     pub blur: f64,
+    /// Code points the character moves (`character_offset`), before rounding.
+    pub char_offset: f64,
 }
 
 impl GlyphState {
     pub fn rest(fill: [f32; 4]) -> Self {
-        GlyphState { offset: [0.0; 3], scale: [1.0; 3], rotation: [0.0; 3], opacity: 1.0, fill, tracking: 0.0, blur: 0.0 }
+        GlyphState { offset: [0.0; 3], scale: [1.0; 3], rotation: [0.0; 3], opacity: 1.0, fill, tracking: 0.0, blur: 0.0, char_offset: 0.0 }
     }
     /// Moved at most: no scale, turn or blur.
     pub fn is_translation(&self) -> bool {
@@ -453,6 +519,8 @@ pub struct AnimatorAt {
     pub fill: Option<[f64; 4]>,
     pub tracking: Option<f64>,
     pub blur: Option<f64>,
+    /// Code points at full selection (every glyph alike; the random shares are applied by the caller).
+    pub character_offset: Option<f64>,
 }
 
 /// Apply an animator selected at `s` to a glyph: offsets, turns, tracking
@@ -483,6 +551,20 @@ pub fn apply(g: &mut GlyphState, a: &AnimatorAt, s: f64) {
     }
     if let Some(b) = a.blur {
         g.blur = (g.blur + s * b).max(0.0);
+    }
+    if let Some(c) = a.character_offset {
+        g.char_offset += s * c;
+    }
+}
+
+impl GlyphState {
+    /// The whole number of code points the glyph's character moves.
+    pub fn char_shift(&self) -> i64 {
+        if self.char_offset.is_finite() {
+            self.char_offset.round().clamp(-1e9, 1e9) as i64
+        } else {
+            0
+        }
     }
 }
 
@@ -613,6 +695,34 @@ mod tests {
         let (lines, n) = units_of(text, &glyphs, Units::Lines);
         assert_eq!((lines, n), (vec![0, 0, 0, 0, 0, 1, 1], 2));
         assert_eq!(units_of("", &[], Units::Words).1, 1);
+    }
+
+    #[test]
+    fn character_offsets_cycle_within_their_range() {
+        use CharRange::*;
+        assert_eq!(offset_char('A', 1, Preserve), 'B');
+        assert_eq!(offset_char('z', 1, Preserve), 'a');
+        assert_eq!(offset_char('a', -1, Preserve), 'z');
+        assert_eq!(offset_char('Y', 28, Preserve), 'A');
+        assert_eq!(offset_char('9', 3, Preserve), '2');
+        assert_eq!(offset_char('\u{3042}', 1, Preserve), '\u{3043}', "hiragana stays hiragana");
+        assert_eq!(offset_char('\u{3096}', 1, Preserve), '\u{3041}');
+        assert_eq!(offset_char('!', 5, Preserve), '!');
+        assert_eq!(offset_char(' ', 5, Full), ' ');
+        assert_eq!(offset_char('z', 1, Full), '{');
+        assert_eq!(offset_char('A', 0, Full), 'A');
+        assert_eq!(offset_char('!', -10, Full), '!', "below the printable range: unchanged");
+        // Applied by selection and rounded to a whole code point.
+        let mut g = GlyphState::rest([1.0; 4]);
+        apply(&mut g, &AnimatorAt { character_offset: Some(3.0), ..Default::default() }, 0.5);
+        assert_eq!((g.char_offset, g.char_shift()), (1.5, 2));
+        // Random shares: in 0..1, the same for the same step and seed, different across characters and steps.
+        let shares: Vec<f64> = (0..50).map(|i| offset_share(i, 4, 7)).collect();
+        assert!(shares.iter().all(|s| (0.0..=1.0).contains(s)));
+        assert_eq!(shares[3], offset_share(3, 4, 7));
+        assert_ne!(shares[3], shares[4]);
+        assert_ne!(offset_share(3, 4, 7), offset_share(3, 5, 7));
+        assert_ne!(offset_share(3, 4, 7), offset_share(3, 4, 8));
     }
 
     #[test]

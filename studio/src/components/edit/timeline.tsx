@@ -41,6 +41,7 @@ import {
 } from "lucide-react"
 import { convertFileSrc } from "@tauri-apps/api/core"
 
+import { AgentRowGlow, AgentTimeMarker } from "@/agent/presence-ui"
 import { useEditor } from "@/components/edit/editor-context"
 import { KindIcon } from "@/components/edit/kind-icon"
 import { Badge } from "@/components/ui/badge"
@@ -331,6 +332,10 @@ function TrackRow({
         onPointerDown={onTrackDown}
       >
         {children}
+        {/* The agent working on this layer: a glow over the track, its badge at the clip's start. */}
+        {row.index != null && (
+          <AgentRowGlow layer={row.id} left={x(row.start)} />
+        )}
         <div
           data-slot="clip"
           className={cn(
@@ -1442,6 +1447,7 @@ export function Timeline() {
               }}
             />
           )}
+          <AgentTimeMarker x={(t) => HEADER + x(t)} />
           {/* playhead */}
           <div
             className="pointer-events-none absolute top-0 bottom-0 z-30 w-px bg-primary"

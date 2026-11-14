@@ -53,6 +53,7 @@ pub(crate) fn animation_note(prop: &Prop) -> String {
             match m {
                 Modifier::Shake { .. } => "shake",
                 Modifier::Loop { .. } => "loop",
+                Modifier::Oscillate(_) => "oscillate",
             }
             .to_string(),
         );
@@ -250,7 +251,7 @@ fn prop_row(app: &mut App, ui: &mut Ui, cx: &Cx, r: PropRef, speed: f64, range: 
         Some(p) => animation_note(p),
     };
     let modifiers: Vec<Icon> = match &base_prop {
-        Some(Prop::Anim(a)) => a.modifiers.iter().map(|m| if matches!(m, Modifier::Shake { .. }) { Icon::Activity } else { Icon::Repeat }).collect(),
+        Some(Prop::Anim(a)) => a.modifiers.iter().map(|m| if matches!(m, Modifier::Shake { .. } | Modifier::Oscillate(_)) { Icon::Activity } else { Icon::Repeat }).collect(),
         _ => Vec::new(),
     };
 

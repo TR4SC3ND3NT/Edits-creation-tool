@@ -1,0 +1,32 @@
+{
+  "format": "edits.preset/1",
+  "name": "sepia",
+  "description": "Old photo: the classic sepia colour matrix (three.js / glfx.js) as a channel_mixer.",
+  "tags": [
+    "look",
+    "colour",
+    "retro"
+  ],
+  "variables": {
+    "amount": {
+      "type": "number",
+      "default": 1,
+      "min": 0,
+      "max": 1,
+      "doc": "How much of the sepia look; 0 is the original."
+    }
+  },
+  "apply": [
+    {
+      "effect": {
+        "kind": "channel_mixer",
+        "params": {
+          "red": [0.393, 0.769, 0.189, 0],
+          "green": [0.349, 0.686, 0.168, 0],
+          "blue": [0.272, 0.534, 0.131, 0],
+          "amount": "$amount"
+        }
+      }
+    }
+  ]
+}

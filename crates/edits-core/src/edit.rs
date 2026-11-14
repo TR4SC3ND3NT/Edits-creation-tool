@@ -362,15 +362,20 @@ fn finding(severity: Severity, path: String, message: String, hint: Option<&str>
 
 /// Keys the renderer would silently ignore: present in the document, absent
 /// from what the parsed project writes back. Usually a typo (`"transfrom"`).
-fn ignored_keys(doc: &Value, parsed: &Value, path: &str, out: &mut Vec<Finding>) {
+/// A known field written at its default value (`"units": "characters"`) is
+/// also left out when the project is written back; `read_by_parser` tells
+/// the two apart. `raw` is the path with plain array indices.
+fn ignored_keys(doc: &Value, parsed: &Value, path: &str, raw: &str, read_by_parser: &dyn Fn(&str, &str) -> bool, out: &mut Vec<Finding>) {
     match (doc, parsed) {
         (Value::Object(a), Value::Object(b)) => {
             for (k, v) in a {
                 let p = format!("{path}/{}", pointer::escape(k));
+                let r = format!("{raw}/{}", pointer::escape(k));
                 match b.get(k) {
-                    Some(w) => ignored_keys(v, w, &p, out),
+                    Some(w) => ignored_keys(v, w, &p, &r, read_by_parser, out),
                     // Empty and null values are written back as "absent"; they are not typos.
                     None if v.is_null() || v.as_array().is_some_and(Vec::is_empty) || v.as_object().is_some_and(Map::is_empty) => {}
+                    None if read_by_parser(raw, k) => {}
                     None => {
                         let known: Vec<&str> = b.keys().map(String::as_str).collect();
                         out.push(finding(Severity::Warning, p, format!("unknown key \"{k}\": the renderer ignores it"), Some(&format!("known keys here: {}", known.join(", ")))));
@@ -384,11 +389,20 @@ fn ignored_keys(doc: &Value, parsed: &Value, path: &str, out: &mut Vec<Finding>)
                     Some(id) if path == "/layers" || (path.starts_with("/comps/") && path.ends_with("/layers")) => format!("{path}/@{}", pointer::escape(id)),
                     _ => format!("{path}/{i}"),
                 };
-                ignored_keys(v, w, &p, out);
+                ignored_keys(v, w, &p, &format!("{raw}/{i}"), read_by_parser, out);
             }
         }
         _ => {}
     }
+}
+
+/// Whether the parser reads `key` of the object at `parent` (a plain pointer):
+/// the key is given a value no field accepts, and a parse that then fails read it.
+fn read_by_parser(doc: &Value, parent: &str, key: &str) -> bool {
+    let mut probe = doc.clone();
+    let Some(obj) = probe.pointer_mut(parent).and_then(Value::as_object_mut) else { return false };
+    obj.insert(key.to_string(), serde_json::json!({ "\u{0}edits-probe": [null, {}] }));
+    Project::from_json(&jsonfmt::to_file_text(&probe)).is_err()
 }
 
 /// Files a project refers to: (pointer, path as written).
@@ -473,7 +487,7 @@ pub fn validate(doc: &Value, project_dir: &Path, extra: Option<ExtraCheck>) -> V
 pub fn ignored_key_findings(doc: &Value, project: &Project) -> Vec<Finding> {
     let mut findings = Vec::new();
     if let Ok(parsed) = serde_json::to_value(project) {
-        ignored_keys(doc, &parsed, "", &mut findings);
+        ignored_keys(doc, &parsed, "", "", &|parent, key| read_by_parser(doc, parent, key), &mut findings);
     }
     findings
 }
@@ -941,6 +955,19 @@ mod tests {
 
     fn op(v: Value) -> EditOp {
         serde_json::from_value(v).expect("op parses")
+    }
+
+    #[test]
+    fn a_default_value_is_not_an_ignored_key() {
+        let mut d = doc();
+        d["layers"][0]["blend"] = json!("normal");
+        d["layers"][0]["transfrom"] = json!({});
+        d["layers"][0]["opacitty"] = json!(0.5);
+        d["layers"].as_array_mut().unwrap().push(json!({ "id": "t", "kind": "text", "text": "HI",
+            "animators": [ { "selector": { "kind": "range", "units": "characters", "randomize": false }, "opacity": 0 } ] }));
+        let project = Project::from_json(&jsonfmt::to_file_text(&d)).unwrap();
+        let paths: Vec<String> = ignored_key_findings(&d, &project).into_iter().map(|f| f.path).collect();
+        assert_eq!(paths, ["/layers/@a/opacitty"], "only the typo with a value is reported");
     }
 
     fn ids(d: &Value) -> Vec<&str> {

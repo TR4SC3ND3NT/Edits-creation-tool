@@ -1,0 +1,32 @@
+{
+  "format": "edits.preset/1",
+  "name": "thermal",
+  "description": "Thermal camera: brightness through black, purple, blue, cyan, green, yellow, orange and red (the colours of ISF's Thermal Camera, by VIDVOX, MIT), as a gradient_map with stops.",
+  "tags": [
+    "look",
+    "colour"
+  ],
+  "variables": {
+    "amount": {
+      "type": "number",
+      "default": 1,
+      "min": 0,
+      "max": 1,
+      "doc": "Mix with the original."
+    }
+  },
+  "apply": [
+    {
+      "effect": {
+        "kind": "gradient_map",
+        "options": {
+          "mode": "stops"
+        },
+        "params": {
+          "stops": [0, 0, 0, 0.0601, 0, 0.1329, 0, 0, 1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0.214, 0, 1, 0, 0],
+          "amount": "$amount"
+        }
+      }
+    }
+  ]
+}

@@ -78,6 +78,9 @@ fn collect(prop: &Prop, out: &mut Vec<(f64, KeyShape)>) {
         if let Modifier::Shake { amplitude, .. } = m {
             collect(amplitude, out);
         }
+        if let Modifier::Oscillate(o) = m {
+            collect(&o.amplitude, out);
+        }
     }
 }
 

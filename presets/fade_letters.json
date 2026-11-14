@@ -1,0 +1,76 @@
+{
+  "format": "edits.preset/1",
+  "name": "fade_letters",
+  "description": "The letters of a text layer fade in one after another (or in a random order).",
+  "tags": [
+    "text",
+    "reveal",
+    "caption",
+    "fade"
+  ],
+  "layer_kind": "text",
+  "variables": {
+    "duration": {
+      "type": "number",
+      "default": 1.5,
+      "min": 0.05,
+      "max": 64,
+      "unit": "beats",
+      "doc": "From the first unit starting to the last one settling."
+    },
+    "spread": {
+      "type": "number",
+      "default": 40,
+      "min": 1,
+      "max": 100,
+      "unit": "% of the units",
+      "doc": "How many units are moving at once: small is one by one, 100 all together."
+    },
+    "units": {
+      "type": "string",
+      "default": "characters",
+      "doc": "What moves at each step: characters, words or lines."
+    },
+    "random": {
+      "type": "boolean",
+      "default": false,
+      "doc": "Fade the units in a random order instead of left to right."
+    },
+    "seed": {
+      "type": "integer",
+      "default": 1,
+      "min": 0,
+      "max": 100000,
+      "doc": "Which random order."
+    }
+  },
+  "apply": [
+    {
+      "animator": {
+        "name": "fade letters",
+        "selector": {
+          "kind": "range",
+          "units": "$units",
+          "shape": "ramp_up",
+          "start": 0,
+          "end": "$spread",
+          "offset": {
+            "keys": [
+              {
+                "t": "=at",
+                "v": "=-$spread"
+              },
+              {
+                "t": "=at + $duration * beat",
+                "v": 100
+              }
+            ]
+          },
+          "randomize": "$random",
+          "seed": "$seed"
+        },
+        "opacity": 0
+      }
+    }
+  ]
+}

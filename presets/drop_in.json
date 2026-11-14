@@ -1,0 +1,64 @@
+{
+  "format": "edits.preset/1",
+  "name": "drop_in",
+  "description": "The picture drops in from above and lands with a bounce (or settles).",
+  "tags": [
+    "intro",
+    "move",
+    "bounce"
+  ],
+  "variables": {
+    "length": {
+      "type": "number",
+      "default": 0.75,
+      "min": 0.05,
+      "max": 16,
+      "unit": "beats",
+      "doc": "How long it takes."
+    },
+    "height": {
+      "type": "number",
+      "default": 1.1,
+      "min": 0,
+      "max": 4,
+      "doc": "How far above it starts, in frame heights."
+    },
+    "style": {
+      "type": "enum",
+      "default": "bounce",
+      "options": {
+        "bounce": {
+          "drop_ease": "bounce_out"
+        },
+        "settle": {
+          "drop_ease": {
+            "name": "back_out",
+            "overshoot": 1.4
+          }
+        },
+        "smooth": {
+          "drop_ease": "quint_out"
+        }
+      },
+      "doc": "bounce: bounces on landing; settle: overshoots a little and settles; smooth: glides to a stop."
+    }
+  },
+  "apply": [
+    {
+      "pulse": {
+        "transform": "position",
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=orig + vec(0, -$height, 0)",
+            "ease": "$drop_ease"
+          },
+          {
+            "dt": "=$length * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}

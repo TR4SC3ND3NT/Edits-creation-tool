@@ -1,0 +1,68 @@
+{
+  "format": "edits.preset/1",
+  "name": "boomerang",
+  "description": "Boomerang: the layer's motion (or a video) plays forward, backward and forward again, ending where it would; a still picture pushes in and back out.",
+  "tags": [
+    "time",
+    "speed",
+    "loop"
+  ],
+  "variables": {
+    "length": {
+      "type": "number",
+      "default": 2,
+      "min": 0.05,
+      "max": 64,
+      "unit": "beats",
+      "doc": "Time of the whole there, back and there again."
+    },
+    "zoom": {
+      "type": "number",
+      "default": 1.15,
+      "min": 1,
+      "max": 3,
+      "doc": "For a still picture: how far the push goes."
+    }
+  },
+  "apply": [
+    {
+      "retime": {
+        "length": "=$length * beat",
+        "progress": [
+          0,
+          1,
+          0,
+          1
+        ],
+        "otherwise": [
+          {
+            "pulse": {
+              "transform": "scale",
+              "adjustment": {
+                "effect": "transform2d",
+                "param": "scale",
+                "base": 1
+              },
+              "keys": [
+                {
+                  "dt": 0,
+                  "v": "=base",
+                  "ease": "in_out"
+                },
+                {
+                  "dt": "=$length * 0.5 * beat",
+                  "v": "=orig * $zoom",
+                  "ease": "in_out"
+                },
+                {
+                  "dt": "=$length * beat",
+                  "v": "=orig"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -95,7 +95,15 @@ A project is **slots + layers + keyframes + effects**.
   `sharpen`. Texture: `scanlines`, `vhs`, `film_damage` (new every frame),
   `mirror`, `tile`, `polar` (`to_polar` = tiny planet). Colour:
   `gradient_map` (duotone/tritone), `levels`, `vibrance`, `lut` (a `.cube`
-  file in `"source"`). Generators drawn over the layer: `fractal_noise`,
+  file in `"source"`), `curves` (points `[x0, y0, x1, y1, ...]` per
+  `master`/`red`/`green`/`blue`), `hsl` (per hue band), `white_balance`,
+  `lift_gamma_gain`, `highlights_shadows`, `channel_mixer`, `colorama` (key
+  `phase`), `replace_color`, `leave_color` (colour pop), `solarize`,
+  `bleach_bypass`, `technicolor`, `haze`; looks as presets `sepia`, `xray`,
+  `fade_film`, `thermal`. Keys (they cut the layer's alpha after its masks,
+  before its matte; option `view` `matte` shows the cut): `chroma_key` (green
+  screen), `spill_suppress` after it, `luma_key`, `unmult` (overlays shot on
+  black), `difference_matte` (clean plate slot). Generators drawn over the layer: `fractal_noise`,
   `gradient_ramp` (option `blend`). `displacement_map` takes a slot as its
   map: `"source": "slot:<name>"`. Effects that change on their own every
   frame (`glitch`, `vhs`, `film_damage`, moving waves) are still the same
@@ -209,7 +217,10 @@ undoable step (`project_undo`, or Ctrl+Z in the window).
    person is watching in the window (Edits Studio, opened with `edits gui
    project.json`), `ui_context` tells you which layer and property they
    selected, where the playhead is, and the note they typed for you. Your edits appear there at once, with an Undo button; theirs show
-   up in `project_undo` and the history as actor `window`.
+   up in `project_undo` and the history as actor `window`. The window also
+   shows where you work (the layer, the field, the time, the frame you
+   render), from your tool arguments: pass `layer` and `at` to presets and
+   address layers by id (`/layers/@d/...`), so the person can follow you.
 9. **Render.** `edits render project.json -o out.mp4 --scale 0.5` for a
    preview, then full size (MCP: `render_video`, then `job_status`).
 
@@ -365,7 +376,28 @@ can also write: `{ "selector": { "kind": "range", "start": 0, "end": 50 },
 `round` or `smooth`, `randomize` shuffles the order; `{ "kind": "wiggly",
 "amount": 60, "frequency": 3 }` jitters each letter. Properties (scaled by the
 selection): `position` (offset), `scale`, `rotation` (per letter, in 3D),
-`opacity`, `fill`, `tracking`, `blur`. See `docs/FORMAT.md` (Text animators).
+`opacity`, `fill`, `tracking`, `blur`, `character_offset` (other letters in
+place; with `character_random: true` they scramble). See `docs/FORMAT.md`
+(Text animators).
+
+**In, out, combo and time presets; more letters.** Like CapCut's and Alight
+Motion's animations, applied with `preset_apply` at a time on a picture:
+in `fade_in`, `bounce_in` (`style` back, elastic or bounce), `drop_in`,
+`rotate_in`, `swirl_in`, `wipe_in` (`direction`); out `fade_out`; on a hit
+`squish` (jelly squash and stretch) and `pendulum`; loops over `length` or
+`cycles` `swing`, `rock`, `pulse_loop` (swells on every beat),
+`party_rotate` and `party_flip` (a tilt or a mirror on alternate beats).
+The loops use the `oscillate` modifier (`{ "kind": "oscillate",
+"amplitude": [0, 0, 6], "frequency": 0.5, "wave": "sine" }`, also
+`triangle`, `square`, `saw`; frequency per beat or `per: "second"`), which
+you can put on any value yourself. Time: `freeze`, `boomerang`, `hesitate`
+and the speed curves `velocity_montage`, `_hero`, `_bullet`, `_jump_cut`,
+`_flash_in`, `_flash_out` replay the layer's keyed motion or a video's
+playback through a curve, and push a still picture in instead. More text:
+`fade_letters`, `flip_letters`, `slide_letters` (`units=words` slides word
+by word), `jitter_text`, `explode` (`direction=in` implodes), `word_pop`,
+`line_reveal` (`style` slide or swing), `gradient_text` (`cycle` for a
+rainbow), `scramble` (decodes the caption).
 
 ## Workflow 2: the recipe of a reference edit, with different pictures
 

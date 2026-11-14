@@ -1,6 +1,7 @@
 import * as React from "react"
 import { CircleAlertIcon, Grid3x3Icon, MousePointer2Icon } from "lucide-react"
 
+import { AgentViewing } from "@/agent/presence-ui"
 import { useEditor } from "@/components/edit/editor-context"
 import { TransformOverlay } from "@/components/edit/transform-overlay"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -287,6 +288,8 @@ export function Viewer() {
           </div>
         )}
       </div>
+      {/* "Claude is looking at frame N": top left, clear of the zoom controls. */}
+      <AgentViewing className="top-2 left-2" />
       <div className="absolute bottom-2 left-2 flex items-center gap-2">
         {live && <Badge variant="secondary">preview</Badge>}
         {!live && shown != null && shown !== frame && (

@@ -49,6 +49,8 @@ import {
   TextSection,
   useLayerEdit,
 } from "@/components/edit/kind-sections"
+import { presenceRing, usePresence } from "@/agent/presence"
+import { AgentAddedBadge } from "@/agent/presence-ui"
 import { KindIcon } from "@/components/edit/kind-icon"
 import { useInspection } from "@/components/edit/use-inspection"
 import { Badge } from "@/components/ui/badge"
@@ -341,6 +343,7 @@ function EffectCard({
     isDragging,
   } = useSortable({ id: String(e.index) })
   const animated = e.params.filter((p) => p.animated).length
+  const agent = usePresence({ effect: { layer, index: e.index } })
   return (
     <Collapsible
       defaultOpen={count <= 2}
@@ -350,9 +353,15 @@ function EffectCard({
       className={cn(
         "group/fx rounded-lg border bg-card",
         !e.enabled && "opacity-60",
-        isDragging && "z-10 shadow-md"
+        isDragging && "z-10 shadow-md",
+        presenceRing(agent)
       )}
     >
+      {agent && (
+        <div className="px-2 pt-1.5">
+          <AgentAddedBadge layer={layer} index={e.index} />
+        </div>
+      )}
       <div className="flex h-9 items-center gap-1 pr-1 pl-0.5">
         <button
           type="button"
@@ -636,7 +645,11 @@ function LayerSection({
   const rowProps = useProps(l.id)
   return (
     <Section title="Layer">
-      <FieldRow label="in · out" hint="When the layer starts and ends.">
+      <FieldRow
+        label="in · out"
+        hint="When the layer starts and ends."
+        pointer={`/layers/@${l.id}/in /layers/@${l.id}/out`}
+      >
         <UnitInput
           className="flex-1"
           value={l.start}
@@ -654,7 +667,7 @@ function LayerSection({
           onCommit={(v) => ed.set("out", v, `out of ${l.id}: ${v}`)}
         />
       </FieldRow>
-      <FieldRow label="blend">
+      <FieldRow label="blend" pointer={`/layers/@${l.id}/blend`}>
         <Choice
           value={l.blend}
           options={BLENDS}
@@ -664,6 +677,7 @@ function LayerSection({
       {opacity && <PropRow {...rowProps(opacity, null)} />}
       <FieldRow
         label="visible"
+        pointer={`/layers/@${l.id}/visible`}
         hint="Off: the layer is not drawn but still works as a track matte."
       >
         <Switch

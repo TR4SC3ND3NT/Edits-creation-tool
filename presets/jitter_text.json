@@ -1,0 +1,145 @@
+{
+  "format": "edits.preset/1",
+  "name": "jitter_text",
+  "description": "The letters of a text layer jitter and twitch on their own, nervously, for a while.",
+  "tags": [
+    "text",
+    "loop",
+    "caption",
+    "shake"
+  ],
+  "layer_kind": "text",
+  "variables": {
+    "amount": {
+      "type": "number",
+      "default": 1.2,
+      "min": 0,
+      "max": 20,
+      "unit": "% of height",
+      "doc": "How far a letter jumps."
+    },
+    "rotation": {
+      "type": "number",
+      "default": 8,
+      "min": 0,
+      "max": 90,
+      "unit": "degrees",
+      "doc": "How far a letter twists."
+    },
+    "frequency": {
+      "type": "number",
+      "default": 10,
+      "min": 0.5,
+      "max": 60,
+      "doc": "Twitches per second."
+    },
+    "length": {
+      "type": "number",
+      "default": 4,
+      "min": 0.05,
+      "max": 256,
+      "unit": "beats",
+      "doc": "How long it goes on."
+    },
+    "units": {
+      "type": "string",
+      "default": "characters",
+      "doc": "What moves at each step: characters, words or lines."
+    }
+  },
+  "apply": [
+    {
+      "animator": {
+        "name": "jitter x",
+        "selector": {
+          "kind": "wiggly",
+          "units": "$units",
+          "amount": {
+            "keys": [
+              {
+                "t": "=at - frame",
+                "v": 0,
+                "ease": "hold"
+              },
+              {
+                "t": "=at",
+                "v": 100,
+                "ease": "hold"
+              },
+              {
+                "t": "=at + $length * beat",
+                "v": 0
+              }
+            ]
+          },
+          "frequency": "$frequency",
+          "correlation": 0,
+          "seed": 11
+        },
+        "position": "=vec($amount / 100, 0, 0)"
+      }
+    },
+    {
+      "animator": {
+        "name": "jitter y",
+        "selector": {
+          "kind": "wiggly",
+          "units": "$units",
+          "amount": {
+            "keys": [
+              {
+                "t": "=at - frame",
+                "v": 0,
+                "ease": "hold"
+              },
+              {
+                "t": "=at",
+                "v": 100,
+                "ease": "hold"
+              },
+              {
+                "t": "=at + $length * beat",
+                "v": 0
+              }
+            ]
+          },
+          "frequency": "$frequency",
+          "correlation": 0,
+          "seed": 12
+        },
+        "position": "=vec(0, $amount / 100, 0)"
+      }
+    },
+    {
+      "animator": {
+        "name": "jitter turn",
+        "selector": {
+          "kind": "wiggly",
+          "units": "$units",
+          "amount": {
+            "keys": [
+              {
+                "t": "=at - frame",
+                "v": 0,
+                "ease": "hold"
+              },
+              {
+                "t": "=at",
+                "v": 100,
+                "ease": "hold"
+              },
+              {
+                "t": "=at + $length * beat",
+                "v": 0
+              }
+            ]
+          },
+          "frequency": "$frequency",
+          "correlation": 0,
+          "seed": 13
+        },
+        "rotation": "=vec(0, 0, $rotation)"
+      }
+    }
+  ]
+}

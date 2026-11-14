@@ -3,7 +3,7 @@
 //! these.
 //!
 //! The registry is split by category, one file each, so that work on
-//! different kinds of effect touches different files: `color`, `blur`,
+//! different kinds of effect touches different files: `color`, `key`, `blur`,
 //! `light`, `distort`, `stylize`, `time` and `generate`. [`EFFECTS`] is all of
 //! them in that order, followed by `custom`.
 //!
@@ -17,6 +17,7 @@ mod blur;
 mod color;
 mod distort;
 mod generate;
+mod key;
 mod light;
 mod stylize;
 mod time;
@@ -127,7 +128,7 @@ pub enum SourceKind {
 
 pub struct EffectSpec {
     pub kind: &'static str,
-    /// `color`, `blur`, `light`, `distort`, `stylize`, `time`, `generate` or `custom`.
+    /// `color`, `key`, `blur`, `light`, `distort`, `stylize`, `time`, `generate` or `custom`.
     pub category: &'static str,
     pub doc: &'static str,
     pub params: &'static [ParamSpec],
@@ -225,7 +226,7 @@ const CUSTOM: &[EffectSpec] = &[fx!("custom", "custom", "A WGSL fragment supplie
     p!("p12", [0.0], num, ""), p!("p13", [0.0], num, ""), p!("p14", [0.0], num, ""), p!("p15", [0.0], num, ""),
 ], source: SourceKind::Shader, reads_time: true)];
 
-const PARTS: &[&[EffectSpec]] = &[color::EFFECTS, blur::EFFECTS, light::EFFECTS, distort::EFFECTS, stylize::EFFECTS, time::EFFECTS, generate::EFFECTS, CUSTOM];
+const PARTS: &[&[EffectSpec]] = &[color::EFFECTS, key::EFFECTS, blur::EFFECTS, light::EFFECTS, distort::EFFECTS, stylize::EFFECTS, time::EFFECTS, generate::EFFECTS, CUSTOM];
 
 const fn total(parts: &[&[EffectSpec]]) -> usize {
     let mut n = 0;
@@ -264,7 +265,7 @@ const fn concat(parts: &[&[EffectSpec]]) -> [EffectSpec; COUNT] {
     out
 }
 
-/// Every effect, by category (colour, blur, light, distort, stylize, time,
+/// Every effect, by category (colour, key, blur, light, distort, stylize, time,
 /// generate), then `custom`.
 pub const EFFECTS: &[EffectSpec] = &concat(PARTS);
 

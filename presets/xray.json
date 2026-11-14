@@ -1,0 +1,51 @@
+{
+  "format": "edits.preset/1",
+  "name": "xray",
+  "description": "X-ray look (Video Star's NeXt-Ray): the negative in black and white, tinted a cold blue.",
+  "tags": [
+    "look",
+    "colour"
+  ],
+  "variables": {
+    "color": {
+      "type": "color",
+      "default": [
+        0.55,
+        0.8,
+        1
+      ],
+      "doc": "Colour of the tint (linear RGB, 0..1, or #rrggbb)."
+    },
+    "amount": {
+      "type": "number",
+      "default": 1,
+      "min": 0,
+      "max": 1,
+      "doc": "How strongly the tint colours the negative."
+    }
+  },
+  "apply": [
+    {
+      "effect": {
+        "kind": "invert"
+      }
+    },
+    {
+      "effect": {
+        "kind": "saturation",
+        "params": {
+          "amount": 0
+        }
+      }
+    },
+    {
+      "effect": {
+        "kind": "tint",
+        "params": {
+          "color": "$color",
+          "amount": "$amount"
+        }
+      }
+    }
+  ]
+}

@@ -161,6 +161,27 @@ Modifiers add procedural motion on top of keys:
 `shake.amplitude` can itself be keyframed, which gives an envelope. `loop` repeats a
 range: `{ "kind": "loop", "from": 0, "period": 4 }`.
 
+`oscillate` adds a periodic wave, with no randomness: a swing, a rock, a
+pulse on every beat.
+
+```json
+"rotation": { "base": [0, 0, 0],
+              "modifiers": [ { "kind": "oscillate", "amplitude": [0, 0, 6], "frequency": 0.5, "from": 8 } ] }
+```
+
+The value gains `amplitude × wave(frequency × (time since from) + phase)`:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `amplitude` | (required) | Peak offset: a number, one per component (`[0, 0, 6]` turns about z only), or keyframed (an envelope). |
+| `frequency` | 1 | Cycles per `per`. |
+| `per` | `beat` | `beat` (120 BPM in a project without a tempo) or `second`. |
+| `wave` | `sine` | `sine` (0, up to 1 at a quarter cycle, -1 at three quarters), `triangle` (the same turning points, straight in between), `square` (1 for the first half cycle, -1 for the second), `saw` (from -1 straight up to 1, then back). |
+| `phase` | 0 | Where in the cycle the wave is at `from`, in cycles: 0.25 starts a sine at its peak. |
+| `from` | 0 | The time cycles are counted from. |
+
+`check` reports a negative `frequency`.
+
 ## Effects
 
 `{ "kind": "...", "params": { ... }, "options": { ... }, "source": "...", "enabled": true }`,
@@ -169,14 +190,18 @@ on a layer or on an adjustment layer. Only `kind` is required.
 - `params`: numbers or vectors, each animatable like a transform value. Each
   has a unit (`%h` percent of height, `pos` composition units, `deg`,
   `color` linear RGB, ...) and may have a range the renderer clamps to.
+  A single number given for a vector parameter repeats (`"gamma": 1.2` is
+  `[1.2, 1.2, 1.2]`); a list keeps its length, which is how `curves` takes
+  any number of control points and `gradient_map` / `colorama` any number of
+  colours: `"master": [0, 0, 0.25, 0.18, 0.75, 0.82, 1, 1]`.
 - `options`: strings naming a choice that cannot be animated, for example
   `{ "shape": "hex" }` on `pixelate` or `{ "mode": "cmyk", "shape": "line" }`
   on `halftone`. A missing option takes the first of its values.
 - `source`: what the effect reads besides the picture: a WGSL file for
   `custom`, a `.cube` file for `lut` (paths relative to the project file), or
-  `"slot:<name>"`, a slot of the project, for `displacement_map` (required)
-  and `time_displacement` (optional: without it the layer's own picture is
-  the map). Effects that take none must not have one.
+  `"slot:<name>"`, a slot of the project, for `displacement_map` and
+  `difference_matte` (required) and `time_displacement` (optional: without
+  it the layer's own picture is the map). Effects that take none must not have one.
 
 The registry in `crates/edits-core/src/effects/` (one file per category)
 lists every kind with its parameters, units, ranges, options and defaults;
@@ -184,7 +209,13 @@ lists every kind with its parameters, units, ranges, options and defaults;
 
 colour: `exposure`, `fade`, `brightness_contrast`, `saturation`, `hue`, `invert`,
 `threshold`, `posterize`, `tint`, `vignette`, `grain`, `lut` (a `.cube` file
-in `source`), `gradient_map`, `levels`, `vibrance`; blur: `gaussian_blur`,
+in `source`), `gradient_map` (with a `stops` mode), `levels`, `vibrance`,
+`white_balance`, `lift_gamma_gain`, `highlights_shadows`, `channel_mixer`,
+`curves` (control points as lists), `hsl`, `colorama`, `replace_color`,
+`leave_color`, `solarize`, `bleach_bypass`, `technicolor`, `haze`; key (they
+make the layer transparent, after its masks and before its track matte):
+`chroma_key`, `spill_suppress`, `luma_key`, `unmult`, `difference_matte` (a
+clean plate slot in `source`); blur: `gaussian_blur`,
 `directional_blur`, `zoom_blur`, `spin_blur`; light: `glow`; distort:
 `transform2d`, `twirl`, `bulge`, `kaleidoscope`, `wave_warp`, `ripple`,
 `shockwave`, `mirror`, `tile`, `polar`, `lens_distortion`, `displacement_map`
@@ -349,17 +380,20 @@ them.
 | --- | --- |
 | `pulse` | Keys on one property, from `at`: `{ "transform": "scale" }`, `{ "effect": "fade", "param": "amount", "params": {...}, "base": 0 }`. `keys` are `{ "dt", "v", "ease" }`. Keys already there before `at` are kept and held until the pulse, keys after it are kept; a missing effect is added (with `params` and, if given, `options`, e.g. `"options": { "mode": "$mode" }`). `adjustment` names an effect parameter to use instead when the target is an adjustment layer. |
 | `shake` | A `shake` modifier on a property (`transform` or `effect` + `param`, as in a pulse) whose amplitude follows `keys`, at `frequency`. Repeated hits share one modifier. |
+| `oscillate` | An [`oscillate` modifier](#animatable-values) on a property (as in a pulse) counted from `at`, with `wave`, `frequency`, `per` and `phase`, whose amplitude follows `keys` (`{ "dt", "v", "ease" }`; `v` is the peak, e.g. `"=vec(0, 0, $angle)"`). Hits with the same wave, rate, phase and time share one modifier. |
 | `effect` | Append an effect to the target. |
 | `layer` | Insert a layer (`"place": "top"`, `"above"` or `"below"` the target). Its `id` may contain `{target}`; it gets a suffix when taken. |
-| `set` | Set a value inside the target (`"pointer": "/transition"`), or inside the picture it cuts from (`"on": "previous"`). |
-| `retime` | Replay the target's keyed motion between `at` and `at + length` through a speed `curve` (an ease); `otherwise` lists actions for a layer that does not move. |
+| `set` | Set a value inside the target (`"pointer": "/transition"`), or inside the picture it cuts from (`"on": "previous"`). A pointer ending in `/-` appends to a list, made when missing (`"/masks/-"` adds a mask). |
+| `retime` | Replay the target's keyed motion between `at` and `at + length` through a speed `curve` (an ease), or through `progress`: where the replay is (0 at `at`, 1 at the end; it may go back) at evenly spaced moments, straight in between (`[0, 1, 0, 1]` is forward, back, forward). A `video` layer gets the same as a `time_remap` of its playback (so its own sound stops). `otherwise` lists actions for a layer that neither moves nor plays. |
 | `animator` | Append a [text animator](#text-animators) to the target, which must be a `text` layer. |
 
 A preset with `"layer_kind": "text"` changes a text layer: with the target
 `auto` it takes the topmost text layer visible at the time, and any other
 kind of layer is an error. The built-in `typewriter`, `pop_in`,
-`random_flicker` and `wave` are such presets: `edits apply p.json typewriter
---at 8 --var duration=2` types out the caption on screen at beat 8.
+`random_flicker`, `wave`, `fade_letters`, `flip_letters`, `slide_letters`,
+`jitter_text`, `explode`, `word_pop`, `line_reveal`, `gradient_text` and
+`scramble` are such presets: `edits apply p.json typewriter --at 8 --var
+duration=2` types out the caption on screen at beat 8.
 
 ## Rendering model
 
@@ -687,6 +721,19 @@ keys, like any value).
 | `fill` | Colour of the letters, `[r, g, b]` or `[r, g, b, a]` straight sRGB; the glyph's colour mixes toward it. The stroke keeps its colour. |
 | `tracking` | Extra space after the glyph, percent of the composition height; the lines stay aligned (a centred line grows both ways). |
 | `blur` | Gaussian blur of the glyph (sigma), percent of the composition height, in the text's own space. |
+| `character_offset` | Code points the character moves, rounded to a whole number (After Effects' Character Offset): 1 turns `A` into `B`. The new character is drawn centred where the old one was (the line does not reflow); spaces never change, and a character the font lacks leaves the old one. Added. |
+
+With a `character_offset`, four more fields: `character_range`
+(`preserve`, the default: lower-case letters cycle through a-z, capitals
+through A-Z, digits through 0-9, hiragana and katakana through their own
+blocks, anything else stays; `full`: any code point), `character_random`
+(false; true gives each character its own random share, 0..1, of the
+offset, drawn again `character_rate` times a second, at most once per
+output frame so that motion blur never mixes two letters: letters that
+scramble), `character_rate` (12; 0 keeps the shares) and `character_seed`
+(0). The
+`scramble` preset decodes a caption this way. When several animators offset
+characters, the first one's range applies.
 
 An animator also takes `name` (shown by `describe`) and `enabled` (default
 true). Animators apply in order; offsets, turns, tracking and blur add,
@@ -716,6 +763,6 @@ After Effects range selector.
 
 `check` reports animator values out of range (`smoothness` 0..100,
 `ease_high`, `ease_low` and `amount` -100..100, `correlation` 0..100), a
-`fill` that is not a colour, a negative `blur`, an unknown `ease`, and warns
-about an animator that sets no property.
+`fill` that is not a colour, a negative `blur` or `character_rate`, an
+unknown `ease`, and warns about an animator that sets no property.
 

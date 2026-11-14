@@ -6,6 +6,8 @@ import {
   WavesIcon,
 } from "lucide-react"
 
+import { presenceRing, usePresence } from "@/agent/presence"
+import { PresenceValue } from "@/agent/presence-ui"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -333,6 +335,8 @@ export function PropRow({
       : null
   const unit = unitLabel(prop.unit)
   React.useEffect(() => setLive(null), [prop.value, prop.base])
+  // The agent working on this value: a ring, and its old -> new value under the row.
+  const agent = usePresence({ pointer: prop.pointer })
   const keyed = prop.key_here != null
   const step =
     prop.unit === "count"
@@ -347,8 +351,9 @@ export function PropRow({
       data-slot="inspector-field"
       data-prop={prop.pointer}
       className={cn(
-        "group/prop flex min-h-8 items-center gap-2 rounded-md px-1",
-        picked && "bg-muted"
+        "group/prop flex min-h-8 flex-wrap items-center gap-x-2 rounded-md px-1",
+        picked && "bg-muted",
+        presenceRing(agent)
       )}
     >
       <Tooltip>
@@ -474,6 +479,11 @@ export function PropRow({
               : "Click to animate: a key at the playhead holding this value"}
         </TooltipContent>
       </Tooltip>
+      {agent && (
+        <div className="basis-full pb-1 pl-20">
+          <PresenceValue hit={agent} />
+        </div>
+      )}
     </div>
   )
 }
@@ -483,15 +493,26 @@ export function FieldRow({
   label,
   children,
   hint,
+  pointer,
 }: {
   label: string
   children: React.ReactNode
   hint?: string
+  /** The value's JSON pointer, for the agent's highlight (one or several, space separated). */
+  pointer?: string
 }) {
+  const ptrs = pointer?.split(" ") ?? []
+  const a = usePresence({ pointer: ptrs[0] })
+  const b = usePresence({ pointer: ptrs[1] })
+  const agent = a ?? b
   return (
     <div
       data-slot="inspector-field"
-      className="flex min-h-8 items-center gap-2 px-1"
+      data-prop={pointer}
+      className={cn(
+        "flex min-h-8 flex-wrap items-center gap-x-2 rounded-md px-1",
+        presenceRing(agent)
+      )}
     >
       {hint ? (
         <Tooltip>
@@ -512,6 +533,11 @@ export function FieldRow({
         </span>
       )}
       <div className="flex min-w-0 flex-1 items-center gap-1.5">{children}</div>
+      {agent && (
+        <div className="basis-full pb-1 pl-20">
+          <PresenceValue hit={agent} />
+        </div>
+      )}
     </div>
   )
 }

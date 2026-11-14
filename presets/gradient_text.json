@@ -1,0 +1,87 @@
+{
+  "format": "edits.preset/1",
+  "name": "gradient_text",
+  "description": "The letters of a text layer take a two-colour gradient, optionally cycling through the rainbow; the outline keeps its colour.",
+  "tags": [
+    "text",
+    "color",
+    "caption",
+    "rainbow"
+  ],
+  "layer_kind": "text",
+  "variables": {
+    "color_a": {
+      "type": "color",
+      "default": [
+        1,
+        0.35,
+        0.75
+      ],
+      "doc": "Colour at `start`."
+    },
+    "color_b": {
+      "type": "color",
+      "default": [
+        0.3,
+        0.85,
+        1
+      ],
+      "doc": "Colour at `end`."
+    },
+    "start": {
+      "type": "vector",
+      "default": [
+        0,
+        -0.12
+      ],
+      "doc": "Where `color_a` is full, in composition units (the frame is 1 high, centred on 0, y down)."
+    },
+    "end": {
+      "type": "vector",
+      "default": [
+        0,
+        0.12
+      ],
+      "doc": "Where `color_b` is full."
+    },
+    "cycle": {
+      "type": "number",
+      "default": 0,
+      "min": 0,
+      "max": 8,
+      "doc": "Trips round the colour wheel per beat (0: the colours stay)."
+    }
+  },
+  "apply": [
+    {
+      "effect": {
+        "kind": "gradient_ramp",
+        "params": {
+          "start": "$start",
+          "end": "$end",
+          "color_a": "$color_a",
+          "color_b": "$color_b"
+        },
+        "options": {
+          "blend": "multiply"
+        }
+      }
+    },
+    {
+      "oscillate": {
+        "effect": "hue",
+        "param": "degrees",
+        "base": 0,
+        "wave": "saw",
+        "phase": 0.5,
+        "frequency": "$cycle",
+        "keys": [
+          {
+            "dt": 0,
+            "v": 180
+          }
+        ]
+      }
+    }
+  ]
+}

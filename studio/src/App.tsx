@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react"
 
+import { AgentDock } from "@/agent/dock"
 import { AppSidebar } from "@/components/app-sidebar"
 import { CommandMenu } from "@/components/command-menu"
 import { Shortcuts } from "@/components/shortcuts"
@@ -56,9 +57,9 @@ export default function App() {
           <AppSidebar variant="inset" />
           <SidebarInset className="h-svh overflow-hidden md:h-[calc(100svh-1rem)]">
             <SiteHeader />
-            <div className="@container/main flex min-h-0 flex-1 flex-col">
+            <AgentDock>
               <Page />
-            </div>
+            </AgentDock>
           </SidebarInset>
         </SidebarProvider>
         <CommandMenu />

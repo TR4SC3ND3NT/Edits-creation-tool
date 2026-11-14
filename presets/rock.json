@@ -1,0 +1,97 @@
+{
+  "format": "edits.preset/1",
+  "name": "rock",
+  "description": "The picture rocks from side to side at an even speed, turning back on every beat.",
+  "tags": [
+    "loop",
+    "rotate",
+    "combo"
+  ],
+  "variables": {
+    "angle": {
+      "type": "number",
+      "default": 4,
+      "min": 0,
+      "max": 45,
+      "unit": "degrees",
+      "doc": "Widest turn each way."
+    },
+    "period": {
+      "type": "number",
+      "default": 2,
+      "min": 0.25,
+      "max": 16,
+      "unit": "beats",
+      "doc": "Time of one rock there and back."
+    },
+    "cycles": {
+      "type": "integer",
+      "default": 4,
+      "min": 1,
+      "max": 64,
+      "doc": "How many rocks, the first and the last eased."
+    },
+    "cover": {
+      "type": "number",
+      "default": 1,
+      "min": 0,
+      "max": 1,
+      "doc": "Zoom in so the frame's corners never show: 1 just enough, 0 not at all."
+    }
+  },
+  "apply": [
+    {
+      "oscillate": {
+        "transform": "rotation",
+        "wave": "triangle",
+        "phase": 0.75,
+        "frequency": "=1 / $period",
+        "keys": [
+          {
+            "dt": 0,
+            "v": 0,
+            "ease": "in_out"
+          },
+          {
+            "dt": "=$period * 0.5 * beat",
+            "v": "=vec(0, 0, $angle)"
+          },
+          {
+            "dt": "=($cycles - 0.5) * $period * beat",
+            "v": "=vec(0, 0, $angle)",
+            "ease": "in_out"
+          },
+          {
+            "dt": "=$cycles * $period * beat",
+            "v": 0
+          }
+        ]
+      }
+    },
+    {
+      "pulse": {
+        "transform": "scale",
+        "keys": [
+          {
+            "dt": 0,
+            "v": "=base",
+            "ease": "in_out"
+          },
+          {
+            "dt": "=$period * 0.5 * beat",
+            "v": "=orig * (1 + $cover * (max(aspect, 1 / aspect) * $angle * 0.01745 + 2 * 0))"
+          },
+          {
+            "dt": "=($cycles - 0.5) * $period * beat",
+            "v": "=orig * (1 + $cover * (max(aspect, 1 / aspect) * $angle * 0.01745 + 2 * 0))",
+            "ease": "in_out"
+          },
+          {
+            "dt": "=$cycles * $period * beat",
+            "v": "=orig"
+          }
+        ]
+      }
+    }
+  ]
+}

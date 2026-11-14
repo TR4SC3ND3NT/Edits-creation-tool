@@ -1142,6 +1142,7 @@ dependencies = [
  "edits-core",
  "edits-render",
  "image",
+ "libc",
  "log",
  "notify",
  "serde",

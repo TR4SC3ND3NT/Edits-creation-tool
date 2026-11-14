@@ -1,0 +1,97 @@
+{
+  "format": "edits.preset/1",
+  "name": "flip_letters",
+  "description": "The letters of a text layer flip in one after another, turning in 3D about their middles.",
+  "tags": [
+    "text",
+    "reveal",
+    "caption",
+    "3d"
+  ],
+  "layer_kind": "text",
+  "variables": {
+    "duration": {
+      "type": "number",
+      "default": 1.5,
+      "min": 0.05,
+      "max": 64,
+      "unit": "beats",
+      "doc": "From the first unit starting to the last one settling."
+    },
+    "spread": {
+      "type": "number",
+      "default": 40,
+      "min": 1,
+      "max": 100,
+      "unit": "% of the units",
+      "doc": "How many units are moving at once: small is one by one, 100 all together."
+    },
+    "units": {
+      "type": "string",
+      "default": "characters",
+      "doc": "What moves at each step: characters, words or lines."
+    },
+    "axis": {
+      "type": "enum",
+      "default": "horizontal",
+      "options": {
+        "horizontal": {
+          "fx": 0,
+          "fy": 1
+        },
+        "vertical": {
+          "fx": 1,
+          "fy": 0
+        }
+      },
+      "doc": "horizontal: turn about an upright axis (a door); vertical: about a level one (a flap)."
+    },
+    "angle": {
+      "type": "number",
+      "default": 90,
+      "min": -360,
+      "max": 360,
+      "unit": "degrees",
+      "doc": "Turn they start from, in degrees (90: edge-on)."
+    },
+    "overshoot": {
+      "type": "number",
+      "default": 1.2,
+      "min": 0,
+      "max": 6,
+      "doc": "How far past flat a letter turns before it settles (0: no bounce)."
+    }
+  },
+  "apply": [
+    {
+      "animator": {
+        "name": "flip letters",
+        "selector": {
+          "kind": "range",
+          "units": "$units",
+          "shape": "ramp_up",
+          "start": 0,
+          "end": "$spread",
+          "offset": {
+            "keys": [
+              {
+                "t": "=at",
+                "v": "=-$spread"
+              },
+              {
+                "t": "=at + $duration * beat",
+                "v": 100
+              }
+            ]
+          },
+          "ease": {
+            "name": "back_out",
+            "overshoot": "$overshoot"
+          }
+        },
+        "rotation": "=vec($fx * $angle, $fy * $angle, 0)",
+        "opacity": 0
+      }
+    }
+  ]
+}
