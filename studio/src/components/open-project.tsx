@@ -103,7 +103,7 @@ function NewFromPictures({
               label="Choose pictures…"
               value={
                 pictures.length
-                  ? `${pictures.length} pictures: ${pictures.map(base).join(", ")}`
+                  ? `${pictures.length} picture${pictures.length === 1 ? "" : "s"}: ${pictures.map(base).join(", ")}`
                   : ""
               }
               onPick={async () => {

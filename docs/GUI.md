@@ -164,7 +164,26 @@ design note above). A line at the bottom says what your last edit did
 (`d: position → [0.2, 0, 0]`) or why it was refused, and `?` opens the list
 of keys.
 
-SCREENSHOT_EDIT
+What a screenshot of the demo at 1400 × 900 shows with layer `a` selected
+at beat 0.57: on the left of the page a narrow rail of tabs with icons
+(*Media, Effects, Transitions, Presets, Text, Shapes, Audio*), next to it a
+search field and the Effects tab's cards in two columns under *Colour · 14*
+(`exposure` *Multiply by...*, `fade`, `brightness contrast`, `saturation`,
+`hue`, `invert`, each over a small rendered preview of two generated
+pictures); in the middle the picture with a thin box, corner squares and a
+rotation knob on it, and at the top right of the stage three small toggles
+(handles, guides) and *Fit · 50% · 100%*; under it `00:00.28`, `b0.57` and
+the transport; on the right the inspector `a` `image` with *Layer* (`0
+beats`, `2 beats`, `normal`, the opacity slider and its diamond, *visible*)
+and *Transform* (`position` `0 X` `0 Y` `0 Z`, `scale` `1.002 ×` with a
+filled diamond, `rotation °`, `anchor`). Across the bottom the toolbar
+(*+ Add*, split, delete, *Ripple*, the magnet, *Beat cut*, *Accent*,
+`6 layers · 123 BPM · 25 fps`, zoom), the ruler `1 1.2 1.3 1.4 2 ...`, the
+*Beats* lane with the `high` section, kick dots and snare diamonds, the
+`beat.wav` waveform, and the tracks: `d` opened into lanes `scale 12`,
+`rotation 2`, `zoom blur.strength 2`, ..., each key a small diamond, the
+clip of `d` showing its picture repeated, `d`, `⇢ cross zoom` and the
+chips `zoom blur` `saturation` `invert` `fade`; `cube` and `a` below.
 
 **Browser.** Tabs *Media, Effects, Transitions, Presets, Text, Shapes,
 Audio* and a search field (every word must match a name, a category or a
@@ -176,7 +195,7 @@ parameter in turn at a telling value, 70 % of its range, and the clearest
 result is kept), a preset applied at beat 1 and shown
 just after (a text preset on a text layer), a transition half way. They are
 made when a card first scrolls into view, one at a time on a thread with a
-renderer of its own, and kept in `$XDG_CACHE_HOME/edits-studio/thumbs/v2/`
+renderer of its own, and kept in `$XDG_CACHE_HOME/edits-studio/thumbs/v3/`
 (else `~/.cache/...`), so each is made once per machine; a grey box shows
 until it is ready. **Double-click** a card to apply it to the selected layer
 at the playhead (with nothing selected: to the picture on screen); **drag**
@@ -507,7 +526,15 @@ example after picking `position` on layer `d` at frame 60:
   property of a layer at a time with its unit, range and keys from the effect
   registry; `uictx.rs` writes `ui.json`; `renders.rs` runs `edits render`;
   `reference.rs` finds and reads analyses and reports and runs comparisons
-  through `edits-analyze`; `commands.rs` is the list of Tauri commands.
+  through `edits-analyze`; `commands.rs` is the list of Tauri commands. The
+  Edit page's own edits are pure functions in `editor.rs` (keyframe lanes,
+  moving one key, split, ripple delete, moving several layers, new text,
+  shape and particle layers, pictures, new projects) with their commands in
+  `edit_commands.rs`; `song.rs` analyses the audio and reads its waveform
+  and runs beat cut and accent; `thumbs.rs` renders the browser's previews;
+  `render.rs` also renders unsaved previews while a control is dragged. In
+  the page, `components/edit/editor-context.tsx` holds the Edit page's state
+  (selection, range, snapping, live preview, song, dragging browser cards).
   `engine/` is ported from `crates/edits-gui` (editing, time, rows, reload),
   so both windows make the same edits.
 - The webview loads the project's audio through Tauri's asset protocol.
@@ -539,16 +566,26 @@ example after picking `position` on layer `d` at frame 60:
 - Audio plays through the webview: it needs GStreamer, and it follows the
   wall clock, not the sound card's.
 - The camera's keys move one by one on its lanes, not together on its row.
-- Tested on X11 under Xvfb at 1400 × 900 with Mesa lavapipe, driven with
-  `xdotool`: opening the demo, typing a value in the inspector (written as
-  actor `window`, `ui.json` updated), an agent's `project_edit` while open
-  (reloaded, toast with Undo), dragging a key on the timeline, Ctrl+Z, the
-  command palette, rendering from the Renders page, two comparisons on the
-  Reference page and *Jump to*, a preset from the Presets sheet, playback,
-  a note for the agent (read back by `ui_context`), the release build started
-  through `edits gui`, and the debug panel of `bun run tauri dev` (Ctrl+D). Not run on
-  Wayland, macOS or Windows, or on a HiDPI screen; audio could not be heard
-  where it was developed.
+- Tested on X11 under Xvfb at 1400 × 900 and 1920 × 1080 with Mesa
+  lavapipe, driven with `xdotool` on the demo: a flash on beat 4 (click the
+  ruler on bar 2, click the clip, *Presets*, double-click `flash`: four
+  actions, the keys land on beat 4 exactly), `punch` on every kick
+  (*Analyse*, *Accent*, *Accent*: three), a title with `pop_in` (ruler,
+  *Text*, double-click *Title*, double-click `pop in`: four), replacing a
+  slot's picture (the card's menu, *Replace picture…*, the file dialog),
+  a transition (*Transitions*, drag `cross zoom` onto the clip: two), moving
+  a key (open the lanes, drag the key: two), Ctrl+Z, a live drag of the
+  transform handles, the shortcuts and Beat cut dialogs, and *New from
+  pictures + song* (the project is analysed, cut and opened). Earlier: an
+  agent's `project_edit` while open, the command palette, rendering,
+  comparisons on the Reference page, a note for the agent, and `bun run
+  tauri dev`. Not run on Wayland, macOS or Windows, or on a HiDPI screen;
+  audio could not be heard where it was developed. Browser cards are
+  dragged with the pointer, not HTML drag and drop (which WebKitGTK under
+  Xvfb does not deliver), so files cannot be dropped in from a file
+  manager.
+- Every layer is its own track, as in the file (top of the picture first):
+  a beat cut of 32 pictures makes 32 tracks, not one track of 32 clips.
 
 # The egui window (`edits-gui`)
 

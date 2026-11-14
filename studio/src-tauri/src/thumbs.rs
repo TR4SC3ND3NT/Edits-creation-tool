@@ -3,7 +3,7 @@
 //! card shows what the item does. They are made lazily (when a card first
 //! shows), one at a time on a thread with a renderer of its own (the preview
 //! renderer keeps the project's pictures), and kept on disk under the user's
-//! cache folder (`$XDG_CACHE_HOME/edits-studio/thumbs/v2/`, else
+//! cache folder (`$XDG_CACHE_HOME/edits-studio/thumbs/v3/`, else
 //! `~/.cache/...`), so they are made once per machine.
 //!
 //! The sample is two generated pictures (warm circles, cool stripes) at
@@ -34,7 +34,7 @@ pub fn cache_dir() -> PathBuf {
         .filter(|p| p.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
         .unwrap_or_else(std::env::temp_dir);
-    base.join("edits-studio").join("thumbs").join("v2")
+    base.join("edits-studio").join("thumbs").join("v3")
 }
 
 /// The file of one thumbnail: `effect-glow.jpg`, `preset-flash.jpg`, `transition-fade.jpg`.
@@ -283,7 +283,10 @@ fn make(
     let mut img = render(r, &doc, frame)?;
     if kind == "effect" {
         if plain.is_none() {
-            *plain = Some(render(r, &base_doc(dir), frame)?);
+            // The same picture and motion without the effect.
+            let mut bare = doc.clone();
+            bare["layers"][0]["effects"] = json!([]);
+            *plain = Some(render(r, &bare, frame)?);
         }
         let base = plain.as_ref().expect("rendered above");
         let mut best = mean_diff(base, &img);
