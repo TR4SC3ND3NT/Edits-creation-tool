@@ -59,11 +59,11 @@ export function AgentDock({ children }: { children: React.ReactNode }) {
           orientation="horizontal"
           className="min-h-0 flex-1"
         >
-          <ResizablePanel id="page" defaultSize="70" minSize="40">
+          <ResizablePanel id="page" defaultSize="64" minSize="40">
             {page}
           </ResizablePanel>
           <ResizableHandle withHandle />
-          <ResizablePanel id="agent" defaultSize="30" minSize="20" maxSize="55">
+          <ResizablePanel id="agent" defaultSize="36" minSize="26" maxSize="60">
             <AgentPanel />
           </ResizablePanel>
         </ResizablePanelGroup>
