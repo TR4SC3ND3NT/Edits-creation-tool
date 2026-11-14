@@ -419,6 +419,8 @@ pub async fn project_from_reference(
             repeats: true,
             analysis_dir: analysis_dir.clone(),
             project_dir: dir.clone(),
+            // Use vision labels when the analysis has some (a fresh one has none).
+            vision: true,
         };
         let project = edits_analyze::draft::draft(&an, &opts);
         let path = free_project_file(&dir);
