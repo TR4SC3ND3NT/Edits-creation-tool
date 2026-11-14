@@ -125,7 +125,8 @@ definitions; `docs/AGENTS.md` has the client setup.
 - **Never commit media**: no pictures, audio, video, renders or analyses.
   Tests and the demo generate what they need in code. `.gitignore` covers
   `*.mp4`, `*.mov`, `/out`, `/analysis` and `/assets` (except
-  `assets/fonts/`, which holds the built-in Inter font and its OFL licence);
+  `assets/fonts/`, which holds the built-in Inter font and its OFL licence;
+  the app icons in `studio/src-tauri/icons/` are the only committed pictures);
   keep working files there or outside the repository.
 - **Tests use generated content.** `edits-render` renders tiny procedural
   pictures; `edits-analyze` synthesises clips with known parameters;
