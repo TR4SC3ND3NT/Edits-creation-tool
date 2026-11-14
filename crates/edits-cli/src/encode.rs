@@ -23,7 +23,7 @@ const H264_ENCODERS: [&str; 2] = ["libx264", "libopenh264"];
 const AAC_ENCODERS: [&str; 2] = ["aac", "libfdk_aac"];
 const INSTALL_HINT: &str = "install ffmpeg with H.264 support, e.g. `apt install ffmpeg` (Debian/Ubuntu), `brew install ffmpeg` (macOS) or `winget install ffmpeg` (Windows); it must provide the libx264 or libopenh264 encoder";
 
-fn program() -> String {
+pub(crate) fn program() -> String {
     std::env::var("EDITS_FFMPEG").unwrap_or_else(|_| "ffmpeg".to_string())
 }
 

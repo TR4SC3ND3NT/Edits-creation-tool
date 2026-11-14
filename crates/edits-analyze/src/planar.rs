@@ -219,6 +219,56 @@ struct Raw {
     method: &'static str,
 }
 
+/// Where each picture appears, roughly: every `step`th frame is searched
+/// with keypoints (a cheap pass, no pixel refinement), and the frames where
+/// a picture is found, with a plausible homography and a correlation of at
+/// least `min_ncc` on the coarse stage, are joined into windows (gaps up to
+/// two steps) and widened by `step + 4` frames on each side. An empty list:
+/// the picture is not in the video.
+pub fn find_windows(frames: &Frames, arts: &[Art], o: &TrackOpts, step: usize, min_ncc: f64) -> Vec<Vec<(usize, usize)>> {
+    let n = frames.len();
+    let step = step.max(1);
+    let feats_n = (o.features / 2).max(400);
+    let prepared: Vec<Prepared> = arts.par_iter().map(|a| prepare(a, feats_n)).collect();
+    let sampled: Vec<usize> = (0..n).step_by(step).collect();
+    let hits: Vec<Vec<bool>> = sampled
+        .par_iter()
+        .map(|&i| {
+            let ff = frame_features(&frames.gray(i), feats_n);
+            let fr = FrameStack::new(&frames.gray(i), frame_mask(frames, i, o));
+            arts.iter()
+                .zip(&prepared)
+                .map(|(a, p)| {
+                    feature_estimate(p, a, &ff, frames.w, frames.h, o.seed ^ i as u64)
+                        .is_some_and(|(h, inl)| inl >= 10 && homography::ncc(&h, &p.pyr, &fr, 0, 3).0 >= min_ncc)
+                })
+                .collect()
+        })
+        .collect();
+    (0..arts.len())
+        .map(|ai| {
+            let found: Vec<usize> = sampled.iter().zip(&hits).filter(|(_, h)| h[ai]).map(|(f, _)| *f).collect();
+            let mut runs: Vec<(usize, usize)> = Vec::new();
+            for f in found {
+                match runs.last_mut() {
+                    Some(r) if f <= r.1 + 2 * step => r.1 = f,
+                    _ => runs.push((f, f)),
+                }
+            }
+            let pad = step + 4;
+            let mut out: Vec<(usize, usize)> = Vec::new();
+            for (s, e) in runs {
+                let (s, e) = (s.saturating_sub(pad), (e + pad).min(n.saturating_sub(1)));
+                match out.last_mut() {
+                    Some(r) if s <= r.1 + 1 => r.1 = r.1.max(e),
+                    _ => out.push((s, e)),
+                }
+            }
+            out
+        })
+        .collect()
+}
+
 /// Track every picture through `frames`. `progress` gets (picture, frame).
 pub fn track(frames: &Frames, video_path: &str, arts: &[Art], o: &TrackOpts, progress: &(dyn Fn(&str, usize) + Sync)) -> Track {
     let n = frames.len();

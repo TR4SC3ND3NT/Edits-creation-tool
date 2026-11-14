@@ -112,12 +112,18 @@ pub struct MetricArgs {
     /// Write the per-frame numbers here (JSON)
     #[arg(short, long)]
     pub output: Option<PathBuf>,
+    /// The project the render came from: the worst frames then list the layers visible at them
+    #[arg(long)]
+    pub project: Option<PathBuf>,
+    /// Also write a side-by-side video here: reference | render, with the reference's sound
+    #[arg(long, value_name = "MP4")]
+    pub side_by_side: Option<PathBuf>,
     #[arg(long)]
     pub json: bool,
 }
 
 /// `a-b,c,d-e` -> inclusive ranges.
-pub fn parse_ranges(s: &str) -> Result<Vec<(usize, usize)>> {
+pub(crate) fn parse_ranges(s: &str) -> Result<Vec<(usize, usize)>> {
     let mut v = Vec::new();
     for part in s.split(',').map(str::trim).filter(|p| !p.is_empty()) {
         let (a, b) = match part.split_once('-') {
@@ -271,12 +277,39 @@ pub fn metric(a: MetricArgs) -> Result<ExitCode> {
     if let Some(p) = &a.output {
         write_or_print(Some(p), &edits_analyze::jsonfmt::to_string(&m)?)?;
     }
+    let mut small = serde_json::to_value(&m)?;
+    if let Some(o) = small.as_object_mut() {
+        o.remove("frames");
+    }
+    if let Some(pp) = &a.project {
+        let project = edits_core::Project::from_json(&std::fs::read_to_string(pp).with_context(|| format!("reading {}", pp.display()))?)?;
+        let ev = edits_core::Evaluator::new(&project);
+        if let Some(w) = small["worst"].as_array_mut() {
+            for f in w.iter_mut() {
+                let frame = f["frame"].as_u64().unwrap_or(0);
+                // Reference frame n shows the instant n / fps.
+                let t = project.from_seconds(frame as f64 / m.fps);
+                let ids: Vec<&str> = project.layers.iter().filter(|l| l.enabled && ev.active(l, t)).map(|l| l.id.as_str()).collect();
+                f["layers"] = json!(ids);
+            }
+        }
+    }
+    if let Some(out) = &a.side_by_side {
+        crate::tracecmd::side_by_side(&a.reference, &a.render, out)?;
+        small["side_by_side"] = json!(out);
+    }
     if a.json {
-        let mut small = serde_json::to_value(&m)?;
-        small.as_object_mut().map(|o| o.remove("frames"));
         println!("{}", serde_json::to_string_pretty(&small)?);
     } else {
         print!("{}", trace::metric_report(&m));
+        if let Some(w) = small["worst"].as_array().filter(|_| a.project.is_some()) {
+            for f in w.iter().take(6) {
+                println!("  f{} layers: {}", f["frame"], f["layers"]);
+            }
+        }
+        if let Some(out) = &a.side_by_side {
+            println!("side by side: {}", out.display());
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

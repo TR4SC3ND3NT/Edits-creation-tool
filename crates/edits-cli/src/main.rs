@@ -10,6 +10,7 @@ mod encode;
 mod launch;
 mod sheet;
 mod trace;
+mod tracecmd;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -88,6 +89,8 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Trace a reference: track its pictures (and proxies), measure their grade, draft a project that replays them; --preview renders, compares and writes a side-by-side
+    Trace(tracecmd::TraceArgs),
     /// Find known pictures in a reference, frame by frame: per-frame homographies and corner-pin keys (the trace method)
     Track(trace::TrackArgs),
     /// Measure a reference as effect parameters: `grade` (tone curves per tracked key), `blur` (gaussian, zoom, directional per frame)
@@ -277,6 +280,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
         }
         Command::Fit(a) => analysis::fit(a),
         Command::Track(a) => trace::track(a),
+        Command::Trace(a) => tracecmd::trace_cmd(a),
         Command::Measure(c) => trace::measure(c),
         Command::Metric(a) => trace::metric(a),
         Command::Gui { args } => launch::gui(&args),

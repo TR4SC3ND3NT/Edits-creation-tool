@@ -298,6 +298,31 @@ fn erode(mask: &[bool], w: usize, h: usize, r: usize) -> Vec<bool> {
     out
 }
 
+/// Clear `mask` inside a convex quad (frame pixel edges), grown by `grow` pixels.
+fn cover_quad(mask: &mut [bool], w: usize, h: usize, q: &[[f64; 2]], grow: f64) {
+    let c = [(q[0][0] + q[1][0] + q[2][0] + q[3][0]) / 4.0, (q[0][1] + q[1][1] + q[2][1] + q[3][1]) / 4.0];
+    let x0 = q.iter().map(|p| p[0]).fold(f64::MAX, f64::min).floor().max(0.0) as usize;
+    let x1 = (q.iter().map(|p| p[0]).fold(f64::MIN, f64::max).ceil().max(0.0) as usize).min(w);
+    let y0 = q.iter().map(|p| p[1]).fold(f64::MAX, f64::min).floor().max(0.0) as usize;
+    let y1 = (q.iter().map(|p| p[1]).fold(f64::MIN, f64::max).ceil().max(0.0) as usize).min(h);
+    for y in y0.saturating_sub(grow as usize)..(y1 + grow as usize).min(h) {
+        for x in x0.saturating_sub(grow as usize)..(x1 + grow as usize).min(w) {
+            let p = [x as f64 + 0.5, y as f64 + 0.5];
+            let inside = (0..4).all(|i| {
+                let (a, b) = (q[i], q[(i + 1) % 4]);
+                let (ex, ey) = (b[0] - a[0], b[1] - a[1]);
+                let len = ex.hypot(ey).max(1e-9);
+                // Signed distance to the edge, positive on the centre's side.
+                let side = |pt: [f64; 2]| (ex * (pt[1] - a[1]) - ey * (pt[0] - a[0])) / len;
+                side(p) * side(c).signum() >= -grow
+            });
+            if inside {
+                mask[y * w + x] = false;
+            }
+        }
+    }
+}
+
 fn quantiles(v: &mut [f32], n: usize) -> Vec<f64> {
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     (0..n).map(|k| v[((k as f64 / (n - 1) as f64) * (v.len() - 1) as f64).round() as usize] as f64).collect()
@@ -382,7 +407,20 @@ pub fn measure_grade(video: &Path, tr: &Track, points: usize, every: usize) -> R
             .filter_map(|k| {
                 let hm = [[k.h[0], k.h[1], k.h[2]], [k.h[3], k.h[4], k.h[5]], [k.h[6], k.h[7], k.h[8]]];
                 let (ch, mask) = warp(&pyr, &hm, w, h)?;
-                let inner = erode(&mask, w, h, 3);
+                let mut inner = erode(&mask, w, h, 3);
+                // Smaller pictures tracked in the same frame lie over this one: leave them out.
+                let area = k.corners.as_ref().map(quad_area).unwrap_or(f64::MAX);
+                for other in tr.arts.iter().filter(|o| o.name != at.name) {
+                    let Some(ok) = other.keys.iter().find(|x| x.frame == k.frame) else { continue };
+                    if ok.corners.as_ref().map(quad_area).unwrap_or(f64::MAX) >= area {
+                        continue;
+                    }
+                    let hm = [[ok.h[0], ok.h[1], ok.h[2]], [ok.h[3], ok.h[4], ok.h[5]], [ok.h[6], ok.h[7], ok.h[8]]];
+                    let corners: Vec<[f64; 2]> = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)].iter().filter_map(|(u, v)| apply(&hm, u * other.size[0] as f64, v * other.size[1] as f64)).collect();
+                    if corners.len() == 4 {
+                        cover_quad(&mut inner, w, h, &corners, 3.0);
+                    }
+                }
                 let idx: Vec<usize> = (0..w * h).filter(|i| inner[*i]).collect();
                 if idx.len() < 1500 {
                     return None;
@@ -558,6 +596,131 @@ pub fn measure_blur(render: &Path, reference: &Path, only: Option<&[usize]>, min
         frames: frames.into_iter().filter(|f| f.best - f.base >= min_gain).collect(),
         mean_gain: r4(gain),
     })
+}
+
+// ---- draft ------------------------------------------------------------------
+
+/// What a traced draft needs besides the track.
+pub struct DraftOpts {
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    /// Seconds.
+    pub duration: f64,
+    /// Path of the sound for `audio` (relative to the project), if any.
+    pub audio: Option<String>,
+    /// (bpm, beat offset in seconds, beat times in seconds): cuts within 1.5
+    /// frames of a beat are moved onto it.
+    pub beats: Option<(f64, f64, Vec<f64>)>,
+    /// How a picture's path is written in the project (relative to it).
+    pub rel: Box<dyn Fn(&str) -> String>,
+    /// Motion blur samples (1 = none).
+    pub samples: u32,
+}
+
+/// The run of a picture over consecutive frames: one layer of the draft.
+struct Run<'a> {
+    art: &'a planar::ArtTrack,
+    keys: Vec<&'a planar::TrackKey>,
+    area: f64,
+}
+
+fn quad_area(c: &[f64; 8]) -> f64 {
+    0.5 * (0..4).map(|i| c[2 * i] * c[(2 * i + 3) % 8] - c[(2 * i + 2) % 8] * c[2 * i + 1]).sum::<f64>().abs()
+}
+
+/// A project that replays the trace: one image layer per run of tracked
+/// frames, its picture pinned to the tracked corners frame by frame, with the
+/// measured tone curves and blur keyed on it; larger pictures beneath
+/// smaller ones. Returns the project and a short report.
+pub fn draft(track: &Track, grade: Option<&Grade>, o: &DraftOpts) -> (Value, Value) {
+    let fl = 1.0 / o.fps;
+    let mut runs: Vec<Run> = Vec::new();
+    for at in &track.arts {
+        let mut cur: Vec<&planar::TrackKey> = Vec::new();
+        for k in &at.keys {
+            if cur.last().is_some_and(|p| k.frame != p.frame + 1) {
+                runs.push(Run { art: at, keys: std::mem::take(&mut cur), area: 0.0 });
+            }
+            cur.push(k);
+        }
+        if !cur.is_empty() {
+            runs.push(Run { art: at, keys: cur, area: 0.0 });
+        }
+    }
+    for r in &mut runs {
+        let a: Vec<f64> = r.keys.iter().filter_map(|k| k.corners.as_ref().map(quad_area)).collect();
+        r.area = if a.is_empty() { 1.0 } else { a.iter().sum::<f64>() / a.len() as f64 };
+    }
+    runs.sort_by(|a, b| b.area.partial_cmp(&a.area).unwrap());
+    let snap = |t: f64| -> (f64, bool) {
+        if let Some((_, _, beats)) = &o.beats {
+            if let Some(b) = beats.iter().min_by(|x, y| (*x - t).abs().partial_cmp(&(*y - t).abs()).unwrap()) {
+                if (b - t).abs() <= 1.5 * fl && (b - t).abs() > 1e-9 {
+                    return (r4(*b), true);
+                }
+            }
+        }
+        (r4(t), false)
+    };
+    let mut layers = Vec::new();
+    let mut slots = serde_json::Map::new();
+    let mut snapped = 0;
+    let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut report_layers = Vec::new();
+    for r in &runs {
+        let name = &r.art.name;
+        slots.insert(name.clone(), json!({ "path": (o.rel)(&r.art.path), "note": "traced picture" }));
+        let n = counts.entry(name.clone()).or_insert(0);
+        *n += 1;
+        let id = format!("{name}_{n}");
+        let (first, last) = (r.keys[0].frame, r.keys.last().unwrap().frame);
+        let (t_in, s1) = snap(first as f64 * fl);
+        let (t_out, s2) = snap((last + 1) as f64 * fl);
+        snapped += s1 as usize + s2 as usize;
+        // Corners when every key has them, else the 3x3 pin.
+        let corners = r.keys.iter().all(|k| k.corners.is_some());
+        let value = |k: &planar::TrackKey| -> Value { if corners { json!(k.corners.unwrap()) } else { json!(k.pin) } };
+        let pin = if r.keys.len() == 1 { value(r.keys[0]) } else { json!({ "keys": r.keys.iter().map(|k| json!({ "t": k.t, "v": value(k) })).collect::<Vec<_>>() }) };
+        let mut effects = Vec::new();
+        if let Some(g) = grade.and_then(|g| g.arts.iter().find(|a| &a.art == name)) {
+            let ks: Vec<&GradeKey> = g.keys.iter().filter(|k| (first..=last).contains(&k.frame)).collect();
+            if !ks.is_empty() {
+                let keyed = |f: &dyn Fn(&GradeKey) -> Value| -> Value {
+                    if ks.len() == 1 {
+                        f(ks[0])
+                    } else {
+                        json!({ "keys": ks.iter().map(|k| json!({ "t": k.t, "v": f(k) })).collect::<Vec<_>>() })
+                    }
+                };
+                effects.push(json!({ "kind": "curves", "params": { "red": keyed(&|k| json!(k.red)), "green": keyed(&|k| json!(k.green)), "blue": keyed(&|k| json!(k.blue)) } }));
+                if ks.iter().any(|k| k.blur > 0.0) {
+                    effects.push(json!({ "kind": "gaussian_blur", "params": { "radius": keyed(&|k| json!(k.blur)) } }));
+                }
+            }
+        }
+        let mut layer = json!({ "id": id, "kind": "image", "slot": name, "in": t_in, "out": t_out, "transform": { "pin": pin } });
+        if !effects.is_empty() {
+            layer["effects"] = json!(effects);
+        }
+        report_layers.push(json!({ "id": id, "art": name, "frames": [first, last], "in": t_in, "out": t_out, "mean_ncc": r2(r.keys.iter().map(|k| k.ncc).sum::<f64>() / r.keys.len() as f64) }));
+        layers.push(layer);
+    }
+    let mut settings = json!({
+        "width": o.width, "height": o.height, "fps": o.fps, "duration": r4(o.duration), "time_base": "seconds",
+        "background": [0, 0, 0], "motion_blur": { "samples": o.samples.max(1), "shutter": 0.5 }
+    });
+    if let Some((bpm, off, _)) = &o.beats {
+        settings["bpm"] = json!(r4(*bpm));
+        settings["beat_offset"] = json!(r4(*off));
+    }
+    let mut project = json!({ "format": edits_core::FORMAT, "settings": settings, "slots": slots, "layers": layers });
+    if let Some(a) = &o.audio {
+        project["audio"] = json!({ "path": a });
+    }
+    let not_found: Vec<&str> = track.arts.iter().filter(|a| a.keys.is_empty()).map(|a| a.name.as_str()).collect();
+    let report = json!({ "layers": report_layers, "cuts_snapped_to_beats": snapped, "arts_not_found": not_found });
+    (project, report)
 }
 
 #[cfg(test)]
