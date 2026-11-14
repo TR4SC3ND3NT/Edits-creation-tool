@@ -65,6 +65,9 @@ pub struct Analysis {
     pub signature: Signature,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+    /// What an agent saw in the whole edit, merged by `vision merge`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision: Option<GlobalVision>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -246,6 +249,9 @@ pub struct Event {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub beat_snapped: Option<f64>,
     pub params: BTreeMap<String, Est>,
+    /// Colours the event is made of, sRGB 0..1 (`duotone`: `shadows`, `highlights`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub colors: BTreeMap<String, [f64; 3]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
@@ -299,8 +305,126 @@ pub struct Shot {
     pub events: Vec<Event>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shake: Option<Shake>,
+    /// Kind of the blur (gaussian, directional, zoom, spin) from gradient-orientation statistics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blur_kind: Option<BlurKind>,
+    /// For a shot that could not be tracked: where a card, cube or inset sits on its reference frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<CardBox>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub samples: Option<Samples>,
+    /// What an agent saw in the shot's frames, merged by `vision merge`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision: Option<ShotVision>,
+}
+
+/// The box a card, cube or inset picture fills on a dark background.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CardBox {
+    /// Centre, frame heights from the frame centre (x right, y down).
+    pub center: [f64; 2],
+    /// Width and height, frame heights.
+    pub size: [f64; 2],
+    /// Gamma-encoded luminance (0..1) of the background around it.
+    pub background: f64,
+}
+
+/// The kind of a shot's blur, told apart by which gradient orientations it
+/// removes: all alike (gaussian), one direction (directional), the radial
+/// direction (zoom) or the tangential one (spin).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BlurKind {
+    /// `gaussian`, `directional`, `zoom` or `spin`.
+    pub kind: String,
+    pub confidence: f64,
+    /// Directional: the direction of the streaks, degrees (0 = horizontal, clockwise).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle: Option<f64>,
+    /// Spread, in log energy (frame / reference), between the most and the
+    /// least blurred of 8 fixed gradient orientations.
+    pub axis_contrast: f64,
+    /// Log energy ratio of radial minus tangential gradients (negative: zoom; positive: spin).
+    pub radial_tangential: f64,
+    /// Blurred frames the decision rests on.
+    pub frames: usize,
+    /// The kind's own parameter at the most blurred frame, found by blurring
+    /// the reference frame until it loses as much detail
+    /// (`directional_blur.length` % of height, `zoom_blur.strength`, `spin_blur.angle` degrees).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peak: Option<f64>,
+    /// That parameter per % of height of the Gaussian-equivalent radius the
+    /// blur curve records at the same frame (draft scales the curve by it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_sigma: Option<f64>,
+}
+
+/// What an agent saw in one shot, answering the fixed questions Q1-Q8 of
+/// `vision::QUESTIONS` (`vision merge` validates and writes it). Labels are
+/// words of the fixed vocabulary; a few take an argument after a colon
+/// (`slide:left`, `3d_turn:y`, `directional:30`); colours given as
+/// arguments (`glow:red`, `duotone:navy/yellow`, `tinted:green`) are moved
+/// to `colors` as sRGB 0..1.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct ShotVision {
+    /// Q1: panel_bw, panel_colour, full_art, close_up, detail_crop, emblem, text_card, solid.
+    pub picture: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character: Option<String>,
+    /// Q2: full_frame, inset_card, tilted_card, cube, split, picture_in_picture.
+    pub framing: String,
+    /// Q2: none, thin_light, thin_dark, glow.
+    pub border: String,
+    /// Q3: normal, inverted, threshold, posterized, duotone, tinted, desaturated, burnt_white.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tone: Vec<String>,
+    /// Q4: white_flash, black_flash, glow, light_rays, flare.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub light: Vec<String>,
+    /// Q5: static, punch_in, zoom_out, push_in, shake, slide:<dir>, spin, 3d_turn:<axis>, whip:<dir>.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub motion: Vec<String>,
+    /// Q6: none, gaussian, directional[:<angle>], zoom, spin.
+    pub blur: String,
+    /// Q7: paper, handwriting, grain, scratches, speed_lines, focus_lines, screentone, particles, caption, sfx_in_art.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overlays: Vec<String>,
+    /// Q8: hard_cut, flash_cut, dissolve, whip, zoom_through, cube, push, glitch.
+    pub entry: String,
+    /// Point of the picture the shot keeps in view, 0..1 from the top left.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus: Option<[f64; 2]>,
+    /// `glow`, `shadows`, `highlights`, `tint`: sRGB 0..1.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub colors: BTreeMap<String, [f64; 3]>,
+    /// Evidence: label -> the tile numbers (1-based) of the strip that show it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tiles: BTreeMap<String, Vec<usize>>,
+    /// The same evidence as frame numbers (resolved by `vision merge`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub frames: BTreeMap<String, Vec<usize>>,
+    /// How the labels compare with the signals, written by `vision merge`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notes: String,
+}
+
+/// What an agent saw across the whole edit (`vision merge`).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct GlobalVision {
+    /// Q7 for the static layer over every shot: paper, handwriting, grain, scratches, screentone, ...
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overlays: Vec<String>,
+    /// How the static overlay sits on the pictures: lighter, darker or both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay_tone: Option<String>,
+    /// none, light, medium, strong.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vignette: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub notes: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -312,6 +436,9 @@ pub struct SlotInfo {
     /// Path of the proxy still relative to the analysis directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<String>,
+    /// What kind of picture the slot holds (`edits_core::SLOT_ROLES`), from the vision labels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -339,12 +466,34 @@ pub struct VignetteInfo {
     pub method: String,
 }
 
+/// A static texture over the whole edit (paper, grain, halftone, a soft
+/// plate): fine detail that stays put while the pictures change.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TextureInfo {
+    /// Share of the frames' fine detail that is the same in every shot, with
+    /// the share expected by chance taken off (0 = none, 1 = all of it), in
+    /// the quarter of the frame where it is highest.
+    pub presence: Est,
+    /// RMS of the static detail where it is present, in log2 luminance (stops).
+    pub strength: Est,
+    /// Share of the frame (8 x 8 blocks) where it is present.
+    pub coverage: Est,
+    /// Plate relative to the analysis directory: mid grey plus the static
+    /// detail (blend `soft_light` or `overlay`, neutral at grey).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub blend_guess: String,
+    pub method: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Layers {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overlay: Option<OverlayInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vignette: Option<VignetteInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texture: Option<TextureInfo>,
 }
 
 /// Content-independent per-frame curves; index 0 is frame `f0`.

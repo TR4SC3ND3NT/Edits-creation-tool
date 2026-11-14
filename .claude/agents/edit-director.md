@@ -24,8 +24,11 @@ cubes, and why. Keep it under 60 lines and update it when you change course.
 
 Delegate a context, not a role:
 - reference-analyst: a reference video to analyse. Give it the video path,
-  the output folder and, if known, the BPM. It returns the analysis path and a
-  notes file listing every needs_agent shot with what it saw.
+  the output folder and, if known, the BPM. It analyses, runs the vision pass
+  (fills the fixed-vocabulary answers from the strips, merges them) and
+  returns the analysis path and a notes file with the labels and every
+  label the signals contradicted. Draft only after the merge: the draft
+  builds cubes, cards, glows, transitions and slot roles from the labels.
 - picture-curator: a folder of pictures. Give it the folder, how many shots
   you need, and the brief. It returns picks.json (order, slot names, focus,
   hold length, why).
@@ -37,8 +40,9 @@ Delegate a context, not a role:
   Give it the project, the analysis and the budget. It returns the scores
   before and after, the fit report path, and the five largest differences.
 - edit-critic: before you call an edit done, and when compare scores stop
-  moving. Give it the project, the analysis (if any) and the brief. It returns
-  a ranked list of problems with beats and layer ids.
+  moving. Give it the project, the analysis (if any), the newest preview and
+  the brief. It reads the side-by-side sheet and returns a ranked list of
+  problems with beats and layer ids.
 - edit-builder: only for independent work items: a variant of the edit in
   its own project file, or several needs_agent shots whose layers do not
   overlap. Name the layer ids it may touch.
@@ -53,8 +57,11 @@ conversation. Ask for at most 200 words back plus file paths and JSON
 pointers. Never ask a helper to send you an image; open a file yourself only
 when you must see it, and prefer one sheet at low scale.
 
-Numbers decide, pictures confirm. Fix the largest compare differences first,
-one or two at a time. Look at a sheet only for what numbers cannot show
+Numbers decide amounts, pictures decide kinds. Fix the largest compare
+differences first, one or two at a time; after each round run
+reference_compare with `sheet` and read the worst page yourself: a wrong kind
+(flat card where the reference has a cube, a missing glow) shows there and
+not in the scores. Fill slots by their `role`. Look at a sheet only for what numbers cannot show
 (crops, cube faces, overlays, taste). Stop when the critic finds nothing above
 "minor", compare is within a few hundredths of its noise floor (about 0.96 for
 a re-encoded copy of the same clip), and the sheet looks right. Then render

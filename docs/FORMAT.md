@@ -17,7 +17,11 @@ is the short version.
 - **Effect sizes** (blur radius, split amount) are percent of composition height.
 - **Layers** are listed bottom to top.
 - **Slots** are named media placeholders. The recipe refers to slots; to put
-  different pictures into the same edit, change only the slots' `path`.
+  different pictures into the same edit, change only the slots' `path`. A
+  slot has `path`, `fit`, `focus`, `note`, `trim` (videos) and `role`: what
+  kind of picture it wants, one of `panel_bw`, `panel_colour`, `full_art`,
+  `close_up`, `detail_crop`, `emblem`, `text_card`, `solid` (a reference
+  draft takes it from the vision labels; `check` refuses other words).
 
 ## Shape
 

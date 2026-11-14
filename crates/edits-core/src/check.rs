@@ -282,6 +282,9 @@ pub(crate) fn check_stack(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> 
         if !used_slots.contains(name) {
             warn.push(Finding { severity: Severity::Warning, path: format!("slots.{name}"), message: "slot is not used by any layer".into(), hint: None });
         }
+        if let Some(role) = slot.role.as_deref().filter(|r| !crate::model::SLOT_ROLES.contains(r)) {
+            err(format!("{sp}.role"), format!("unknown role \"{role}\""), Some(&format!("roles: {}", crate::model::SLOT_ROLES.join(", "))));
+        }
     }
     if let (Some(a), Some(dir)) = (&p.audio, base_dir) {
         if !dir.join(&a.path).is_file() {

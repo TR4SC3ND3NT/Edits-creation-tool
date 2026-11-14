@@ -98,7 +98,7 @@ pub fn roundtrip(stage: &mut Stage, case: &Case, first: &Analyzed, dir: &Path) -
         edits_analyze::img::save_rgb(&dir.join("plate.png"), first.plate.w, first.plate.h, &first.plate.rgb)?;
         o.path = Some("plate.png".into());
     }
-    let opts = DraftOpts { proxies: false, width: None, height: None, snap: true, repeats: true, analysis_dir: dir.to_path_buf(), project_dir: dir.to_path_buf() };
+    let opts = DraftOpts { proxies: false, width: None, height: None, snap: true, repeats: true, analysis_dir: dir.to_path_buf(), project_dir: dir.to_path_buf(), vision: true };
     let mut project = draft(&a, &opts);
     project.audio = None;
     // The picture each slot showed in the original.

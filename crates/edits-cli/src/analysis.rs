@@ -58,6 +58,9 @@ pub struct DraftArgs {
     /// Write only the first period of a looping edit
     #[arg(long)]
     pub single_loop: bool,
+    /// Ignore the vision labels merged into the analysis (`edits vision merge`)
+    #[arg(long)]
+    pub no_vision: bool,
     /// Print a JSON summary
     #[arg(long)]
     pub json: bool,
@@ -74,6 +77,15 @@ pub struct CompareArgs {
     /// How many differences to list in the text report
     #[arg(long, default_value_t = 25)]
     pub top: usize,
+    /// Also write side-by-side sheets (reference left, video right, at the cuts, flashes and reference frames), worst shots first, here (.jpg or .png; more pages get _2, _3...)
+    #[arg(long, value_name = "IMAGE")]
+    pub sheet: Option<PathBuf>,
+    /// Only these reference shots on the sheet, e.g. 3,7
+    #[arg(long, value_delimiter = ',')]
+    pub sheet_shots: Vec<usize>,
+    /// The reference video for the sheet [default: the one the analysis names]
+    #[arg(long)]
+    pub reference_video: Option<PathBuf>,
 }
 
 #[derive(Args, Clone)]
@@ -119,6 +131,53 @@ pub enum AnalysisCommand {
     Compare(CompareArgs),
     /// Cheap per-frame signatures of a video: luminance, saturation, sharpness, frame difference
     Probe(ProbeArgs),
+    /// The vision pass: export per-shot strips and a fixed questionnaire for a model to answer, then merge the answers into the analysis
+    #[command(subcommand)]
+    Vision(VisionCommand),
+}
+
+#[derive(Subcommand, Clone)]
+pub enum VisionCommand {
+    /// Write per-shot strips, detail crops, an overview, questions.json and an answers.json template
+    Export(VisionExportArgs),
+    /// Validate a filled answers.json, check it against the signals and merge it into the analysis
+    Merge(VisionMergeArgs),
+}
+
+#[derive(Args, Clone)]
+pub struct VisionExportArgs {
+    /// reference_analysis.json written by `edits analyze`
+    pub analysis: PathBuf,
+    /// The reference video [default: the one the analysis names]
+    #[arg(long)]
+    pub video: Option<PathBuf>,
+    /// Output folder [default: vision/ next to the analysis]
+    #[arg(short, long)]
+    pub out: Option<PathBuf>,
+    /// Only these shots, e.g. 3,7
+    #[arg(long, value_delimiter = ',')]
+    pub shots: Vec<usize>,
+    /// Height of a strip tile in pixels
+    #[arg(long, default_value_t = 180)]
+    pub tile_height: u32,
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Clone)]
+pub struct VisionMergeArgs {
+    /// reference_analysis.json to merge into (rewritten in place unless --out is given)
+    pub analysis: PathBuf,
+    /// The filled answers.json
+    pub answers: PathBuf,
+    /// Write the merged analysis here instead
+    #[arg(short, long)]
+    pub out: Option<PathBuf>,
+    /// Validate and check only; write nothing
+    #[arg(long)]
+    pub dry_run: bool,
+    #[arg(long)]
+    pub json: bool,
 }
 
 pub fn run(cmd: AnalysisCommand) -> Result<ExitCode> {
@@ -128,6 +187,8 @@ pub fn run(cmd: AnalysisCommand) -> Result<ExitCode> {
         AnalysisCommand::Draft(a) => draft_project(a),
         AnalysisCommand::Compare(a) => compare_video(a),
         AnalysisCommand::Probe(a) => probe(a),
+        AnalysisCommand::Vision(VisionCommand::Export(a)) => vision_export(a),
+        AnalysisCommand::Vision(VisionCommand::Merge(a)) => vision_merge(a),
     }
 }
 
@@ -218,8 +279,9 @@ fn draft_project(a: DraftArgs) -> Result<ExitCode> {
         repeats: !a.single_loop,
         analysis_dir: parent_dir(&a.analysis),
         project_dir: parent_dir(&a.out),
+        vision: !a.no_vision,
     };
-    let project = draft::draft(&an, &opts);
+    let (project, notes) = draft::draft_report(&an, &opts);
     std::fs::create_dir_all(&opts.project_dir)?;
     std::fs::write(&a.out, project.to_json())?;
     let findings = check::check(&project, Some(&opts.project_dir));
@@ -237,6 +299,7 @@ fn draft_project(a: DraftArgs) -> Result<ExitCode> {
             "bpm": project.settings.bpm,
             "errors": errors,
             "warnings": findings.len() - errors,
+            "vision": notes,
         }));
     } else {
         println!(
@@ -250,6 +313,9 @@ fn draft_project(a: DraftArgs) -> Result<ExitCode> {
             errors,
             findings.len() - errors
         );
+        for n in &notes {
+            println!("  {n}");
+        }
     }
     ensure!(errors == 0, "the drafted project does not pass `check`");
     Ok(ExitCode::SUCCESS)
@@ -257,11 +323,41 @@ fn draft_project(a: DraftArgs) -> Result<ExitCode> {
 
 fn compare_video(a: CompareArgs) -> Result<ExitCode> {
     let an = pipeline::load(&a.analysis)?;
-    let c = compare::compare(&an, &a.video, None)?;
+    let mut c = compare::compare(&an, &a.video, None)?;
+    if let Some(sheet) = &a.sheet {
+        let opts = edits_analyze::pairs::SheetOpts { shots: a.sheet_shots.clone(), reference_video: a.reference_video.clone(), ..Default::default() };
+        let (paths, _) = edits_analyze::pairs::write(&an, &a.video, Some(&c), sheet, &opts)?;
+        c.sheets = paths.iter().map(|p| p.display().to_string()).collect();
+    }
     if a.json {
         println!("{}", edits_analyze::jsonfmt::to_string(&c)?);
     } else {
         print!("{}", compare::report(&c, a.top));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn vision_export(a: VisionExportArgs) -> Result<ExitCode> {
+    let an = pipeline::load(&a.analysis)?;
+    let opts = edits_analyze::vision::ExportOpts { video: a.video, out_dir: a.out, tile_height: a.tile_height, shots: a.shots };
+    let e = edits_analyze::vision::export(&an, &a.analysis, &opts)?;
+    if a.json {
+        println!("{}", edits_analyze::jsonfmt::to_string(&e)?);
+    } else {
+        print!("{}", edits_analyze::vision::export_summary(&e));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn vision_merge(a: VisionMergeArgs) -> Result<ExitCode> {
+    let r = edits_analyze::vision::merge_file(&a.analysis, &a.answers, a.out.as_deref(), a.dry_run)?;
+    if a.json {
+        println!("{}", edits_analyze::jsonfmt::to_string(&r)?);
+    } else {
+        print!("{}", edits_analyze::vision::merge_summary(&r));
+        if !a.dry_run {
+            println!("wrote {}", a.out.as_deref().unwrap_or(&a.analysis).display());
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

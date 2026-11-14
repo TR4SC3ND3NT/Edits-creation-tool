@@ -98,6 +98,9 @@ pub struct Comparison {
     pub shots: Vec<ShotCmp>,
     /// Largest first.
     pub differences: Vec<Difference>,
+    /// Side-by-side sheets written with the comparison (`--sheet`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sheets: Vec<String>,
 }
 
 /// One-to-one matching of two ascending frame lists within `tol` frames.
@@ -472,6 +475,7 @@ pub fn compare_analyses(reference: &Analysis, cand: &Analysis, cand_tempo: Optio
         tone_hits: tone_total,
         shots: shots_out,
         differences: diffs,
+        sheets: vec![],
     }
 }
 
@@ -516,6 +520,9 @@ pub fn report(c: &Comparison, top: usize) -> String {
             "{name}: {} in reference, {} in candidate, {} matched within 1 frame; precision {:.2}, recall {:.2}, mean offset {:+.2} frames\n",
             m.reference, m.candidate, m.matched, m.precision, m.recall, m.mean_offset_frames
         );
+    }
+    for p in &c.sheets {
+        s += &format!("side-by-side sheet: {p}\n");
     }
     if c.differences.is_empty() {
         s += "no differences above tolerance\n";

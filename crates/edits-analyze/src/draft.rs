@@ -35,6 +35,8 @@ pub struct DraftOpts {
     pub analysis_dir: PathBuf,
     /// Directory the project file will live in (paths are made relative to it).
     pub project_dir: PathBuf,
+    /// Use the vision labels merged into the analysis (`vision merge`).
+    pub vision: bool,
 }
 
 fn absolute(p: &Path) -> PathBuf {
@@ -269,6 +271,12 @@ fn shot_layer(shot: &Shot, clock: &Clock, shift: usize, repeat: usize, aspect: f
 
 /// Build the project.
 pub fn draft(a: &Analysis, opts: &DraftOpts) -> Project {
+    draft_report(a, opts).0
+}
+
+/// Build the project, and say what the vision labels and the kind detectors
+/// changed (one line each).
+pub fn draft_report(a: &Analysis, opts: &DraftOpts) -> (Project, Vec<String>) {
     let fps = a.source.fps;
     let even = |v: u32| (v.max(2) + 1) & !1;
     let (mut w, mut h) = (a.source.width, a.source.height);
@@ -297,19 +305,24 @@ pub fn draft(a: &Analysis, opts: &DraftOpts) -> Project {
                 fit: Fit::Cover,
                 focus: [0.5, 0.5],
                 note: Some(format!(
-                    "shot{} {}; reference frame {}{}",
+                    "shot{} {}; reference frame {}{}{}",
                     if shots.len() > 1 { "s" } else { "" },
                     shots.join(", "),
                     s.ref_frame,
-                    proxy.map(|p| format!("; proxy still {}", rel(&p))).unwrap_or_default()
+                    proxy.map(|p| format!("; proxy still {}", rel(&p))).unwrap_or_default(),
+                    s.role.as_ref().filter(|_| opts.vision).map(|r| format!("; wants a {}", r.replace('_', " "))).unwrap_or_default()
                 )),
                 trim: None,
+                role: if opts.vision { s.role.clone() } else { None },
             },
         );
     }
 
     let mut layers: Vec<Layer> = Vec::new();
     let mut markers: Vec<Marker> = Vec::new();
+    let mut vision_notes: Vec<String> = Vec::new();
+    let mut preset_ops: Vec<crate::dress::PresetOp> = Vec::new();
+    let gv = a.vision.as_ref().filter(|_| opts.vision);
     let period = a.ingest.loop_info.as_ref().map(|l| l.period_frames.value.round() as usize);
     let repeats = match (&a.ingest.loop_info, opts.repeats) {
         (Some(l), true) => (l.repeats + 1e-6).floor().max(1.0) as usize,
@@ -320,8 +333,18 @@ pub fn draft(a: &Analysis, opts: &DraftOpts) -> Project {
         if repeats > 1 {
             markers.push(Marker { t: clock.time(a.ingest.analysed_f0 + shift), label: format!("loop pass {} of {repeats}", r + 1) });
         }
-        for shot in &a.shots {
-            layers.push(shot_layer(shot, &clock, shift, r, aspect));
+        for (si, shot) in a.shots.iter().enumerate() {
+            let mut layer = shot_layer(shot, &clock, shift, r, aspect);
+            let next_slot = a.shots.get(si + 1).map(|n| n.slot.as_str());
+            let d = crate::dress::dress(&mut layer, shot, next_slot, &|f| clock.time(f + shift), opts.vision, r == 0 && si == 0);
+            if let (Some(t), Some(prev)) = (d.extend_previous_to, layers.last_mut()) {
+                prev.end = Some(prev.end.unwrap_or(t).max(t));
+            }
+            if r == 0 {
+                vision_notes.extend(d.notes);
+            }
+            preset_ops.extend(d.presets);
+            layers.push(layer);
             if shot.status != Ident::Measured {
                 markers.push(Marker {
                     t: clock.time(shot.f0 + shift),
@@ -383,8 +406,13 @@ pub fn draft(a: &Analysis, opts: &DraftOpts) -> Project {
         if let Some(p) = &o.path {
             slots.insert(
                 "overlay".into(),
-                Slot { path: Some(rel(&opts.analysis_dir.join(p))), fit: Fit::Stretch, focus: [0.5, 0.5], note: Some("static overlay plate recovered from the reference".into()), trim: None },
+                Slot { path: Some(rel(&opts.analysis_dir.join(p))), fit: Fit::Stretch, focus: [0.5, 0.5], note: Some("static overlay plate recovered from the reference".into()), trim: None, role: None },
             );
+            let blend = match gv.and_then(|g| g.overlay_tone.as_deref()) {
+                Some("darker") => Blend::Multiply,
+                Some("both") => Blend::Difference,
+                _ => Blend::Screen,
+            };
             layers.push(Layer {
                 id: "overlay".into(),
                 kind: LayerKind::Image { slot: "overlay".into() },
@@ -392,17 +420,77 @@ pub fn draft(a: &Analysis, opts: &DraftOpts) -> Project {
                 start: content.0,
                 end: Some(content.1),
                 transform: Transform::default(),
-                blend: Blend::Screen,
+                blend,
                 effects: vec![],
                 enabled: static_on, transition: None, fps: None, masks: Vec::new(), matte: None, visible: true,
             });
         }
     }
-    if let Some(v) = &a.layers.vignette {
+    // The static texture (paper, handwriting): a plate neutral at grey (soft
+    // light) or at black (difference).
+    if let Some(t) = &a.layers.texture {
+        if let Some(p) = &t.path {
+            slots.insert(
+                "texture".into(),
+                Slot { path: Some(rel(&opts.analysis_dir.join(p))), fit: Fit::Stretch, focus: [0.5, 0.5], note: Some("static texture recovered from the reference (paper, handwriting, ornaments)".into()), trim: None, role: None },
+            );
+            layers.push(Layer {
+                id: "texture".into(),
+                kind: LayerKind::Image { slot: "texture".into() },
+                name: Some(format!("static texture plate (presence {:.2}); blend {}", t.presence.value, t.blend_guess)),
+                start: content.0,
+                end: Some(content.1),
+                transform: Transform::default(),
+                blend: if t.blend_guess == "difference" { Blend::Difference } else { Blend::SoftLight },
+                effects: vec![],
+                enabled: static_on, transition: None, fps: None, masks: Vec::new(), matte: None, visible: true,
+            });
+        }
+    } else if let Some(g) = gv.filter(|g| !g.overlays.is_empty() && a.layers.overlay.is_none()) {
+        vision_notes.push(format!("global: {} seen over every shot but not recovered: a disabled layer \"texture\" waits for a picture of it in slot \"texture\"", g.overlays.join(", ")));
+        slots.insert("texture".into(), Slot { path: None, fit: Fit::Stretch, focus: [0.5, 0.5], note: Some(format!("put a {} texture here, then enable layer \"texture\"", g.overlays.join(" / "))), trim: None, role: None });
+        layers.push(Layer {
+            id: "texture".into(),
+            kind: LayerKind::Image { slot: "texture".into() },
+            name: Some("static texture seen by the vision pass; supply the picture".into()),
+            start: content.0,
+            end: Some(content.1),
+            transform: Transform::default(),
+            blend: if g.overlay_tone.as_deref() == Some("darker") { Blend::Multiply } else if g.overlay_tone.as_deref() == Some("both") { Blend::Difference } else { Blend::Screen },
+            effects: vec![],
+            enabled: false, transition: None, fps: None, masks: Vec::new(), matte: None, visible: true,
+        });
+    }
+    let measured_vignette = a.layers.vignette.as_ref().map(|v| (v.amount.value, v.radius.value, v.softness.value, v.corner_ratio.value));
+    // A label that disagrees with the measurement (or names one where none was measured) decides.
+    let labelled = gv.and_then(|g| g.vignette.as_deref()).and_then(|l| {
+        let strong = measured_vignette.map(|m| m.3 < 0.45);
+        let agrees = match (l, strong, measured_vignette) {
+            (_, None, _) => false,
+            ("none", _, Some(m)) => m.0 < 0.3,
+            ("strong", Some(s), _) => s,
+            ("light", Some(s), _) => !s,
+            _ => true,
+        };
+        if agrees {
+            None
+        } else {
+            crate::dress::vignette_for(l).map(|v| (l, v))
+        }
+    });
+    if let Some((l, _)) = labelled {
+        vision_notes.push(format!("global: vignette set to the labelled {l} (the measurement disagreed)"));
+    }
+    let vignette = match (labelled, measured_vignette) {
+        (Some((_, (am, ra, so))), _) => Some((am, ra, so)),
+        (None, Some(m)) => Some((m.0, m.1, m.2)),
+        _ => None,
+    };
+    if let Some((am, ra, so)) = vignette.filter(|v| v.0 > 0.0) {
         let mut params = BTreeMap::new();
-        params.insert("amount".to_string(), Prop::from(round_to(v.amount.value, 3)));
-        params.insert("radius".to_string(), Prop::from(round_to(v.radius.value, 3)));
-        params.insert("softness".to_string(), Prop::from(round_to(v.softness.value, 3)));
+        params.insert("amount".to_string(), Prop::from(round_to(am, 3)));
+        params.insert("radius".to_string(), Prop::from(round_to(ra, 3)));
+        params.insert("softness".to_string(), Prop::from(round_to(so, 3)));
         layers.push(Layer {
             id: "finish".into(),
             kind: LayerKind::Adjustment,
@@ -415,15 +503,15 @@ pub fn draft(a: &Analysis, opts: &DraftOpts) -> Project {
             enabled: static_on, transition: None, fps: None, masks: Vec::new(), matte: None, visible: true,
         });
     }
-    if opts.proxies && (a.layers.overlay.is_some() || a.layers.vignette.is_some()) {
+    if opts.proxies && (a.layers.overlay.is_some() || a.layers.vignette.is_some() || a.layers.texture.is_some()) {
         markers.push(Marker {
             t: content.0,
-            label: "proxy stills already contain the overlay and the vignette: layers \"overlay\" and \"finish\" are disabled; enable them when the slots get new pictures".into(),
+            label: "proxy stills already contain the overlay, texture and vignette: layers \"overlay\", \"texture\" and \"finish\" are disabled; enable them when the slots get new pictures".into(),
         });
     }
     markers.sort_by(|x, y| x.t.partial_cmp(&y.t).unwrap());
 
-    Project {
+    let project = Project {
         format: FORMAT.into(),
         settings: Settings {
             width: w,
@@ -443,6 +531,19 @@ pub fn draft(a: &Analysis, opts: &DraftOpts) -> Project {
         layers,
         comps: Default::default(),
         markers,
+    };
+    if preset_ops.is_empty() {
+        return (project, vision_notes);
+    }
+    // Presets (shake, punch, transitions, flashes the signals missed) work on the document.
+    let mut doc: serde_json::Value = serde_json::from_str(&project.to_json()).expect("a drafted project serialises");
+    crate::dress::apply_presets(&mut doc, &preset_ops, &mut vision_notes);
+    match Project::from_json(&doc.to_string()) {
+        Ok(p) => (p, vision_notes),
+        Err(e) => {
+            vision_notes.push(format!("presets left out: the result did not parse ({e})"));
+            (project, vision_notes)
+        }
     }
 }
 

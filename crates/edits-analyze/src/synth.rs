@@ -22,11 +22,16 @@ pub struct FrameSpec {
     pub invert: bool,
     /// Two-tone threshold at this (gamma-encoded) luminance level.
     pub threshold: Option<f64>,
+    /// Quantise each channel (gamma-encoded) to this many levels.
+    pub posterize: Option<u32>,
+    /// Gradient map as the renderer's `gradient_map` (duotone): display
+    /// luminance mapped from the first colour to the second, display (sRGB) values.
+    pub duotone: Option<([f32; 3], [f32; 3])>,
 }
 
 impl Default for FrameSpec {
     fn default() -> Self {
-        Self { picture: 1, scale: 1.0, rot_deg: 0.0, tx: 0.0, ty: 0.0, stops: 0.0, blur: 0.0, saturation: 1.0, invert: false, threshold: None }
+        Self { picture: 1, scale: 1.0, rot_deg: 0.0, tx: 0.0, ty: 0.0, stops: 0.0, blur: 0.0, saturation: 1.0, invert: false, threshold: None, posterize: None, duotone: None }
     }
 }
 
@@ -42,6 +47,9 @@ pub struct Clip {
     pub vignette: f64,
     /// Standard deviation of per-pixel noise in 8-bit code values.
     pub noise: f64,
+    /// A static texture multiplied over every frame (paper fibres and
+    /// handwriting-like strokes), in stops of its RMS (0 = none).
+    pub texture: f64,
 }
 
 struct Shape {
@@ -114,6 +122,15 @@ fn picture(sh: &[Shape], seed: u32, u: f64, v: f64) -> [f32; 3] {
     [(c[0] + t).clamp(0.0, 1.0), (c[1] + t).clamp(0.0, 1.0), (c[2] + t).clamp(0.0, 1.0)]
 }
 
+/// sRGB display value to linear light.
+pub fn srgb_dec(e: f32) -> f32 {
+    if e <= 0.04045 {
+        e / 12.92
+    } else {
+        ((e + 0.055) / 1.055).powf(2.4)
+    }
+}
+
 pub fn smoothstep(e0: f64, e1: f64, x: f64) -> f64 {
     let t = ((x - e0) / (e1 - e0).max(1e-9)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -127,7 +144,7 @@ pub fn vignette_gain(amount: f64, radius: f64, softness: f64, r: f64) -> f64 {
 
 impl Clip {
     pub fn new(w: usize, h: usize, n: usize) -> Self {
-        Self { w, h, fps: 25.0, frames: vec![FrameSpec::default(); n], overlay: false, vignette: 0.0, noise: 0.0 }
+        Self { w, h, fps: 25.0, frames: vec![FrameSpec::default(); n], overlay: false, vignette: 0.0, noise: 0.0, texture: 0.0 }
     }
     pub fn frame_mut(&mut self, i: usize) -> &mut FrameSpec {
         &mut self.frames[i]
@@ -144,6 +161,19 @@ impl Clip {
         } else {
             0.0
         }
+    }
+
+    /// The static texture at a pixel, about -1..1 with an RMS near 0.5:
+    /// fine fibres plus darker horizontal strokes in rows.
+    pub fn texture_at(&self, x: usize, y: usize) -> f64 {
+        let hsh = |a: u64| {
+            let mut z = a.wrapping_mul(0x9E3779B97F4A7C15) ^ 0xD1B54A32D192ED03;
+            z = (z ^ (z >> 29)).wrapping_mul(0xBF58476D1CE4E5B9);
+            ((z ^ (z >> 32)) & 0xFFFF) as f64 / 65535.0
+        };
+        let fibre = hsh((x as u64) * 7919 + (y as u64) * 104729) - 0.5;
+        let stroke = if y % 11 < 2 && !(x / 5).is_multiple_of(3) { -1.0 } else { 0.0 };
+        0.8 * fibre + 0.7 * stroke + 0.2
     }
 
     pub fn render(&self) -> Frames {
@@ -195,6 +225,12 @@ impl Clip {
                             *v = 1.0 - *v;
                         }
                     }
+                    if let Some((d, b)) = spec.duotone {
+                        let l = linear_to_srgb(0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]);
+                        for k in 0..3 {
+                            c[k] = srgb_dec((d[k] + (b[k] - d[k]) * l).clamp(0.0, 1.0));
+                        }
+                    }
                     if let Some(level) = spec.threshold {
                         let l = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
                         let t = if linear_to_srgb(l) as f64 > level { 1.0 } else { 0.0 };
@@ -204,8 +240,17 @@ impl Clip {
                     let vg = vignette_gain(self.vignette, 0.5, 0.5, r) as f32;
                     // A black frame (no picture) is a true black frame: nothing on top.
                     let o = if spec.picture == 0 { 0.0 } else { self.overlay_at(x, y) };
+                    let tex = if self.texture > 0.0 && spec.picture != 0 { 2f64.powf(self.texture * self.texture_at(x, y)) as f32 } else { 1.0 };
                     for k in 0..3 {
-                        let v = (c[k] * gain).clamp(0.0, 1.0) * vg;
+                        let v = ((c[k] * gain).clamp(0.0, 1.0) * vg * tex).clamp(0.0, 1.0);
+                        let v = match spec.posterize {
+                            Some(n) if n >= 2 => {
+                                let e = linear_to_srgb(v);
+                                let q = (e * n as f32).floor().min(n as f32 - 1.0) / (n as f32 - 1.0);
+                                srgb_dec(q)
+                            }
+                            _ => v,
+                        };
                         let v = 1.0 - (1.0 - v) * (1.0 - o);
                         let mut code = linear_to_srgb(v) as f64 * 255.0;
                         if self.noise > 0.0 {

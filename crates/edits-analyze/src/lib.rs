@@ -14,17 +14,22 @@
 
 pub mod beats;
 pub mod blur;
+pub mod blurkind;
 pub mod compare;
+pub mod contact;
 pub mod curves;
 pub mod draft;
+pub mod dress;
 pub mod exposure;
 pub mod img;
 pub mod ingest;
 pub mod joint;
 pub mod jsonfmt;
 pub mod layers;
+pub mod look;
 pub mod measure;
 pub mod media;
+pub mod pairs;
 pub mod pipeline;
 pub mod schema;
 pub mod shots;
@@ -33,6 +38,7 @@ pub mod song;
 #[doc(hidden)]
 pub mod synth;
 pub mod tone;
+pub mod vision;
 pub mod track;
 
 pub use pipeline::{analyze_frames, analyze_video, AnalyzeOpts};

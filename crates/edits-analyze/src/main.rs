@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use edits_analyze::{compare, draft, media, pipeline, signals, AnalyzeOpts};
+use edits_analyze::{compare, draft, media, pipeline, signals, vision, AnalyzeOpts};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -64,6 +64,9 @@ enum Cmd {
         /// Write only the first period of a looping edit
         #[arg(long)]
         single_loop: bool,
+        /// Ignore the vision labels merged into the analysis
+        #[arg(long)]
+        no_vision: bool,
     },
     /// Analyse a second video the same way and compare it with a reference analysis in signature space
     Compare {
@@ -76,6 +79,20 @@ enum Cmd {
         /// How many differences to list in the text report
         #[arg(long, default_value_t = 25)]
         top: usize,
+        /// Also write side-by-side sheets (reference left, video right), worst shots first, here
+        #[arg(long)]
+        sheet: Option<PathBuf>,
+        /// Only these reference shots on the sheet, e.g. 3,7
+        #[arg(long, value_delimiter = ',')]
+        sheet_shots: Vec<usize>,
+        /// The reference video for the sheet [default: the one the analysis names]
+        #[arg(long)]
+        reference_video: Option<PathBuf>,
+    },
+    /// The vision pass: `vision export` writes per-shot strips and a fixed questionnaire for a model, `vision merge` validates the answers and merges them into the analysis
+    Vision {
+        #[command(subcommand)]
+        cmd: VisionCmd,
     },
     /// Cheap per-frame signature table: luminance, saturation, sharpness, frame difference
     Probe {
@@ -84,6 +101,39 @@ enum Cmd {
         json: bool,
         #[arg(long, default_value_t = 360)]
         height: u32,
+    },
+}
+
+#[derive(Subcommand)]
+enum VisionCmd {
+    /// Write per-shot strips, detail crops, an overview, questions.json and an answers.json template
+    Export {
+        analysis: PathBuf,
+        /// The reference video [default: the one the analysis names]
+        #[arg(long)]
+        video: Option<PathBuf>,
+        /// Output folder [default: vision/ next to the analysis]
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// Only these shots, e.g. 3,7
+        #[arg(long, value_delimiter = ',')]
+        shots: Vec<usize>,
+        #[arg(long, default_value_t = 180)]
+        tile_height: u32,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Validate a filled answers.json, check it against the signals and merge it into the analysis
+    Merge {
+        analysis: PathBuf,
+        answers: PathBuf,
+        /// Write the merged analysis here instead of in place
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -96,11 +146,14 @@ fn main() -> Result<()> {
             println!("{}", pipeline::summary(&a));
             println!("wrote {} in {:.1} s", out.join("reference_analysis.json").display(), t.elapsed().as_secs_f64());
         }
-        Cmd::Draft { analysis, out, proxies, width, height, no_snap, single_loop } => {
+        Cmd::Draft { analysis, out, proxies, width, height, no_snap, single_loop, no_vision } => {
             let a = pipeline::load(&analysis)?;
             let dir = |p: &PathBuf| p.parent().filter(|d| !d.as_os_str().is_empty()).map(|d| d.to_path_buf()).unwrap_or(PathBuf::from("."));
-            let opts = draft::DraftOpts { proxies, width, height, snap: !no_snap, repeats: !single_loop, analysis_dir: dir(&analysis), project_dir: dir(&out) };
-            let project = draft::draft(&a, &opts);
+            let opts = draft::DraftOpts { proxies, width, height, snap: !no_snap, repeats: !single_loop, analysis_dir: dir(&analysis), project_dir: dir(&out), vision: !no_vision };
+            let (project, notes) = draft::draft_report(&a, &opts);
+            for n in &notes {
+                eprintln!("{n}");
+            }
             std::fs::create_dir_all(&opts.project_dir)?;
             std::fs::write(&out, project.to_json())?;
             let findings = edits_core::check::check(&project, Some(&opts.project_dir));
@@ -121,13 +174,38 @@ fn main() -> Result<()> {
             );
             anyhow::ensure!(errors == 0, "the drafted project does not pass `check`");
         }
-        Cmd::Compare { analysis, video, json, top } => {
+        Cmd::Compare { analysis, video, json, top, sheet, sheet_shots, reference_video } => {
             let a = pipeline::load(&analysis)?;
-            let c = compare::compare(&a, &video, None)?;
+            let mut c = compare::compare(&a, &video, None)?;
+            if let Some(sheet) = &sheet {
+                let opts = edits_analyze::pairs::SheetOpts { shots: sheet_shots, reference_video, ..Default::default() };
+                let (paths, _) = edits_analyze::pairs::write(&a, &video, Some(&c), sheet, &opts)?;
+                c.sheets = paths.iter().map(|p| p.display().to_string()).collect();
+            }
             if json {
                 println!("{}", edits_analyze::jsonfmt::to_string(&c)?);
             } else {
                 print!("{}", compare::report(&c, top));
+            }
+        }
+        Cmd::Vision { cmd: VisionCmd::Export { analysis, video, out, shots, tile_height, json } } => {
+            let a = pipeline::load(&analysis)?;
+            let e = vision::export(&a, &analysis, &vision::ExportOpts { video, out_dir: out, tile_height, shots })?;
+            if json {
+                println!("{}", edits_analyze::jsonfmt::to_string(&e)?);
+            } else {
+                print!("{}", vision::export_summary(&e));
+            }
+        }
+        Cmd::Vision { cmd: VisionCmd::Merge { analysis, answers, out, dry_run, json } } => {
+            let r = vision::merge_file(&analysis, &answers, out.as_deref(), dry_run)?;
+            if json {
+                println!("{}", edits_analyze::jsonfmt::to_string(&r)?);
+            } else {
+                print!("{}", vision::merge_summary(&r));
+                if !dry_run {
+                    println!("wrote {}", out.as_deref().unwrap_or(&analysis).display());
+                }
             }
         }
         Cmd::Probe { video, json, height } => {

@@ -56,10 +56,12 @@ files, D = can overwrite or remove something.
 | `project_read(project, pointer?)` | R | The JSON, or the value at a pointer (one layer, one effect) |
 | `project_undo(project)` | D | Restore the version before the newest edit in the shared history (yours or the person's) |
 | `reference_analyze(video, out_dir, bpm?, beat_offset?, whole?)` | W | Background job: extract the recipe of a finished edit |
-| `reference_compare(analysis, video, top?)` | R | Scores and ranked differences in signature space |
+| `reference_compare(analysis, video, top?, sheet?, sheet_shots?)` | R | Scores and ranked differences in signature space; with `sheet`, side-by-side pairs (reference left, render right, worst shots first), the first page returned as an image |
 | `reference_draft(analysis, output, proxies?, width?, height?, single_loop?, no_snap?)` | D | Write a project that replays an analysed recipe |
 | `reference_probe(video, from_frame?, to_frame?)` | R | Per-frame luminance, saturation, sharpness, difference: summarised |
 | `reference_read(analysis, section?, shot?, pointer?)` | R | One section of an analysis instead of the whole file |
+| `reference_vision_export(analysis, video?, out_dir?, shots?)` | W | Per-shot labelled strips, detail crops, an overview (returned as an image), `questions.json` (fixed vocabulary Q1-Q8) and an `answers.json` template, for the agent to look at and answer |
+| `reference_vision_merge(analysis, answers, dry_run?)` | D | Validate the answers against the vocabulary, check them against the signals, merge them into the analysis (shot labels, slot roles) for `reference_draft` |
 | `render_frame(project, at? or frame?, scale?, samples?)` | R | One frame, returned as an image |
 | `render_sheet(project, from?, to?, count? or every_frame?, cols?, scale?, samples?)` | R | A labelled grid of frames, returned as one image |
 | `render_video(project, output, from?, to?, scale?, samples?)` | D | Background job: render the MP4 |
@@ -249,7 +251,10 @@ full-quality PNG is always saved under `<root>/.edits/renders/` and its path
 is in the text.
 
 When the task is to match a reference edit that uses other pictures, pixel
-comparison says nothing. `reference_compare` works in signature space: each
+comparison says nothing. Look instead in two structured ways: the vision
+pass (`reference_vision_export`: strips per shot and closed questions whose
+answers become labels the draft uses) and the side-by-side sheet of
+`reference_compare` (reference and render at the same instants). `reference_compare` works in signature space: each
 video is measured relative to its own shots, the pictures cancel, and what
 is compared is timing and effect curves. See [ANALYSIS.md](ANALYSIS.md).
 
@@ -430,8 +435,9 @@ has no `main`-only assumptions, so a subcommand of another binary can call it.
 - No MCP resources or prompts; the skill is a file, not served over MCP.
 - Presets are applied, not previewed: there are no poster images; look with
   `render_sheet` after `preset_apply` (`dry_run` reports the changes only).
-- No tool isolates a single layer in a render, overlays ids or motion paths
-  on a frame, or shows a frame side by side with the reference. Use
-  `enabled: false` on other layers (and `project_undo`) for the first.
+- No tool isolates a single layer in a render or overlays ids or motion
+  paths on a frame. Use `enabled: false` on other layers (and
+  `project_undo`) for the first. Frames side by side with the reference:
+  `reference_compare` with `sheet`.
 - Job cancellation and process groups are implemented for Unix; on Windows
   the code path uses `taskkill` and has not been run.

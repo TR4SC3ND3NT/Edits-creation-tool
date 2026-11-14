@@ -15,6 +15,7 @@ pub mod ease;
 pub mod edit;
 pub mod effects;
 pub mod eval;
+pub mod glyphs;
 pub mod jsonfmt;
 pub mod mask;
 pub mod model;

@@ -180,7 +180,7 @@ fn recipe_is_recovered_drafted_and_compared() {
     let mut a_with_files = a.clone();
     a_with_files.layers.overlay.as_mut().unwrap().path = Some("overlay.png".into());
     for snap in [true, false] {
-        let opts = DraftOpts { proxies: false, width: None, height: None, snap, repeats: true, analysis_dir: "analysis".into(), project_dir: "project".into() };
+        let opts = DraftOpts { proxies: false, width: None, height: None, snap, repeats: true, analysis_dir: "analysis".into(), project_dir: "project".into(), vision: true };
         let p = draft(&a_with_files, &opts);
         let findings = edits_core::check::check(&p, None);
         assert!(!edits_core::check::has_errors(&findings), "{findings:?}");
@@ -275,7 +275,7 @@ fn a_looping_edit_is_analysed_once() {
     assert_eq!(a.beats.source, "visual");
     assert!((a.beats.bpm.value - 125.0).abs() < 4.0, "visual tempo {}", a.beats.bpm.value);
     // The draft plays both passes and the tail.
-    let opts = DraftOpts { proxies: false, width: Some(540), height: None, snap: true, repeats: true, analysis_dir: ".".into(), project_dir: ".".into() };
+    let opts = DraftOpts { proxies: false, width: Some(540), height: None, snap: true, repeats: true, analysis_dir: ".".into(), project_dir: ".".into(), vision: true };
     let p = draft(&a, &opts);
     assert!(!edits_core::check::has_errors(&edits_core::check::check(&p, None)));
     assert_eq!(p.layers.iter().filter(|l| l.id.starts_with("shot")).count(), 8);

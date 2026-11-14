@@ -77,10 +77,12 @@ fn encode(image: &DynamicImage, format: ImageFormat) -> Result<Vec<u8>, String> 
     Ok(out.into_inner())
 }
 
-/// Load a PNG and make it fit the budgets.
+/// Load a PNG (or a JPEG, such as the sheets `edits-analyze` writes) and make it fit the budgets.
 pub fn prepare(path: &Path, max_tokens: u32, max_bytes: usize) -> Result<Prepared, String> {
     let file = std::fs::read(path).map_err(|e| format!("cannot read the rendered image {}: {e}", path.display()))?;
-    let image = image::load_from_memory_with_format(&file, ImageFormat::Png).map_err(|e| format!("the rendered image {} cannot be decoded: {e}", path.display()))?;
+    let format = image::guess_format(&file).unwrap_or(ImageFormat::Png);
+    let format = if format == ImageFormat::Jpeg { ImageFormat::Jpeg } else { ImageFormat::Png };
+    let image = image::load_from_memory_with_format(&file, format).map_err(|e| format!("the rendered image {} cannot be decoded: {e}", path.display()))?;
     let original = (image.width(), image.height());
     let scale = fit_scale(original.0, original.1, max_tokens);
     let mut current = if scale < 1.0 {
@@ -94,7 +96,7 @@ pub fn prepare(path: &Path, max_tokens: u32, max_bytes: usize) -> Result<Prepare
     let (bytes, mime) = loop {
         let unchanged = (current.width(), current.height()) == original;
         if unchanged && file.len() <= max_bytes {
-            break (file.clone(), "image/png");
+            break (file.clone(), if format == ImageFormat::Jpeg { "image/jpeg" } else { "image/png" });
         }
         if !unchanged {
             let png = encode(&current, ImageFormat::Png)?;
