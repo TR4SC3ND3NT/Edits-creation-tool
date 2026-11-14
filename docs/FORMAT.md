@@ -61,7 +61,27 @@ and optionally `transition` (how it comes in; see [Transitions](#transitions)), 
 | `shape` | `shapes` | Vector shapes (rects, ellipses, stars, paths, lines) with fills, strokes and operators (trim, repeater, ...): speed lines, focus lines, rings, panel borders; see [Shape layers](#shape-layers) |
 
 `transform` has `position` `[x, y, z]`, `scale` (number, `[x, y]` or `[x, y, z]`),
-`rotation` `[x, y, z]`, `anchor` `[x, y]`, `opacity`.
+`rotation` `[x, y, z]`, `anchor` `[x, y]`, `opacity`, and optionally `pin`.
+
+`pin` (image, video, solid and comp layers) is a corner pin: the picture is
+mapped onto four corners by a plane homography, as a planar tracker
+measures it. Write 8 numbers, the corners `[x0, y0, x1, y1, x2, y2, x3, y3]`
+of the picture's top-left, top-right, bottom-right and bottom-left in
+composition units (the frame's centre is 0, its height 1, y down), or 9
+numbers, a row-major 3x3 matrix from picture coordinates `(u, v, 1)` (0..1
+from the top-left) to `(x, y, w)`. The whole picture is mapped; the slot's
+`fit` does not apply. `position`, `scale`, `rotation`, `anchor` and the camera
+apply after the pin, so with them at rest the corners are where the
+picture's corners land in the frame. Keyed once per frame (what `edits track`
+writes), the corners are interpolated between keys, so motion blur
+sub-samples move the picture smoothly. The four corners must make a convex
+quad; `check` reports one that does not.
+
+```json
+"transform": { "pin": { "keys": [
+  { "t": 0.0,    "v": [-0.42, -0.30, 0.38, -0.26, 0.41, 0.29, -0.40, 0.33] },
+  { "t": 0.0417, "v": [-0.40, -0.31, 0.39, -0.24, 0.42, 0.30, -0.38, 0.34] } ] } }
+```
 
 `blend`: `normal`, `add`, `screen`, `multiply`, `overlay`, `lighten`, `darken`, `difference`,
 `color_burn`, `linear_burn`, `darker_color`, `color_dodge`, `linear_dodge` (the same as `add`),

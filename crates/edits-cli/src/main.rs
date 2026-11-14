@@ -9,6 +9,7 @@ mod demo;
 mod encode;
 mod launch;
 mod sheet;
+mod trace;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
@@ -87,6 +88,13 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Find known pictures in a reference, frame by frame: per-frame homographies and corner-pin keys (the trace method)
+    Track(trace::TrackArgs),
+    /// Measure a reference as effect parameters: `grade` (tone curves per tracked key), `blur` (gaussian, zoom, directional per frame)
+    #[command(subcommand)]
+    Measure(trace::MeasureCommand),
+    /// Per-frame SSIM of a render against its reference, the worst frames on a sheet, and the author-pixel audit
+    Metric(trace::MetricArgs),
     /// Tune a project's effect values until its render matches a reference recipe (flashes, saturation, blur, zoom, moves)
     Fit(analysis::FitArgs),
     /// Open the desktop app on a project (Edits Studio when built, else `edits-gui`; see docs/GUI.md)
@@ -268,6 +276,9 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Fit(a) => analysis::fit(a),
+        Command::Track(a) => trace::track(a),
+        Command::Measure(c) => trace::measure(c),
+        Command::Metric(a) => trace::metric(a),
         Command::Gui { args } => launch::gui(&args),
         Command::Mcp { args } => launch::exec("edits-mcp", "EDITS_MCP_BIN", "edits-mcp", &args),
     }

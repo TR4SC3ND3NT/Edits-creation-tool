@@ -21,6 +21,8 @@ pub mod curves;
 pub mod draft;
 pub mod dress;
 pub mod exposure;
+pub mod features;
+pub mod homography;
 pub mod img;
 pub mod ingest;
 pub mod joint;
@@ -31,6 +33,7 @@ pub mod measure;
 pub mod media;
 pub mod pairs;
 pub mod pipeline;
+pub mod planar;
 pub mod schema;
 pub mod shots;
 pub mod signals;
@@ -38,6 +41,7 @@ pub mod song;
 #[doc(hidden)]
 pub mod synth;
 pub mod tone;
+pub mod trace;
 pub mod vision;
 pub mod track;
 

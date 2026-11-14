@@ -710,3 +710,39 @@ fn every_blend_mode_matches_its_formula_above_one_too() {
         }
     }
 }
+
+#[test]
+fn a_corner_pin_maps_the_whole_picture_projectively() {
+    gpu!(r);
+    let q = quadrants("quad_pin.png", 64, 64);
+    let layer = |transform: &str| project("", &format!(r#""slots":{{"a":{{"path":"{q}"}}}},"layers":[{{"id":"a","kind":"image","slot":"a","transform":{{{transform}}}}}]"#));
+    let (red, green, blue, yellow, black) = ([255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0], [0, 0, 0]);
+
+    // The left half of the frame: the whole picture, squeezed (fit does not apply).
+    let img = render(r, &layer(r#""pin":[-0.5,-0.5, 0,-0.5, 0,0.5, -0.5,0.5]"#), 0);
+    assert_px(&img, 6, 8, red, 1);
+    assert_px(&img, 24, 8, green, 1);
+    assert_px(&img, 6, 56, blue, 1);
+    assert_px(&img, 24, 56, yellow, 1);
+    assert_px(&img, 48, 32, black, 0);
+
+    // A trapezoid narrower at the top is a plane leaning away: the picture's
+    // middle row lands at a third of the height (21.3 px), not at the middle.
+    let img = render(r, &layer(r#""pin":[-0.25,-0.5, 0.25,-0.5, 0.5,0.5, -0.5,0.5]"#), 0);
+    assert_px(&img, 28, 18, red, 1);
+    assert_px(&img, 28, 25, blue, 1);
+    assert_px(&img, 36, 18, green, 1);
+    assert_px(&img, 36, 25, yellow, 1);
+    assert_px(&img, 2, 2, black, 0);
+
+    // The same left-half pin as a 3x3 matrix (picture 0..1 -> composition units).
+    let img = render(r, &layer(r#""pin":[0.5,0,-0.5, 0,1,-0.5, 0,0,1]"#), 0);
+    assert_px(&img, 6, 8, red, 1);
+    assert_px(&img, 48, 32, black, 0);
+
+    // The layer's position applies after the pin.
+    let img = render(r, &layer(r#""position":[0.5,0,0],"pin":[-0.5,-0.5, 0,-0.5, 0,0.5, -0.5,0.5]"#), 0);
+    assert_px(&img, 16, 32, black, 0);
+    assert_px(&img, 38, 8, red, 1);
+    assert_px(&img, 56, 56, yellow, 1);
+}

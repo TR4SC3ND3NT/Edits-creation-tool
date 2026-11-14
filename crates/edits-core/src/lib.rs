@@ -20,6 +20,7 @@ pub mod jsonfmt;
 pub mod mask;
 pub mod model;
 pub mod particles;
+pub mod pin;
 pub mod pointer;
 pub mod preset;
 pub mod shape;

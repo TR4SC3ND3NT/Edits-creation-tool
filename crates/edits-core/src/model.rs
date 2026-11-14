@@ -430,10 +430,18 @@ pub struct Transform {
     pub anchor: Prop,
     #[serde(default = "one_prop")]
     pub opacity: Prop,
+    /// Corner pin (image, video, solid and comp layers): where the picture's
+    /// corners go in layer space, 8 numbers `[x0, y0, ... x3, y3]` from the
+    /// top-left clockwise, or a 3x3 homography from picture coordinates (0..1)
+    /// as 9 numbers, row-major. The whole picture is mapped (the slot's `fit`
+    /// does not apply); the rest of the transform and the camera apply after
+    /// it. Keyed per frame by `edits track`. See `crate::pin`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin: Option<Prop>,
 }
 impl Default for Transform {
     fn default() -> Self {
-        Self { position: zero3(), scale: one_prop(), rotation: zero3(), anchor: zero2(), opacity: one_prop() }
+        Self { position: zero3(), scale: one_prop(), rotation: zero3(), anchor: zero2(), opacity: one_prop(), pin: None }
     }
 }
 

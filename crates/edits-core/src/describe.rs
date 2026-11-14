@@ -143,6 +143,9 @@ fn layer_lines(o: &mut String, layers: &[Layer], duration: f64) {
                 let _ = writeln!(o, "      {n}: {sum}");
             }
         }
+        if let Some(pin) = &t.pin {
+            let _ = writeln!(o, "      pin: {}", pin_summary(pin));
+        }
         for e in &l.effects {
             let options = e.options.iter().map(|(k, v)| format!("{k}={v}"));
             let params: Vec<String> = options
@@ -153,6 +156,25 @@ fn layer_lines(o: &mut String, layers: &[Layer], duration: f64) {
                 .collect();
             let _ = writeln!(o, "      fx {}{} {}", e.kind, if e.enabled { "" } else { " (off)" }, params.join("; "));
         }
+    }
+}
+
+/// `12 corner keys 0.000..0.458, first [-0.31, -0.2, ...]` or `corners [...]`.
+fn pin_summary(p: &Prop) -> String {
+    let short = |v: &[f64]| format!("[{}]", v.iter().map(|x| format!("{x:.3}")).collect::<Vec<_>>().join(", "));
+    let kind = |n: usize| if n == 9 { "matrix" } else { "corners" };
+    match p {
+        Prop::Const(v) => {
+            let v = v.to_vec();
+            format!("{} {}", kind(v.len()), short(&v))
+        }
+        Prop::Anim(a) => match (a.keys.first(), a.keys.last()) {
+            (Some(f), Some(l)) => {
+                let v = f.v.to_vec();
+                format!("{} {} keys {}..{}, first {}", a.keys.len(), kind(v.len()), f.t, l.t, short(&v))
+            }
+            _ => "no keys".into(),
+        },
     }
 }
 

@@ -115,6 +115,23 @@ pub fn decode_frames(path: &Path, info: &VideoInfo, height: u32) -> Result<Frame
     Ok(Frames { w, h, fps: info.fps, data })
 }
 
+/// Decode every frame scaled to exactly `w` x `h` and resampled to `fps`
+/// (frames are repeated or dropped by time, as ffmpeg's `fps` filter does),
+/// so a render can be compared frame by frame with a reference.
+pub fn decode_frames_as(path: &Path, w: usize, h: usize, fps: f64) -> Result<Frames> {
+    let args: Vec<String> = ["-i", &path.to_string_lossy(), "-an", "-sn", "-vf", &format!("fps={fps},scale={w}:{h}:flags=area"), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let mut data = run_ffmpeg(&args)?;
+    let n = w * h * 3;
+    if data.len() < n {
+        bail!("no frames decoded from {}", path.display());
+    }
+    data.truncate(data.len() / n * n);
+    Ok(Frames { w, h, fps, data })
+}
+
 /// Decode the listed frames (ascending frame numbers) at full resolution.
 pub fn decode_selected(path: &Path, info: &VideoInfo, frames: &[usize]) -> Result<Frames> {
     decode_selected_at(path, info, frames, None)

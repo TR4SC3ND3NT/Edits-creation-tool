@@ -47,6 +47,21 @@ pub fn flat(w: f64, h: f64) -> DMat4 {
     DMat4::from_scale(DVec3::new(w, h, 1.0))
 }
 
+/// The unit quad (-0.5..0.5) through a corner pin: `pin` maps picture
+/// coordinates (0..1) to layer space (`edits_core::pin`). The result is
+/// projective (its w row is not constant), so the GPU's perspective-correct
+/// interpolation maps the picture exactly as the homography does.
+pub fn pin(pin: &edits_core::pin::Mat3) -> DMat4 {
+    let shift = [[1.0, 0.0, 0.5], [0.0, 1.0, 0.5], [0.0, 0.0, 1.0]];
+    let g = edits_core::pin::mul(pin, &shift);
+    DMat4::from_cols_array(&[
+        g[0][0], g[1][0], 0.0, g[2][0], //
+        g[0][1], g[1][1], 0.0, g[2][1], //
+        0.0, 0.0, 1.0, 0.0, //
+        g[0][2], g[1][2], 0.0, g[2][2],
+    ])
+}
+
 /// The six faces of a box in the order front, right, back, left, top, bottom.
 /// Each entry places the unit quad on that face so that, seen from outside,
 /// the picture is upright (for top and bottom: upright once the face has been
@@ -184,6 +199,16 @@ mod tests {
         // +X: the top comes toward the viewer.
         let p = model(&l([90.0, 0.0, 0.0])) * (-DVec3::Y).extend(1.0);
         assert!((p.z + 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_pin_sends_the_unit_quad_to_its_corners() {
+        let q = [[-0.4, -0.3], [0.5, -0.2], [0.3, 0.45], [-0.35, 0.3]];
+        let m = pin(&edits_core::pin::square_to_quad(q).unwrap());
+        for (i, (x, y)) in [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)].into_iter().enumerate() {
+            let p = project(m, [x, y, 0.0]);
+            assert!((p[0] - q[i][0]).abs() < 1e-9 && (p[1] - q[i][1]).abs() < 1e-9 && p[2].abs() < 1e-12, "{p:?}");
+        }
     }
 
     #[test]

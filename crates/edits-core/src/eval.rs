@@ -267,6 +267,14 @@ impl<'a> Evaluator<'a> {
         }
     }
 
+    /// The layer's corner pin at `t` (see `crate::pin`): the map from picture
+    /// coordinates (0..1) to layer space. `None` without a pin, or when the
+    /// value at `t` is not a usable pin (`check` reports those).
+    pub fn pin(&self, layer: &Layer, t: f64) -> Option<crate::pin::Mat3> {
+        let v = self.prop(layer.transform.pin.as_ref()?, t);
+        crate::pin::from_values(&v).ok()
+    }
+
     pub fn camera(&self, t: f64) -> ResolvedCamera {
         let c = &self.project.camera;
         ResolvedCamera {

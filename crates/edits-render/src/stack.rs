@@ -87,7 +87,8 @@ impl Renderer {
                 }
             }
         }
-        Ok(self.layer_quads(&scene, layer, self.layer_mvp(ev, at, t), aspect, frame.as_ref()))
+        let pin = ev.pin(layer, ev.layer_time(layer, t)).map(|m| geometry::pin(&m));
+        Ok(self.layer_quads(&scene, layer, self.layer_mvp(ev, at, t), aspect, frame.as_ref(), pin))
     }
 
     /// Layer space through the camera at `t` into clip space.

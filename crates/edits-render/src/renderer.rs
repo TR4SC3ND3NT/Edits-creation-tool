@@ -1451,7 +1451,9 @@ impl Renderer {
     /// The quads of an image, solid, cube or video layer, and whether they
     /// need a depth buffer. `frame` is a video layer's current frame (`None`
     /// shows its slot's placeholder).
-    pub(crate) fn layer_quads(&self, scene: &Scene, layer: &Layer, mvp: glam::DMat4, aspect: f64, frame: Option<&Picture>) -> (Vec<Quad>, bool) {
+    /// `pin` (a corner pin, `geometry::pin`) replaces the layer's box: the
+    /// whole picture goes onto the pinned corners, whatever the slot's fit.
+    pub(crate) fn layer_quads(&self, scene: &Scene, layer: &Layer, mvp: glam::DMat4, aspect: f64, frame: Option<&Picture>, pin: Option<glam::DMat4>) -> (Vec<Quad>, bool) {
         let white = [1.0, 1.0, 1.0, 1.0];
         let (w, h) = (self.ctx.w, self.ctx.h);
         let flat = !matches!(layer.kind, LayerKind::Cube { .. });
@@ -1464,6 +1466,7 @@ impl Renderer {
             let (covers, margin) = edges(m);
             let slot = scene.project.slots.get(name);
             let (fit, focus) = slot.map(|s| (s.fit, s.focus)).unwrap_or((edits_core::Fit::Cover, [0.5, 0.5]));
+            let fit = if pin.is_some() { edits_core::Fit::Stretch } else { fit };
             match picture.or_else(|| scene.slots.get(name)) {
                 Some(pic) => Quad { mvp: mat(m), tex: pic.tex.clone(), fit: geometry::fit_uv(fit, focus, pic.aspect, box_aspect), color: white, covers, margin },
                 // Not reachable after `prepare`, which gives every used slot a picture.
@@ -1471,14 +1474,15 @@ impl Renderer {
             }
         };
         let slot_quad = |name: &str, m: glam::DMat4, box_aspect: f64| picture_quad(name, m, box_aspect, None);
+        let box_m = pin.unwrap_or_else(|| geometry::flat(aspect, 1.0));
         match &layer.kind {
-            LayerKind::Image { slot } => (vec![slot_quad(slot, mvp * geometry::flat(aspect, 1.0), aspect)], false),
-            LayerKind::Video(v) => (vec![picture_quad(&v.slot, mvp * geometry::flat(aspect, 1.0), aspect, frame)], false),
+            LayerKind::Image { slot } => (vec![slot_quad(slot, mvp * box_m, aspect)], false),
+            LayerKind::Video(v) => (vec![picture_quad(&v.slot, mvp * box_m, aspect, frame)], false),
             LayerKind::Solid { color } => {
                 let a = color[3].clamp(0.0, 1.0);
                 let c = [0, 1, 2].map(|i| assets::srgb_to_linear(color[i].clamp(0.0, 1.0)) * a);
                 let fit = geometry::fit_uv(edits_core::Fit::Stretch, [0.5, 0.5], 1.0, 1.0);
-                let m = mvp * geometry::flat(aspect, 1.0);
+                let m = mvp * box_m;
                 let (covers, margin) = edges(m);
                 (vec![Quad { mvp: mat(m), tex: self.white.clone(), fit, color: [c[0], c[1], c[2], a], covers, margin }], false)
             }
@@ -1502,7 +1506,7 @@ impl Renderer {
                 (Some(pic), Some(sub)) => {
                     let (sw, sh) = (sub.project.settings.width as f64, sub.project.settings.height as f64);
                     let unit = scene.project.settings.height.max(1) as f64;
-                    let m = mvp * geometry::flat(sw / unit, sh / unit);
+                    let m = mvp * pin.unwrap_or_else(|| geometry::flat(sw / unit, sh / unit));
                     // Shown pixel for pixel, it is copied exactly (no resampling).
                     if (pic.tex.w, pic.tex.h) == (w, h) && crate::comp::maps_onto_frame(m) {
                         return (vec![Quad::frame(pic.tex.clone())], false);

@@ -135,6 +135,21 @@ pub(crate) fn check_stack(p: &Project, base_dir: Option<&Path>) -> Vec<Finding> 
         for (name, prop) in [("position", &t.position), ("scale", &t.scale), ("rotation", &t.rotation), ("anchor", &t.anchor), ("opacity", &t.opacity)] {
             check_prop(prop, &format!("{lp}.transform.{name}"), &mut err);
         }
+        if let Some(pin) = &t.pin {
+            let pp = format!("{lp}.transform.pin");
+            check_prop(pin, &pp, &mut err);
+            if !matches!(l.kind, LayerKind::Image { .. } | LayerKind::Video(_) | LayerKind::Solid { .. } | LayerKind::Comp(_)) {
+                warn.push(Finding { severity: Severity::Warning, path: pp.clone(), message: "only image, video, solid and comp layers use a pin: it is ignored here".into(), hint: Some("remove \"pin\"".into()) });
+            }
+            let values = written_values(pin);
+            if let Some(n) = values.iter().map(Vec::len).find(|n| *n != 8 && *n != 9) {
+                err(pp.clone(), format!("a pin is 8 numbers (corners) or 9 (a 3x3 matrix), not {n}"), Some("[x0, y0, x1, y1, x2, y2, x3, y3]: top-left, top-right, bottom-right, bottom-left, in composition units"));
+            } else if values.windows(2).any(|w| w[0].len() != w[1].len()) {
+                err(pp.clone(), "every pin key must have the same number of values".into(), Some("all corners (8) or all matrices (9)"));
+            } else if let Some(msg) = values.iter().find_map(|v| crate::pin::from_values(v).err()) {
+                err(pp, msg, Some("a tracked key that failed: drop it, or re-run `edits track` and use its smoothed corners"));
+            }
+        }
         for (ei, e) in l.effects.iter().enumerate() {
             let ep = format!("{lp}.effects[{ei}]");
             match effects::spec(&e.kind) {
