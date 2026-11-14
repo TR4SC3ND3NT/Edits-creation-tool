@@ -11,3 +11,9 @@
 
 # Agent worktrees (temporary checkouts of parallel agents)
 /.claude/worktrees/
+
+# Edits Studio (studio/): dependencies and build output
+/studio/node_modules/
+/studio/dist/
+/studio/src-tauri/target/
+/studio/src-tauri/gen/

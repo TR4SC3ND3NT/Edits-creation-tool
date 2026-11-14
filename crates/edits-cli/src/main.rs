@@ -89,10 +89,10 @@ enum Command {
     },
     /// Tune a project's effect values until its render matches a reference recipe (flashes, saturation, blur, zoom, moves)
     Fit(analysis::FitArgs),
-    /// Open the preview window on a project (runs `edits-gui`; see docs/GUI.md)
+    /// Open the desktop app on a project (Edits Studio when built, else `edits-gui`; see docs/GUI.md)
     #[command(disable_help_flag = true)]
     Gui {
-        /// Arguments for edits-gui, e.g. `project.json` or `project.json --screenshot out.png --at 30`
+        /// Arguments for the app, e.g. `project.json` or `project.json --page overview` (`--screenshot ...` starts edits-gui)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<std::ffi::OsString>,
     },
@@ -268,7 +268,7 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Fit(a) => analysis::fit(a),
-        Command::Gui { args } => launch::exec("edits-gui", "EDITS_GUI_BIN", "edits-gui", &args),
+        Command::Gui { args } => launch::gui(&args),
         Command::Mcp { args } => launch::exec("edits-mcp", "EDITS_MCP_BIN", "edits-mcp", &args),
     }
 }

@@ -1,4 +1,420 @@
-# The window (`edits-gui`)
+# The desktop app: Edits Studio
+
+Edits Studio (`studio/`) is the desktop app of the engine: a Tauri v2 window
+with a React + shadcn/ui interface. It shows a project while something else
+edits it, and edits it too. Open it on a project file, let an agent (or a
+text editor) change that file, and watch the change land: the preview, the
+timeline, the inspector and every page follow the file. Change a value, drag
+a bar or apply a preset, and your change is written to the same file.
+
+The JSON file stays the only source of truth. Every change the studio makes
+goes through the same code as the agent's `project_edit`
+(`edits_core::edit`, actor `window`): it is checked before it is written,
+written in one step, and kept in the history that both of you undo from.
+
+It replaces the egui window (`crates/edits-gui`), which is still in the
+repository and still built by `cargo build -p edits-gui`; it is described at
+the end of this page ([The egui window](#the-egui-window-edits-gui)).
+`edits gui` starts the studio when it is built and the egui window
+otherwise.
+
+```
+edits gui demo/project.json                 # the studio if built, else edits-gui
+edits-studio demo/project.json --page overview
+```
+
+```
+edits-studio [project.json] [--page edit|overview|reference|library|activity|renders]
+             [--select LAYER] [--at FRAME]
+```
+
+Without a project it opens on an empty page with **Open project…**. The
+renderer's adapter is chosen by `EDITS_ADAPTER` (`auto`, `hardware`,
+`software`), as for `edits render`.
+
+## Build and run on Linux
+
+The studio needs a Rust toolchain, Bun (or Node), and the WebKitGTK
+libraries Tauri uses on Linux. On Ubuntu 24.04 / Debian:
+
+```
+sudo apt install build-essential curl wget file pkg-config libssl-dev libxdo-dev \
+  libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libsoup-3.0-dev \
+  mesa-vulkan-drivers ffmpeg
+npm i -g bun                                   # or: curl -fsSL https://bun.sh/install | bash
+cargo build --release -p edits-cli             # `edits`, for Renders and `edits gui`
+cd studio
+bun install
+bun run tauri build --no-bundle                # target/release/edits-studio, next to `edits`
+cd ..
+./target/release/edits demo demo
+./target/release/edits gui demo/project.json
+```
+
+For playing the project's audio the webview uses GStreamer
+(`gstreamer1.0-plugins-good`, and `gstreamer1.0-libav` for MP3 and AAC);
+without it the studio plays silently. On a machine without a display, run it
+under Xvfb (`apt install xvfb xauth`):
+
+```
+xvfb-run -a -s "-screen 0 1400x900x24" ./target/release/edits-studio demo/project.json
+```
+
+While working on the interface:
+
+```
+cd studio
+bun run tauri dev -- -- "$PWD/../demo/project.json"   # Vite with hot reload, debug build, debug panel
+bun run typecheck && bun run lint && bun run build     # the frontend alone
+cd src-tauri && cargo test                              # the Rust side, without a window
+```
+
+`studio/src-tauri` is not a member of the root Cargo workspace (it is in
+`exclude`), so `cargo test --workspace` never needs WebKitGTK. It builds into
+the workspace's `target/` folder (`studio/src-tauri/.cargo/config.toml`), so
+the engine crates are compiled once for both and `edits-studio` lands next to
+`edits`. The **debug panel** of tauri-ui (runtime, tracked invokes, events,
+log stream) is in dev builds only: Ctrl+D toggles it.
+
+## Layout
+
+The window is shadcn's `dashboard-01` block: an inset sidebar on the left, a
+header, and the page.
+
+- **Sidebar.** *Edits Studio*; **Quick Render** (renders the project to
+  `renders/<name>.mp4` and opens the Renders page) next to an Undo button;
+  the six pages (the Edit page shows a badge with the number of errors in the
+  file, Activity the number of edits in the history); *Project files* (the
+  project, its audio, the `.edits` folder: open, show in folder, copy path);
+  *Command palette* and *Open project…*; at the bottom the renderer (adapter
+  name, `software renderer` or `GPU renderer`), whose menu shows the time the
+  last frame took, the frame cache, the state of the audio and the theme.
+- **Header.** The sidebar toggle, the page's title, `folder / project.json`,
+  a `rev N` badge (a counter of loaded versions) and a red `N errors` badge
+  while the file on disk has errors; on the right *Search commands…* (Ctrl+K),
+  the note for the agent (a speech bubble: *Tell the agent*, a text box,
+  **Save note** or Ctrl+Enter, **Clear**; the note goes into `ui.json` as
+  `note` and `note_at`) and Undo / Redo, whose tooltips name the edit and who
+  made it.
+
+The theme is shadcn's dark neutral theme (`--background`, `--card`,
+`--muted`, `--border`, `--primary` of `studio/src/index.css`, as the template
+ships them), Inter as the template ships it, Lucide icons. The timeline and
+the frame viewer are the only parts drawn by the studio itself; they use the
+same tokens. `D` switches between dark and light (the template's shortcut);
+the sidebar's renderer menu does too.
+
+## Pages
+
+### Edit
+
+The frame viewer with its transport, the inspector on the right, the
+timeline below; the dividers between them can be dragged. A line at the
+bottom says what your last edit did (`d: position → [0.2, 0, 0]`) or why it
+was refused.
+
+What a screenshot of the demo at 1400 × 900 with layer `d` selected at frame
+60 shows: on the left of the sidebar-inset page the picture (the
+striped-sun picture `d`) centred on a muted stage in a bordered, rounded box;
+under it the transport `00:02.40 / 00:03.90`, badges `b4.92` and `f60`, a
+group of outline icon buttons (start, frame back, play, frame forward, last
+frame), the loop toggle, and on the right a *Blur* toggle and a `0.5×`
+select. The inspector reads `d` with an `image d` badge, a switch and a `…`
+menu, then tabs *Properties · Effects 3 · Keys*, `Values at frame 60 ·
+b4.92`, the *Layer* fields (in · out `4` `8` beats, blend `normal`, slot `d`),
+*Transition in* (`None: the layer cuts in at its in.` and an *Add transition*
+select) and *Transform* (position `0 0 0` units, scale `1.05` ×, ...). The
+timeline below has a toolbar (*+ Layer*, a `snap ¼ beat` badge, `5 layers ·
+8 beats · 123 BPM · 25 fps`, zoom out, zoom in, *Fit*), a ruler numbered by
+bars (`1`, `1.2`, `1.3`, `1.4`, `2`, ...), a Markers lane, and one row per
+layer, the top of the picture first (`camera`, `finish`, `tex`, `d`, `cube`,
+`a`), each with its kind's icon, its id and its kind, and a muted rounded bar
+from `in` to `out` naming its effects (`zoom_blur · saturation · invert`)
+with its keys as small glyphs; the selected row is highlighted and its bar
+outlined; a thin primary-coloured playhead runs through all rows.
+
+**Viewer.** The frame under the playhead, rendered by `edits-render` exactly
+as `edits frame` renders it at that scale, on a worker thread, sent to the
+page as JPEG and drawn on a canvas. While paused it renders the frame you are
+on (with the project's motion blur unless *Blur* is off); while playing it
+asks for a few frames ahead of the playhead and shows the newest one that is
+ready, with a `showing frame N` badge when that is not the frame the
+transport reads. Frames are cached by revision, frame, scale and blur (384 MB
+of JPEGs on the Rust side, 240 decoded frames in the page). A red alert at
+the top says when the file on disk has errors; the last valid version stays
+on screen.
+
+**Transport.** The time, the beat (`b4.92`, hover for the bar) and the frame;
+start, a frame back, play/pause, a frame forward, last frame; loop; motion
+blur while paused; the preview scale (0.25, 0.5 or 1 of the project's size).
+Playback follows a real-time clock; the project's `audio` plays from
+`audio.offset` plus the playhead (through the webview's `<audio>`, so through
+GStreamer on Linux) and is re-synced on every seek and loop.
+
+**Timeline.** Click or drag on the ruler, the markers lane or an empty part
+of a row to move the playhead. Click a row to select its layer (the camera
+row selects the camera). Drag a bar to move the layer in time with all its
+keys, its first or last 8 pixels to change `in` or `out`, a key glyph to move
+every key of that layer at that time; a dashed ghost shows where it lands,
+nothing is written until you let go, and then it is one edit. Times snap to
+quarter beats (to frames in a seconds project, or with Alt). The eye at the
+end of a row header disables or enables the layer. Ctrl + wheel zooms;
+*+ Layer* adds a solid, an adjustment layer, an image layer of a slot or a
+cube with a slot, one bar long at the playhead, above the selected layer.
+Key glyphs: a diamond for a `linear` segment, a square for `hold`, a dot for
+any other ease (grey for effect keys); hover for the time and the properties.
+A transition into a layer is a wedge at the start of its bar.
+
+**Inspector.** With nothing selected: an empty state, the problems of the
+file, the project's settings and a button for the camera. With a layer:
+
+- *Properties*: in and out, blend (every blend mode), slot (image and video
+  layers), colour (solid layers), the transition in (kind, duration, its
+  description, remove; or *Add transition*, which applies the
+  `transition:<kind>` preset at the layer's cut with `align: after`), and
+  the transform. Each property is a row: its name (dim when the file does not
+  set it; hover for its documentation, default and keys; click to *pick* it),
+  its value at the playhead (a slider and a number for values with a range, a
+  number per component otherwise, its unit), and **Key here** (the diamond,
+  filled when a key is at the playhead).
+- *Effects*: a card per effect in the order they apply, with its category, its
+  one-line description, a switch, a menu (move up, move down, remove), every
+  parameter of the registry with its unit and range, and its options as
+  selects. *Add effect* is a searchable list of the registry by category.
+- *Keys*: the keys of the picked property in a table (time, value, the ease
+  that leaves it as a select of every ease name, remove), and badges for every
+  animated property of the layer.
+
+Typing a value (Enter or leaving the field) or letting go of a slider writes
+the change once: a constant changes; a keyframed property gets a key at the
+playhead, or that key changes; an effect parameter the file does not set is
+written as a constant. The logic is the egui window's (`engine/editing.rs`).
+
+### Overview
+
+The project at a glance, as shadcn's dashboard: five cards (**Duration** in
+seconds with frames, beats and bars; **Tempo**; **Layers** with how many are
+on, effects, keys and slots; **Cuts**, the picture layers that start after
+the beginning, with transitions and the mean spacing; **Match score**, the
+overall score of the newest comparison with the reference and its trend
+against the one before), an interactive area chart **Edit activity** (keys
+and cuts per bar, beat or half beat, chosen with the toggle group), and a
+data table with tabs *Layers · Effects · Markers · Slots*. In the Layers tab
+the rows are the layers top of the picture first; drag a row's handle to move
+the layer in the stack, type its in and out in place, click its id for a
+drawer with its details (in, out, blend, Save), or use the row's menu (edit
+in the Edit page, make a copy, disable, delete).
+
+A screenshot after two comparisons shows the cards `3.9 s` (`98 frames`),
+`123 BPM`, `5` layers (`5 on`), `2` cuts (`0 transitions`) and `75.6%` with a
+`-24.4%` trending-down badge and `Further from the reference`; the chart's two
+stacked grey areas over `b1` ... `b7`; and the table with drag handles,
+checkboxes, `finish` (`adjustment`, a green `On` badge, `exposure, glow,
+vignette`, `0` `8`, `7` keys, `normal`) and `tex` (`image tex`, `screen`).
+
+### Reference
+
+For copying the recipe of a reference edit ([ANALYSIS.md](ANALYSIS.md)). At
+the top: the analysis (every `reference_analysis.json` up to three folders
+below the project, or *Analysis…* for any file), the comparison report (the
+studio's reports, or *Report…* for a file written by `edits-analyze compare
+--json`), and **Compare a render…**, a list of the project's renders: it
+analyses that video with the reference's beat grid and frame range, as
+`edits-analyze compare` does (the same library call, on a thread), and saves
+the comparison under `<project folder>/.edits/compare/<time>.json` with the
+render's signature next to it (`<time>.signature.json`). A badge says
+`comparing demo.mp4` meanwhile.
+
+Then six cards: **Overall**, **Timing** (tempo and cuts), **Exposure**
+(exposure curves and flashes), **Motion** (zoom curves), **Colour**
+(saturation and tone hits) and **Blur**, each the mean of its scores, with
+the change since the comparison before; an area chart **Signature over time**
+of the reference's exposure, blur, saturation, scale or luminance per frame
+against its beats, with the render's curve as a dashed line when the report
+has it; and **Largest differences**, the report's sentences ranked by
+severity, each with a **Jump to** button that moves the playhead to the start
+of that shot (or the beat or frame the sentence names) and opens the Edit
+page.
+
+What the demo shows after comparing its own render (`ref.mp4`) and then a
+render with layer `d` moved and turned: `75.6%` overall (`-24.4`), timing
+`90.0%`, exposure `61.7%`, motion `99.8%`, colour `78.9%`, blur `43.5%`; the
+exposure chart with a filled reference curve and a dashed render curve whose
+flash at beat 4 comes late; differences `26.0×` *exposure* shot 3 `shot 3
+(beats 3.54-8.05): exposure peak is 39 frames early`, and so on.
+
+### Presets & Effects
+
+Tabs **Presets**, **Transitions** and **Effects**, with counts, and a search
+field over names, tags and descriptions (every word must match). Presets and
+transitions are a table (name, group, description, number of variables, where
+it comes from: `builtin`, `transition` or `project` for
+`<project folder>/presets/*.json`). Click one for a sheet with its
+description and tags, **On** (*Layer*: the selected layer, or the picture on
+screen with none; *Screen*: the picture on screen, `--layer auto`;
+*Accents*: an `accents` adjustment layer on top), **At** (the playhead, or the
+layer's cut), and its variables (sliders with their range and default,
+switches, selects, number fields for vectors and colours); **Apply at b3.61**
+writes it through `edits_core::preset::apply`, one edit of the history. The
+Effects tab lists the registry: each effect with its description, category,
+parameters (default, unit, range) and options, and *Add to <layer>*.
+
+### Activity
+
+The history shared with the agent (`.edits/history/`). A card with a stacked
+bar chart of edits per minute by the agent and by you, the counts, and Undo
+and Redo; then a table: the edits that can be redone (struck through, with
+Redo), then every edit newest first with its number, who made it (a robot
+badge `agent`, a person `you`), what it did as a person reads it (hover for
+the raw line), how long ago, Undo on the newest and **Restore** on the others.
+Restore makes the version before that edit the project again, as a new edit
+(so Undo takes the restore back).
+
+### Renders
+
+A card **Render video**: the output file (default
+`renders/<project folder>.mp4`, numbered when taken; relative paths are inside
+the project's folder), the size (1, 0.5 or 0.25 of the project's) and
+**Render**, which runs `edits render <project> -o <file> [--scale S]` as a
+child process. Its progress lines become a progress bar with `frame 32 / 98`,
+the command's own line (`frame 32/98 (33%) 336 ms/frame 22 s left`) and the
+time left; **Cancel** stops it; a toast says when it has finished or failed.
+The `edits` command is looked for in `EDITS_BIN`, next to `edits-studio`, in
+the workspace's other build folder, then on `PATH`. Below, **Outputs**: the
+videos next to the project and in `renders/`, newest first, with their size
+and age, and a menu (play in the system player, show in folder, compare with
+the reference).
+
+## Command palette and keys
+
+Ctrl+K (or *Search commands…*) opens shadcn's command dialog: go to a page;
+play, start, last frame, loop, go to a marker; undo and redo (naming the
+edit), render; add a layer (solid, adjustment, an image of each slot, a cube
+of each slot); for the selected layer enable or disable, duplicate, delete,
+and *Add <effect> to <layer>* for every effect of the registry; select any
+layer; apply any preset at the playhead.
+
+| Key | What it does |
+| --- | --- |
+| Space | Play or pause |
+| Left / Right | One frame back / forward (pauses); with Shift, one beat |
+| Home / End | First / last frame |
+| L | Loop on or off |
+| Ctrl+Z / Ctrl+Shift+Z, Ctrl+Y | Undo / redo the newest edit in the shared history, yours or the agent's |
+| Ctrl+K | Command palette |
+| Ctrl+1 ... Ctrl+6 | Edit, Overview, Reference, Presets & Effects, Activity, Renders |
+| Delete, Backspace | Delete the selected layer |
+| Esc | Deselect |
+| D | Dark or light theme |
+| Ctrl+D | The debug panel (dev builds) |
+
+Keys are ignored while a text field, a select or a slider has the focus,
+except Ctrl+K.
+
+## Edits, the shared history, and the agent
+
+Everything under [One history for you and the
+agent](#one-history-for-you-and-the-agent) holds for the studio: edits are
+written as actor `window` with the hash of the version they were prepared
+against (an edit prepared against a version that is no longer on disk is
+refused and the new version is shown), Ctrl+Z undoes the newest edit whoever
+made it, and the agent's `project_undo` can undo yours. While the file on
+disk has errors the studio does not edit it; Undo still works.
+
+When the file changes, the studio reads it again (the watcher of
+`engine/reload.rs`: file-system events plus a once-a-second check, a burst of
+writes is one reload) and tells what happened by the shared history:
+
+| Toast | When |
+| --- | --- |
+| *Agent edit* · `d: transform.rotation → [0, 0, 12]` with **Undo** | the agent's `project_edit` changed the file (8 s) |
+| *The agent undid an edit* | the agent's `project_undo` |
+| *Reloaded* · `The file changed on disk · revision 4` | a change without a history entry (a text editor, a picture) |
+| *The file has N errors* · `Showing revision 3 until it is fixed` | the file on disk stopped being valid |
+| *Not applied* and why | an edit of yours was refused |
+| *Render finished* / *Render failed* / *Comparison finished* | background jobs |
+
+**`ui.json`.** The studio writes `<project folder>/.edits/ui.json` (format
+`edits.ui/1`, see [AGENTS.md](AGENTS.md#what-the-person-is-looking-at-editsuijson))
+exactly as the egui window does, with the same timing (at once, at most four
+times a second, when the selection, the paused playhead, the view, the loop
+or the note change; every 2 s while playing; at least every 5 s while open)
+and removes it when it closes. The agent's `ui_context` then answers, for
+example after picking `position` on layer `d` at frame 60:
+
+```json
+{ "open": true, "playhead": { "frame": 60, "seconds": 2.4, "t": 4.92 }, "playing": false,
+  "selection": { "layer": "d", "property": "/layers/@d/transform/position" },
+  "loop": { "from": 0, "to": 8 }, "project": "project.json", "age_seconds": 4.44 }
+```
+
+## How it is built
+
+- `studio/` was generated by `create-tauri-ui` (Vite template, dashboard-01
+  starter, debug panel; see THIRD_PARTY.md) and its components by the shadcn
+  CLI (`components.json`: style `base-nova` on Base UI, neutral base colour,
+  Lucide). `studio/src/components/ui/` is what the CLI wrote. The pages are in
+  `studio/src/components/pages/`, the Edit page's parts in
+  `studio/src/components/edit/`, the shared state (snapshot, selection,
+  playhead, playback, audio, `ui.json` reports) in `studio/src/lib/store.tsx`
+  and the typed commands in `studio/src/lib/api.ts`. Charts are shadcn's
+  `chart` (Recharts).
+- The Rust side (`studio/src-tauri/src/`) owns the project. `project.rs` holds
+  the last valid version and builds the snapshot the page draws (rows, layers,
+  slots, markers, history, the JSON); `studio.rs` opens and watches the file,
+  makes every edit (`edits_core::edit::apply` / `apply_with`, actor `window`,
+  with the expected hash), undo, redo and restore, and tells the page what
+  changed (`project` events); `render.rs` is the render thread (the newest
+  current request replaces one that has not started, prefetch requests wait
+  behind it, JPEG frames cached by revision); `inspect.rs` evaluates every
+  property of a layer at a time with its unit, range and keys from the effect
+  registry; `uictx.rs` writes `ui.json`; `renders.rs` runs `edits render`;
+  `reference.rs` finds and reads analyses and reports and runs comparisons
+  through `edits-analyze`; `commands.rs` is the list of Tauri commands.
+  `engine/` is ported from `crates/edits-gui` (editing, time, rows, reload),
+  so both windows make the same edits.
+- The webview loads the project's audio through Tauri's asset protocol.
+- Tests (`cd studio/src-tauri && cargo test`, no window needed): the snapshot,
+  telling an agent's edit from an undo and from a plain reload, edits written
+  as the window and undone through the shared history, a stale edit refused,
+  restoring a version, the inspector's values, units, keys and the camera,
+  moving a layer to any place, presets on the selected layer at the playhead
+  or its cut, the effect registry, the frame cache and the render thread
+  (skipped without a graphics adapter), render progress, outputs and a failing
+  command, finding analyses and reports, `ui.json` content, timing and
+  removal, and the command line.
+
+## Known limits of the studio
+
+- Not editable in the studio: project settings, markers, audio, layer ids and
+  names, cube faces, text, particles, shapes, masks, shake and loop modifiers
+  (their values under the shake can be edited), custom shaders' `source`,
+  slot paths; the agent or a text editor does those and the studio follows.
+- No song analysis lane, cut-on-beats or accent dialogs yet; the egui window
+  has them. The agent is not told that there is a note: say "see my note" in
+  your chat.
+- No preview of a preset or of a value while dragging a slider: the change is
+  rendered once it is written.
+- No waveform on the timeline. Audio plays through the webview: it needs
+  GStreamer, and it follows the wall clock, not the sound card's.
+- The camera's keys are shown on the timeline but not dragged there.
+- Tested on X11 under Xvfb at 1400 × 900 with Mesa lavapipe, driven with
+  `xdotool`: opening the demo, typing a value in the inspector (written as
+  actor `window`, `ui.json` updated), an agent's `project_edit` while open
+  (reloaded, toast with Undo), dragging a key on the timeline, Ctrl+Z, the
+  command palette, rendering from the Renders page, two comparisons on the
+  Reference page and *Jump to*, a preset from the Presets sheet, playback,
+  a note for the agent (read back by `ui_context`), the release build started
+  through `edits gui`, and the debug panel of `bun run tauri dev` (Ctrl+D). Not run on
+  Wayland, macOS or Windows, or on a HiDPI screen; audio could not be heard
+  where it was developed.
+
+# The egui window (`edits-gui`)
+
+The older desktop window, written with egui. `edits gui` starts it when Edits
+Studio is not built, with `EDITS_GUI=egui`, or with an option only it has
+(`--screenshot`, `--delay`, `--size`, `--scale`, `--play`, `--cache-mb`,
+`--adapter`); its screenshot mode is what automated checks of the window use.
 
 `edits-gui` shows a project while something else edits it, and lets you
 edit it by hand at the same time. Open it on a project file, let an agent (or

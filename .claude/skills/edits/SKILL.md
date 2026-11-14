@@ -29,7 +29,7 @@ the shell. They can be mixed: the project file is the only state.
 | A hit on every beat / kick / bar | `edits beats accent p.json --preset flash --on downbeats` | `beats_accent` |
 | One preset (flash, punch, shake, slide, 3D flip, transition...) | `edits presets`, `edits apply p.json punch --layer cut3 --at b4` | `presets_list`, `preset_apply` |
 | Check a custom shader | `edits shader check fx.wgsl` | `effect_define` (checks, writes, adds) |
-| What the person selected in the window | read `.edits/ui.json` | `ui_context` |
+| What the person selected in the window (Edits Studio, `edits gui p.json`) | read `.edits/ui.json` | `ui_context` |
 
 From a checkout the binary is `target/release/edits` after
 `cargo build --release -p edits-cli -p edits-analyze -p edits-mcp`
@@ -203,8 +203,10 @@ undoable step (`project_undo`, or Ctrl+Z in the window).
    transitions read as one move.
 8. **Refine.** Change a value with `project_edit` (or `edits apply ... --var`
    again on another layer); undo a whole preset with `project_undo`. When the
-   person is watching in the window, `ui_context` tells you which layer they
-   selected and what they asked for in their note.
+   person is watching in the window (Edits Studio, opened with `edits gui
+   project.json`), `ui_context` tells you which layer and property they
+   selected, where the playhead is, and the note they typed for you. Your edits appear there at once, with an Undo button; theirs show
+   up in `project_undo` and the history as actor `window`.
 9. **Render.** `edits render project.json -o out.mp4 --scale 0.5` for a
    preview, then full size (MCP: `render_video`, then `job_status`).
 

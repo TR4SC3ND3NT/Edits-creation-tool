@@ -36,7 +36,8 @@ needs is not there yet.
 
 | In progress | |
 | --- | --- |
-| `edits-gui` | A read-only preview window with transport and timeline that follows a project file while an agent edits it ([docs/GUI.md](docs/GUI.md)) |
+| Edits Studio (`studio/`) | The desktop app (Tauri + React + shadcn/ui): frame viewer, transport with audio, timeline, inspector, overview dashboard, reference comparison with charts, presets and effects, the edit history shared with the agent, renders; it follows the project file while an agent edits it, and edits it too. `edits gui project.json` starts it ([docs/GUI.md](docs/GUI.md)) |
+| `edits-gui` | The older egui window, still started by `edits gui` when the studio is not built |
 | `edits-calib` | Measuring how accurate the analysis is, on generated edits with known parameters |
 
 | Not there | |
@@ -116,7 +117,7 @@ above), then ask for an edit. For Codex and for use outside the checkout, see
 | [docs/RENDERING.md](docs/RENDERING.md) | Colour, geometry, performance |
 | [docs/ANALYSIS.md](docs/ANALYSIS.md) | Reference analysis, drafting and comparison |
 | [docs/AGENTS.md](docs/AGENTS.md) | Driving the engine from an agent: JSON, CLI, MCP tools, security, client setup |
-| [docs/GUI.md](docs/GUI.md) | The preview window (in progress) |
+| [docs/GUI.md](docs/GUI.md) | The desktop app (Edits Studio): build, run, pages; and the egui window |
 | [.claude/skills/edits/SKILL.md](.claude/skills/edits/SKILL.md) | Step-by-step workflows and starting values for this genre |
 | [CLAUDE.md](CLAUDE.md) | For work on this codebase: layout, build, conventions |
 | [examples/beat-loop.json](examples/beat-loop.json) | A complete project |
